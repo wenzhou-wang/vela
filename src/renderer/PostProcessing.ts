@@ -3,11 +3,18 @@ import { POST_SHADER } from './shaders/post.wgsl';
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 const LDR_FORMAT: GPUTextureFormat = 'rgba8unorm';
 
+export interface PostOptions {
+  fxaa: boolean;
+  bloom: boolean;
+  bloomThreshold: number;
+  bloomIntensity: number;
+}
+
 /**
  * A minimal post-processing pipeline / render graph: the scene renders into a
- * linear HDR offscreen target, then a chain of fullscreen passes (ACES tonemap,
- * optional FXAA) resolves to the swap chain. This is the foundation the richer
- * effects (bloom, SSAO, TAA) build on.
+ * linear HDR offscreen target, then a chain of fullscreen passes (bright-pass +
+ * separable-Gaussian bloom, ACES tonemap, optional FXAA) resolves to the swap
+ * chain. The foundation the richer effects build on.
  */
 export class PostProcessing {
   private module: GPUShaderModule;
@@ -15,6 +22,7 @@ export class PostProcessing {
   private sampler: GPUSampler;
   private paramsBuffer: GPUBuffer;
   private pipelines = new Map<string, GPURenderPipeline>();
+  private dummyView: GPUTextureView;
 
   private width = 0;
   private height = 0;
@@ -23,6 +31,10 @@ export class PostProcessing {
   private hdrView!: GPUTextureView;
   private ldrPing!: GPUTexture;
   private ldrView!: GPUTextureView;
+  private bloomA!: GPUTexture;
+  private bloomAView!: GPUTextureView;
+  private bloomB!: GPUTexture;
+  private bloomBView!: GPUTextureView;
 
   constructor(
     private device: GPUDevice,
@@ -36,10 +48,17 @@ export class PostProcessing {
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.paramsBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    const dummy = device.createTexture({
+      size: [1, 1], format: HDR_FORMAT,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.dummyView = dummy.createView();
   }
 
   /** (Re)allocate size-dependent targets. `w`/`h` are device pixels. */
@@ -50,25 +69,27 @@ export class PostProcessing {
     this.hdrMSAA?.destroy();
     this.hdrResolve?.destroy();
     this.ldrPing?.destroy();
+    this.bloomA?.destroy();
+    this.bloomB?.destroy();
 
-    this.hdrMSAA = this.sampleCount > 1
-      ? this.device.createTexture({
-          size: [w, h], format: HDR_FORMAT, sampleCount: this.sampleCount,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT,
-        })
-      : null;
-    this.hdrResolve = this.device.createTexture({
-      size: [w, h], format: HDR_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
+    const attach = (format: GPUTextureFormat, size: [number, number], sampleCount = 1): GPUTexture =>
+      this.device.createTexture({
+        size, format, sampleCount,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT |
+          (sampleCount > 1 ? 0 : GPUTextureUsage.TEXTURE_BINDING),
+      });
+
+    this.hdrMSAA = this.sampleCount > 1 ? attach(HDR_FORMAT, [w, h], this.sampleCount) : null;
+    this.hdrResolve = attach(HDR_FORMAT, [w, h]);
     this.hdrView = this.hdrResolve.createView();
-    this.ldrPing = this.device.createTexture({
-      size: [w, h], format: LDR_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
+    this.ldrPing = attach(LDR_FORMAT, [w, h]);
     this.ldrView = this.ldrPing.createView();
-
-    this.device.queue.writeBuffer(this.paramsBuffer, 0, new Float32Array([1, 1 / w, 1 / h, 0]));
+    // Half-resolution bloom targets (cheaper, naturally softer).
+    const bw = Math.max(1, w >> 1), bh = Math.max(1, h >> 1);
+    this.bloomA = attach(HDR_FORMAT, [bw, bh]);
+    this.bloomAView = this.bloomA.createView();
+    this.bloomB = attach(HDR_FORMAT, [bw, bh]);
+    this.bloomBView = this.bloomB.createView();
   }
 
   /** Color attachment for the scene pass: renders into the HDR target. */
@@ -79,12 +100,25 @@ export class PostProcessing {
   }
 
   /** Run the post chain from the HDR target into the swap-chain `output` view. */
-  run(encoder: GPUCommandEncoder, output: GPUTextureView, fxaa: boolean): void {
-    if (fxaa) {
-      this.pass(encoder, 'fs_tonemap', LDR_FORMAT, this.hdrView, this.ldrView);
+  run(encoder: GPUCommandEncoder, output: GPUTextureView, opts: PostOptions): void {
+    // params = (1/width, 1/height, bloomThreshold, bloomIntensity)
+    this.device.queue.writeBuffer(this.paramsBuffer, 0,
+      new Float32Array([1 / this.width, 1 / this.height, opts.bloomThreshold, opts.bloomIntensity]));
+
+    let bloomView = this.dummyView;
+    if (opts.bloom) {
+      this.pass(encoder, 'fs_threshold', HDR_FORMAT, this.hdrView, this.bloomAView);
+      this.pass(encoder, 'fs_blurH', HDR_FORMAT, this.bloomAView, this.bloomBView);
+      this.pass(encoder, 'fs_blurV', HDR_FORMAT, this.bloomBView, this.bloomAView);
+      bloomView = this.bloomAView;
+    }
+
+    const tonemapEntry = opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
+    if (opts.fxaa) {
+      this.pass(encoder, tonemapEntry, LDR_FORMAT, this.hdrView, this.ldrView, bloomView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);
     } else {
-      this.pass(encoder, 'fs_tonemap', this.swapFormat, this.hdrView, output);
+      this.pass(encoder, tonemapEntry, this.swapFormat, this.hdrView, output, bloomView);
     }
   }
 
@@ -94,20 +128,21 @@ export class PostProcessing {
     targetFormat: GPUTextureFormat,
     input: GPUTextureView,
     output: GPUTextureView,
+    bloomInput: GPUTextureView = this.dummyView,
   ): void {
-    const pipeline = this.pipeline(entry, targetFormat);
     const bindGroup = this.device.createBindGroup({
       layout: this.bindLayout,
       entries: [
         { binding: 0, resource: input },
         { binding: 1, resource: this.sampler },
         { binding: 2, resource: { buffer: this.paramsBuffer } },
+        { binding: 3, resource: bloomInput },
       ],
     });
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: output, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
     });
-    pass.setPipeline(pipeline);
+    pass.setPipeline(this.pipeline(entry, targetFormat));
     pass.setBindGroup(0, bindGroup);
     pass.draw(3);
     pass.end();

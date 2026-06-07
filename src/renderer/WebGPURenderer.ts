@@ -124,6 +124,10 @@ export class WebGPURenderer {
   postProcessing = false;
   /** Apply FXAA in the post pipeline (only when `postProcessing` is on). */
   fxaa = true;
+  /** Apply bloom in the post pipeline (only when `postProcessing` is on). */
+  bloom = false;
+  bloomThreshold = 1.0;
+  bloomIntensity = 0.6;
   private post!: PostProcessing;
   private _lightView = new Matrix4();
   private _lightProj = new Matrix4();
@@ -363,7 +367,14 @@ export class WebGPURenderer {
     pass.end();
 
     // Resolve the HDR target through the post chain into the swap chain.
-    if (this.postProcessing) this.post.run(encoder, swapView, this.fxaa);
+    if (this.postProcessing) {
+      this.post.run(encoder, swapView, {
+        fxaa: this.fxaa,
+        bloom: this.bloom,
+        bloomThreshold: this.bloomThreshold,
+        bloomIntensity: this.bloomIntensity,
+      });
+    }
 
     this.device.queue.submit([encoder.finish()]);
   }

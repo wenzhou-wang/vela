@@ -91,9 +91,10 @@ A post-processing stack and richer materials.
       to an HDR (`rgba16float`) offscreen target (MSAA-resolved), then a chain of fullscreen
       triangle passes resolves to the swap chain. The material/line shaders skip their
       in-shader tonemap when a "linear output" frame flag is set.
-- 🚧 **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader) and
-      ✅ **FXAA** (`renderer.fxaa`). ⬜ bloom (threshold + Kawase blur), SSAO, optional TAA
-      with motion vectors.
+- 🚧 **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader),
+      ✅ **FXAA** (`renderer.fxaa`), and ✅ **bloom** (`renderer.bloom`: bright-pass +
+      half-res separable-Gaussian blur, added before tonemap). ⬜ SSAO, optional TAA with
+      motion vectors.
 - 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):

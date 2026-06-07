@@ -1,19 +1,20 @@
 /**
  * Fullscreen post-processing passes. A single oversized triangle generates the
- * UVs; each fragment entry samples the previous pass's color target.
+ * UVs; each fragment entry samples the previous pass's color target(s).
  *
- * - `fs_tonemap` — ACES filmic + linear→sRGB (moved out of the material shader so
- *   the scene can render to a linear HDR target first).
- * - `fs_fxaa` — cheap edge antialiasing on the tonemapped (sRGB) image.
- * - `fs_copy` — straight blit.
+ * Module bindings (one shared layout; `bloom` is a dummy for passes that ignore it):
+ *   0 src texture · 1 sampler · 2 params uniform · 3 bloom texture
+ *   params.data = (1/width, 1/height, bloomThreshold, bloomIntensity)
  *
- * `params`: x = exposure (applied in tonemap), y = 1/width, z = 1/height.
+ * Entries: tonemap (ACES+sRGB), tonemapBloom (adds blurred bloom then tonemaps),
+ * threshold (bright-pass), blurH/blurV (separable Gaussian), fxaa, copy.
  */
 export const POST_SHADER = /* wgsl */ `
 @group(0) @binding(0) var src : texture_2d<f32>;
 @group(0) @binding(1) var samp : sampler;
 struct Params { data : vec4<f32> };
 @group(0) @binding(2) var<uniform> params : Params;
+@group(0) @binding(3) var bloomTex : texture_2d<f32>;
 
 struct VSOut {
   @builtin(position) clip : vec4<f32>,
@@ -22,7 +23,6 @@ struct VSOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi : u32) -> VSOut {
-  // Fullscreen triangle: clip (-1,-1),(3,-1),(-1,3); uv covers [0,1].
   var out : VSOut;
   let x = f32((vi << 1u) & 2u);
   let y = f32(vi & 2u);
@@ -43,6 +43,10 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   return mix(lo, hi, cutoff);
 }
 
+fn luma(c : vec3<f32>) -> f32 {
+  return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+}
+
 @fragment
 fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
   let hdr = textureSample(src, samp, in.uv).rgb;
@@ -50,18 +54,57 @@ fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
+  let hdr = textureSample(src, samp, in.uv).rgb;
+  let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
+  return vec4<f32>(linearToSRGB(acesFilmic(hdr + bloom)), 1.0);
+}
+
+@fragment
 fn fs_copy(in : VSOut) -> @location(0) vec4<f32> {
   return textureSample(src, samp, in.uv);
 }
 
-fn luma(c : vec3<f32>) -> f32 {
-  return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+// Bright-pass: keep energy above the threshold (soft knee via the excess ratio).
+@fragment
+fn fs_threshold(in : VSOut) -> @location(0) vec4<f32> {
+  let c = textureSample(src, samp, in.uv).rgb;
+  let l = luma(c);
+  let thr = params.data.z;
+  let contrib = max(l - thr, 0.0) / max(l, 1e-4);
+  return vec4<f32>(c * contrib, 1.0);
+}
+
+// 9-tap separable Gaussian (weights 0.227/0.316/0.070 over offsets 0,1.385,3.231).
+const W0 = 0.2270270270;
+const W1 = 0.3162162162;
+const W2 = 0.0702702703;
+const O1 = 1.3846153846;
+const O2 = 3.2307692308;
+
+fn blur(uv : vec2<f32>, dir : vec2<f32>) -> vec3<f32> {
+  var c = textureSample(src, samp, uv).rgb * W0;
+  c = c + textureSample(src, samp, uv + dir * O1).rgb * W1;
+  c = c + textureSample(src, samp, uv - dir * O1).rgb * W1;
+  c = c + textureSample(src, samp, uv + dir * O2).rgb * W2;
+  c = c + textureSample(src, samp, uv - dir * O2).rgb * W2;
+  return c;
+}
+
+@fragment
+fn fs_blurH(in : VSOut) -> @location(0) vec4<f32> {
+  return vec4<f32>(blur(in.uv, vec2<f32>(params.data.x, 0.0)), 1.0);
+}
+
+@fragment
+fn fs_blurV(in : VSOut) -> @location(0) vec4<f32> {
+  return vec4<f32>(blur(in.uv, vec2<f32>(0.0, params.data.y)), 1.0);
 }
 
 // Compact FXAA (Lottes-style) operating on the sRGB image.
 @fragment
 fn fs_fxaa(in : VSOut) -> @location(0) vec4<f32> {
-  let rcp = params.data.yz; // (1/width, 1/height)
+  let rcp = params.data.xy; // (1/width, 1/height)
   let mid = textureSample(src, samp, in.uv);
   let lM = luma(mid.rgb);
   let lNW = luma(textureSample(src, samp, in.uv + vec2<f32>(-rcp.x, -rcp.y)).rgb);
@@ -71,7 +114,7 @@ fn fs_fxaa(in : VSOut) -> @location(0) vec4<f32> {
 
   let lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
   let lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
-  if (lMax - lMin < 0.0625) { return mid; } // no significant edge
+  if (lMax - lMin < 0.0625) { return mid; }
 
   var dir = vec2<f32>(
     -((lNW + lNE) - (lSW + lSE)),
