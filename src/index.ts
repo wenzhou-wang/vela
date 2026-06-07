@@ -10,6 +10,7 @@ export { Object3D } from './core/Object3D';
 export { Scene } from './core/Scene';
 export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
+export { OrthographicCamera } from './core/OrthographicCamera';
 export { Mesh } from './core/Mesh';
 export { SkinnedMesh } from './core/SkinnedMesh';
 export { InstancedMesh } from './core/InstancedMesh';
