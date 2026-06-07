@@ -58,8 +58,10 @@ Push toward "thousands of objects at 120 fps."
 - ⬜ **Per-object uniform consolidation** — replace per-mesh uniform buffers with a
       single large buffer addressed by dynamic offsets (or a storage array indexed by
       `@builtin(instance_index)`), cutting bind-group churn.
-- ⬜ **Instanced rendering** — `InstancedMesh` with a per-instance transform storage
-      buffer; one draw call per geometry/material.
+- ✅ **Instanced rendering** — `InstancedMesh` stores per-instance model matrices in a
+      storage buffer read by an instanced vertex variant (indexed by `instance_index`);
+      the whole batch draws in one `drawIndexed(..., count)` call. The viewer's
+      "Instances ✦" demo renders a 1,600-cube field as a single draw.
 - ✅ **Frustum culling** — `Frustum`/`Plane`/`Sphere` math against world-space bounding
       spheres; off-screen meshes skipped on the CPU each frame. Toggle via
       `renderer.frustumCulling`, per-object opt-out via `object.frustumCulled`, and

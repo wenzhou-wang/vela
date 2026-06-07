@@ -12,6 +12,7 @@ export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
 export { Mesh } from './core/Mesh';
 export { SkinnedMesh } from './core/SkinnedMesh';
+export { InstancedMesh } from './core/InstancedMesh';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';

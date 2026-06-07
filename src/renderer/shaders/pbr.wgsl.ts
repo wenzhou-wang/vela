@@ -30,11 +30,6 @@ struct Light {
   colorDecay : vec4<f32>,
 };
 
-struct Model {
-  model : mat4x4<f32>,
-  normalMat : mat4x4<f32>,
-};
-
 struct MaterialU {
   baseColor : vec4<f32>,
   emissive : vec4<f32>,
@@ -44,8 +39,6 @@ struct MaterialU {
 
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var<storage, read> lights : array<Light>;
-
-@group(1) @binding(0) var<uniform> model : Model;
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -67,16 +60,22 @@ struct VSOut {
   @location(3) worldTangent : vec3<f32>,
   @location(4) tangentSign : f32,
 };
-`;
 
-// Static vertex stage: transform by the per-object model matrix.
-const VERTEX_STATIC = /* wgsl */ `
 struct VSIn {
   @location(0) position : vec3<f32>,
   @location(1) normal : vec3<f32>,
   @location(2) uv : vec2<f32>,
   @location(3) tangent : vec4<f32>,
 };
+`;
+
+// Static vertex stage: transform by the per-object model matrix.
+const VERTEX_STATIC = /* wgsl */ `
+struct Model {
+  model : mat4x4<f32>,
+  normalMat : mat4x4<f32>,
+};
+@group(1) @binding(0) var<uniform> model : Model;
 
 @vertex
 fn vs_main(in : VSIn) -> VSOut {
@@ -87,6 +86,27 @@ fn vs_main(in : VSIn) -> VSOut {
 
   out.worldNormal = normalize((model.normalMat * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
+  out.tangentSign = in.tangent.w;
+  out.uv = in.uv;
+  return out;
+}
+`;
+
+// Instanced vertex stage: per-instance model matrix from a storage array,
+// indexed by instance_index. Normals assume uniform per-instance scale.
+const VERTEX_INSTANCED = /* wgsl */ `
+@group(1) @binding(0) var<storage, read> instances : array<mat4x4<f32>>;
+
+@vertex
+fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
+  var out : VSOut;
+  let model = instances[ii];
+  let worldPos4 = model * vec4<f32>(in.position, 1.0);
+  out.worldPos = worldPos4.xyz;
+  out.clipPosition = frame.proj * frame.view * worldPos4;
+
+  out.worldNormal = normalize((model * vec4<f32>(in.normal, 0.0)).xyz);
+  out.worldTangent = normalize((model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
   return out;
@@ -263,3 +283,4 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 
 export const PBR_SHADER = HEADER + VERTEX_STATIC + FRAGMENT;
 export const PBR_SKINNED_SHADER = HEADER + VERTEX_SKINNED + FRAGMENT;
+export const PBR_INSTANCED_SHADER = HEADER + VERTEX_INSTANCED + FRAGMENT;

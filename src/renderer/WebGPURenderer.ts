@@ -7,6 +7,7 @@ import { AmbientLight } from '../lights/AmbientLight';
 import { DirectionalLight } from '../lights/DirectionalLight';
 import { PointLight } from '../lights/PointLight';
 import { SkinnedMesh } from '../core/SkinnedMesh';
+import { InstancedMesh } from '../core/InstancedMesh';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { Vector3 } from '../math/Vector3';
@@ -18,7 +19,7 @@ import { GeometryBuffers } from './GeometryBuffers';
 import { TextureManager } from './TextureManager';
 import { PipelineCache } from './PipelineCache';
 import { DEPTH_FORMAT } from './constants';
-import { PBR_SHADER, PBR_SKINNED_SHADER } from './shaders/pbr.wgsl';
+import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER } from './shaders/pbr.wgsl';
 
 const MAX_LIGHTS = 32;
 const FRAME_SIZE = 160; // bytes
@@ -35,6 +36,13 @@ interface SkinnedResources {
   boneBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   jointCount: number;
+}
+
+interface InstancedResources {
+  buffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+  count: number;
+  version: number;
 }
 
 interface MaterialResources {
@@ -79,6 +87,7 @@ export class WebGPURenderer {
   private meshResources = new WeakMap<Mesh, MeshResources>();
   private materialResources = new WeakMap<Material, MaterialResources>();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
+  private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
 
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
@@ -128,7 +137,10 @@ export class WebGPURenderer {
 
     this.geometries = new GeometryBuffers(this.device);
     this.textures = new TextureManager(this.device);
-    this.pipelines = new PipelineCache(this.device, this.format, this.sampleCount, PBR_SHADER, PBR_SKINNED_SHADER);
+    this.pipelines = new PipelineCache(
+      this.device, this.format, this.sampleCount,
+      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER,
+    );
 
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
@@ -367,10 +379,18 @@ export class WebGPURenderer {
     const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (!(material instanceof StandardMaterial)) return;
 
-    const skinned = mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
+    const instanced = mesh instanceof InstancedMesh;
+    const skinned = !instanced && mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
+    const variant = instanced ? 'instanced' : skinned ? 'skinned' : 'static';
 
-    pass.setPipeline(this.pipelines.get(material, skinned));
-    pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    pass.setPipeline(this.pipelines.get(material, variant));
+
+    // Group 1: model uniform (static/skinned) or instance storage (instanced)
+    if (instanced) {
+      pass.setBindGroup(1, this.getInstancedResources(mesh as InstancedMesh).bindGroup);
+    } else {
+      pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    }
     pass.setBindGroup(2, this.getMaterialResources(material).bindGroup);
 
     pass.setVertexBuffer(0, geometry.position);
@@ -384,12 +404,34 @@ export class WebGPURenderer {
       pass.setVertexBuffer(5, geometry.weights!);
     }
 
+    const instanceCount = instanced ? (mesh as InstancedMesh).count : 1;
     if (geometry.index) {
       pass.setIndexBuffer(geometry.index, geometry.indexFormat);
-      pass.drawIndexed(geometry.drawCount);
+      pass.drawIndexed(geometry.drawCount, instanceCount);
     } else {
-      pass.draw(geometry.drawCount);
+      pass.draw(geometry.drawCount, instanceCount);
     }
+  }
+
+  private getInstancedResources(mesh: InstancedMesh): InstancedResources {
+    let res = this.instancedResources.get(mesh);
+    if (!res || res.count !== mesh.count) {
+      const buffer = this.device.createBuffer({
+        size: Math.max(mesh.count, 1) * 64,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.instanceLayout,
+        entries: [{ binding: 0, resource: { buffer } }],
+      });
+      res = { buffer, bindGroup, count: mesh.count, version: -1 };
+      this.instancedResources.set(mesh, res);
+    }
+    if (res.version !== mesh.version) {
+      this.device.queue.writeBuffer(res.buffer, 0, mesh.instanceMatrix);
+      res.version = mesh.version;
+    }
+    return res;
   }
 
   private getSkinnedResources(mesh: SkinnedMesh): SkinnedResources {

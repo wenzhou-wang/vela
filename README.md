@@ -59,9 +59,11 @@ Forward renderer, one pass:
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
+- **Instanced rendering** — `InstancedMesh` draws a whole batch in one call via a
+  per-instance matrix storage buffer.
 - A single **"uber" shader**: absent material maps bind white/flat 1×1 defaults, so
-  pipeline variants only depend on render state (cull / blend / depth-write) plus a
-  static-vs-skinned bit — not on which textures a material happens to have.
+  pipeline variants only depend on render state (cull / blend / depth-write) plus the
+  vertex path (static / skinned / instanced) — not on which textures a material uses.
 
 ### Bind group layout
 

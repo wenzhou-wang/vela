@@ -9,6 +9,8 @@ import {
   PointLight,
   Object3D,
   Mesh,
+  InstancedMesh,
+  BoxGeometry,
   SphereGeometry,
   PlaneGeometry,
   StandardMaterial,
@@ -16,6 +18,8 @@ import {
   Color,
   Box3,
   Vector3,
+  Matrix4,
+  Quaternion,
   AnimationMixer,
   type GLTFResult,
 } from 'vela';
@@ -276,6 +280,45 @@ fileInput.addEventListener('change', () => {
 
 document.querySelectorAll<HTMLButtonElement>('.sample').forEach((btn) => {
   btn.addEventListener('click', () => loadFromURL(btn.dataset.url!));
+});
+
+// Instancing demo: a rippling field of cubes drawn in a single draw call.
+document.getElementById('instDemo')!.addEventListener('click', () => {
+  setupAnimations([]);
+  const side = 40;
+  const n = side * side;
+  const group = new Object3D();
+  const inst = new InstancedMesh(
+    new BoxGeometry(0.55, 0.55, 0.55),
+    new StandardMaterial({ color: 0x88aaff, metalness: 0.7, roughness: 0.3 }),
+    n,
+  );
+  const m = new Matrix4();
+  const pos = new Vector3();
+  const q = new Quaternion();
+  const scl = new Vector3(1, 1, 1);
+  const axis = new Vector3(0, 1, 0);
+  let i = 0;
+  for (let x = 0; x < side; x++) {
+    for (let z = 0; z < side; z++) {
+      const fx = x - (side - 1) / 2;
+      const fz = z - (side - 1) / 2;
+      const h = Math.sin(fx * 0.45) * Math.cos(fz * 0.45) * 2.5;
+      pos.set(fx * 1.1, h, fz * 1.1);
+      q.setFromAxisAngle(axis, (x + z) * 0.18);
+      m.compose(pos, q, scl);
+      inst.setMatrixAt(i++, m);
+    }
+  }
+  inst.needsUpdate();
+  group.add(inst);
+
+  const half = (side * 1.1) / 2 + 1;
+  const box = new Box3();
+  box.expandByPoint(new Vector3(-half, -3, -half));
+  box.expandByPoint(new Vector3(half, 3, half));
+  setModel(group, box);
+  status(`Instanced · ${n.toLocaleString()} cubes · 1 draw call`);
 });
 
 // drag & drop

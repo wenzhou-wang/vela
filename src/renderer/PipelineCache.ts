@@ -6,15 +6,16 @@ import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from
  * Because the shader is a single uber-shader, pipelines only vary by render
  * state (cull mode, blending, depth write) and whether the mesh is skinned.
  */
+export type PipelineVariant = 'static' | 'skinned' | 'instanced';
+
 export class PipelineCache {
   readonly frameLayout: GPUBindGroupLayout;
   readonly modelLayout: GPUBindGroupLayout;
   readonly materialLayout: GPUBindGroupLayout;
   readonly bonesLayout: GPUBindGroupLayout;
-  private staticPipelineLayout: GPUPipelineLayout;
-  private skinnedPipelineLayout: GPUPipelineLayout;
-  private staticModule: GPUShaderModule;
-  private skinnedModule: GPUShaderModule;
+  readonly instanceLayout: GPUBindGroupLayout;
+  private layouts: Record<PipelineVariant, GPUPipelineLayout>;
+  private modules: Record<PipelineVariant, GPUShaderModule>;
   private cache = new Map<string, GPURenderPipeline>();
 
   constructor(
@@ -23,9 +24,13 @@ export class PipelineCache {
     private sampleCount: number,
     staticCode: string,
     skinnedCode: string,
+    instancedCode: string,
   ) {
-    this.staticModule = device.createShaderModule({ code: staticCode, label: 'pbr' });
-    this.skinnedModule = device.createShaderModule({ code: skinnedCode, label: 'pbr-skinned' });
+    this.modules = {
+      static: device.createShaderModule({ code: staticCode, label: 'pbr' }),
+      skinned: device.createShaderModule({ code: skinnedCode, label: 'pbr-skinned' }),
+      instanced: device.createShaderModule({ code: instancedCode, label: 'pbr-instanced' }),
+    };
 
     this.frameLayout = device.createBindGroupLayout({
       label: 'frame',
@@ -67,23 +72,36 @@ export class PipelineCache {
       ],
     });
 
-    this.staticPipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout],
+    // Per-instance model matrices, replacing the model uniform at group 1.
+    this.instanceLayout = device.createBindGroupLayout({
+      label: 'instances',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
     });
-    this.skinnedPipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.bonesLayout],
-    });
+
+    this.layouts = {
+      static: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout],
+      }),
+      skinned: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.bonesLayout],
+      }),
+      instanced: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.instanceLayout, this.materialLayout],
+      }),
+    };
   }
 
-  private keyFor(material: StandardMaterial, skinned: boolean): string {
+  private keyFor(material: StandardMaterial, variant: PipelineVariant): string {
     const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
-    return `${skinned ? 'skin' : 'static'}|${cull}|${blend}|${depthWrite}`;
+    return `${variant}|${cull}|${blend}|${depthWrite}`;
   }
 
-  get(material: StandardMaterial, skinned = false): GPURenderPipeline {
-    const key = this.keyFor(material, skinned);
+  get(material: StandardMaterial, variant: PipelineVariant = 'static'): GPURenderPipeline {
+    const key = this.keyFor(material, variant);
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -97,16 +115,17 @@ export class PipelineCache {
       };
     }
 
+    const module = this.modules[variant];
     pipeline = this.device.createRenderPipeline({
       label: `pbr-${key}`,
-      layout: skinned ? this.skinnedPipelineLayout : this.staticPipelineLayout,
+      layout: this.layouts[variant],
       vertex: {
-        module: skinned ? this.skinnedModule : this.staticModule,
+        module,
         entryPoint: 'vs_main',
-        buffers: skinned ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
+        buffers: variant === 'skinned' ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
       },
       fragment: {
-        module: skinned ? this.skinnedModule : this.staticModule,
+        module,
         entryPoint: 'fs_main',
         targets: [target],
       },
