@@ -10,6 +10,9 @@ import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
+import { Matrix4 } from '../math/Matrix4';
+import { Frustum } from '../math/Frustum';
+import { Sphere } from '../math/Sphere';
 import { GeometryBuffers } from './GeometryBuffers';
 import { TextureManager } from './TextureManager';
 import { PipelineCache } from './PipelineCache';
@@ -72,6 +75,14 @@ export class WebGPURenderer {
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
   private _meshPos = new Vector3();
+  private _viewProjection = new Matrix4();
+  private _frustum = new Frustum();
+  private _worldSphere = new Sphere();
+
+  /** Skip meshes whose bounding sphere is outside the camera frustum. */
+  frustumCulling = true;
+  /** Number of meshes culled in the last frame (diagnostics). */
+  culledCount = 0;
 
   // scratch render lists
   private opaque: Mesh[] = [];
@@ -178,6 +189,10 @@ export class WebGPURenderer {
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
 
+    // Build the view frustum for culling (projection * view).
+    this._viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this._frustum.setFromProjectionMatrix(this._viewProjection);
+
     this.collect(scene);
     this.uploadFrame(scene, camera);
 
@@ -240,17 +255,32 @@ export class WebGPURenderer {
     this.opaque.length = 0;
     this.transparent.length = 0;
     this.lights.length = 0;
+    this.culledCount = 0;
 
     scene.traverseVisible((object: Object3D) => {
       if (object instanceof Light) {
         this.lights.push(object);
       } else if (object instanceof Mesh) {
+        if (this.frustumCulling && object.frustumCulled && this.isCulled(object)) {
+          this.culledCount++;
+          return;
+        }
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         const transparent = materials.some((m) => m.transparent);
         if (transparent) this.transparent.push(object);
         else this.opaque.push(object);
       }
     });
+  }
+
+  /** True if the mesh's world-space bounding sphere lies outside the frustum. */
+  private isCulled(mesh: Mesh): boolean {
+    const geometry = mesh.geometry;
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const sphere = geometry.boundingSphere;
+    if (!sphere || sphere.isEmpty()) return false; // can't bound → never cull
+    this._worldSphere.copy(sphere).applyMatrix4(mesh.matrixWorld);
+    return !this._frustum.intersectsSphere(this._worldSphere);
   }
 
   private uploadFrame(scene: Scene, camera: Camera): void {

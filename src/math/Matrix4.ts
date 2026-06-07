@@ -270,6 +270,15 @@ export class Matrix4 {
     return this;
   }
 
+  /** Largest scale factor among the three axis (column) vectors. */
+  getMaxScaleOnAxis(): number {
+    const e = this.elements;
+    const sx = e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+    const sy = e[4] * e[4] + e[5] * e[5] + e[6] * e[6];
+    const sz = e[8] * e[8] + e[9] * e[9] + e[10] * e[10];
+    return Math.sqrt(Math.max(sx, sy, sz));
+  }
+
   extractRotation(m: Matrix4): this {
     const te = this.elements, me = m.elements;
     const sx = 1 / _v1.set(me[0], me[1], me[2]).length();

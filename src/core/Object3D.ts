@@ -31,6 +31,8 @@ export class Object3D {
   matrixAutoUpdate = true;
   matrixWorldNeedsUpdate = false;
   visible = true;
+  /** When true, the renderer may skip this object if its bounds are off-screen. */
+  frustumCulled = true;
 
   constructor() {
     // keep rotation (Euler) and quaternion in sync

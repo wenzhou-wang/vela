@@ -57,8 +57,10 @@ Push toward "thousands of objects at 120 fps."
       `@builtin(instance_index)`), cutting bind-group churn.
 - ⬜ **Instanced rendering** — `InstancedMesh` with a per-instance transform storage
       buffer; one draw call per geometry/material.
-- ⬜ **Frustum culling** — `Frustum`/`Plane` math against world-space bounding spheres;
-      skip off-screen meshes on the CPU.
+- ✅ **Frustum culling** — `Frustum`/`Plane`/`Sphere` math against world-space bounding
+      spheres; off-screen meshes skipped on the CPU each frame. Toggle via
+      `renderer.frustumCulling`, per-object opt-out via `object.frustumCulled`, and
+      `renderer.culledCount` reports the last frame's skipped meshes.
 - ⬜ **GPU-driven culling** — compute-shader frustum/occlusion cull writing an indirect
       draw buffer (`drawIndexedIndirect`).
 - ⬜ **Render bundles** — record static opaque draws into `GPURenderBundle`s to amortize

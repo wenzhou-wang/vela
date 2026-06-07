@@ -1,5 +1,6 @@
 import { BufferAttribute, type TypedArray } from './BufferAttribute';
 import { Box3 } from '../math/Box3';
+import { Sphere } from '../math/Sphere';
 import { Vector3 } from '../math/Vector3';
 import { generateUUID } from '../math/MathUtils';
 
@@ -15,7 +16,7 @@ export class BufferGeometry {
   index: BufferAttribute | null = null;
 
   boundingBox: Box3 | null = null;
-  boundingSphere: { center: Vector3; radius: number } | null = null;
+  boundingSphere: Sphere | null = null;
 
   /** Incremented when buffers are structurally replaced (forces GPU re-create). */
   version = 0;
@@ -66,7 +67,7 @@ export class BufferGeometry {
       v.set(arr[i], arr[i + 1], arr[i + 2]);
       maxSq = Math.max(maxSq, center.distanceToSquared(v));
     }
-    this.boundingSphere = { center, radius: Math.sqrt(maxSq) };
+    this.boundingSphere = new Sphere(center, Math.sqrt(maxSq));
   }
 
   /** Generate smooth vertex normals from positions (indexed or non-indexed). */

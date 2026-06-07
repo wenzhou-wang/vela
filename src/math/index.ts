@@ -9,3 +9,6 @@ export * from './Euler';
 export * from './Color';
 export * from './Spherical';
 export * from './Box3';
+export * from './Plane';
+export * from './Sphere';
+export * from './Frustum';

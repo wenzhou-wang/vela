@@ -287,7 +287,8 @@ function animate(): void {
     frames = 0;
     lastFpsTime = now;
     const dpr = (window.devicePixelRatio || 1).toFixed(1);
-    statsEl.innerHTML = `<b>${fps}</b> fps · ${renderer.drawingBufferWidth}×${renderer.drawingBufferHeight} · dpr ${dpr}${statusMsg ? ` · ${statusMsg}` : ''}`;
+    const culled = renderer.culledCount > 0 ? ` · ${renderer.culledCount} culled` : '';
+    statsEl.innerHTML = `<b>${fps}</b> fps · ${renderer.drawingBufferWidth}×${renderer.drawingBufferHeight} · dpr ${dpr}${culled}${statusMsg ? ` · ${statusMsg}` : ''}`;
   }
 }
 animate();
