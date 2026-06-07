@@ -118,9 +118,10 @@ Faster loads, broader inputs, and ergonomics.
       reverts to the coarse sphere test. Meshes at/above `bvhThreshold` triangles use a
       cached median-split **CPU `BVH`** that prunes subtrees the ray misses. ⬜ A GPU
       id-buffer pass for pixel-exact picking remains optional.
-- 🚧 **Helpers & debug** — ✅ `GridHelper`, `AxesHelper`, `Box3Helper`, and light gizmos
+- ✅ **Helpers & debug** — `GridHelper`, `AxesHelper`, `Box3Helper`, and light gizmos
       (`DirectionalLightHelper`, `PointLightHelper`) via an unlit `LineSegments` +
-      `LineBasicMaterial` path (line-list pipeline, per-vertex colors); ⬜ a stats/inspector overlay.
+      `LineBasicMaterial` path (line-list pipeline, per-vertex colors); plus a `Stats`
+      FPS/ms overlay with a rolling graph (DOM-decoupled timing core).
 
 ---
 

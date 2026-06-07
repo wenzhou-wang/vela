@@ -41,6 +41,7 @@ export { AxesHelper } from './helpers/AxesHelper';
 export { Box3Helper } from './helpers/Box3Helper';
 export { DirectionalLightHelper } from './helpers/DirectionalLightHelper';
 export { PointLightHelper } from './helpers/PointLightHelper';
+export { Stats } from './helpers/Stats';
 
 // textures
 export { Texture } from './textures/Texture';
