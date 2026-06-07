@@ -61,6 +61,8 @@ Forward renderer, one pass:
   diffuse + specular indirect light (analytic env-BRDF), replacing flat ambient when set.
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
+- **Post-processing** (opt-in) — render to an HDR offscreen target, then fullscreen passes
+  (ACES tonemap, optional FXAA) resolve to the swap chain.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
 - **Directional shadow maps** — opt-in depth pass + 3×3 PCF; light frustum auto-fits the scene.
 - **Instanced rendering** — `InstancedMesh` draws a whole batch in one call via a
@@ -132,6 +134,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions.
+- **Post-processing** — the fullscreen tonemap/FXAA/copy shaders parse with the expected
+  bindings, and the line shader's frame struct matches the 256-byte layout.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 240 / model 128 /
   material 112 / light stride 48) confirmed to match the TypeScript buffer packing.

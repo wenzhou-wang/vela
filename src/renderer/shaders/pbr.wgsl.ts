@@ -442,8 +442,11 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
 
   color = color * frame.ambient.w;
-  color = acesFilmic(color);
-  color = linearToSRGB(color);
+  // envParams.w flags "linear output": the post pipeline tonemaps in a later pass.
+  if (frame.envParams.w < 0.5) {
+    color = acesFilmic(color);
+    color = linearToSRGB(color);
+  }
 
   return vec4<f32>(color, alpha);
 }

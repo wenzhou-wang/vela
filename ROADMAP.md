@@ -87,10 +87,13 @@ Push toward "thousands of objects at 120 fps."
 
 A post-processing stack and richer materials.
 
-- ⬜ **Render graph / post pipeline** — render scene to an HDR (`rgba16float`) offscreen
-      target, then a chain of fullscreen passes resolving to the swap chain.
-- ⬜ **Post effects** — bloom (threshold + Kawase blur), SSAO, tone-mapping pass (move
-      ACES out of the material shader), FXAA, optional TAA with motion vectors.
+- ✅ **Render graph / post pipeline** — opt-in `renderer.postProcessing`: the scene renders
+      to an HDR (`rgba16float`) offscreen target (MSAA-resolved), then a chain of fullscreen
+      triangle passes resolves to the swap chain. The material/line shaders skip their
+      in-shader tonemap when a "linear output" frame flag is set.
+- 🚧 **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader) and
+      ✅ **FXAA** (`renderer.fxaa`). ⬜ bloom (threshold + Kawase blur), SSAO, optional TAA
+      with motion vectors.
 - 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):

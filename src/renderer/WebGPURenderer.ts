@@ -24,6 +24,7 @@ import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER 
 import { LINE_SHADER } from './shaders/line.wgsl';
 import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
+import { PostProcessing } from './PostProcessing';
 
 const MAX_LIGHTS = 32;
 const UNIT_Y = new Vector3(0, 1, 0);
@@ -117,6 +118,13 @@ export class WebGPURenderer {
   private envIntensity = 1;
   private envMaxMip = 0;
   private envKey = '';
+
+  // Post-processing (opt-in): render to an HDR target, then tonemap (+ FXAA).
+  /** Route rendering through the HDR post pipeline (tonemap moves to a final pass). */
+  postProcessing = false;
+  /** Apply FXAA in the post pipeline (only when `postProcessing` is on). */
+  fxaa = true;
+  private post!: PostProcessing;
   private _lightView = new Matrix4();
   private _lightProj = new Matrix4();
   private _lightViewProj = new Matrix4();
@@ -189,6 +197,7 @@ export class WebGPURenderer {
     this.createShadowResources();
     this.envView = this.textures.defaultWhiteView;
     this.envSampler = this.textures.defaultSampler;
+    this.post = new PostProcessing(this.device, this.format, this.sampleCount);
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
   }
@@ -318,22 +327,23 @@ export class WebGPURenderer {
     if (this.shadowCasterIndex >= 0) this.renderShadowPass(encoder);
 
     const swapView = this.context.getCurrentTexture().createView();
+    const clear = this.clearColor(scene);
 
-    const colorAttachment: GPURenderPassColorAttachment =
-      this.sampleCount > 1
-        ? {
-            view: this.msaaTexture!.createView(),
-            resolveTarget: swapView,
-            loadOp: 'clear',
-            storeOp: 'store',
-            clearValue: this.clearColor(scene),
-          }
-        : {
-            view: swapView,
-            loadOp: 'clear',
-            storeOp: 'store',
-            clearValue: this.clearColor(scene),
-          };
+    let colorAttachment: GPURenderPassColorAttachment;
+    if (this.postProcessing) {
+      this.post.ensureSize(this.canvas.width, this.canvas.height);
+      colorAttachment = this.post.sceneColorAttachment(clear);
+    } else if (this.sampleCount > 1) {
+      colorAttachment = {
+        view: this.msaaTexture!.createView(),
+        resolveTarget: swapView,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: clear,
+      };
+    } else {
+      colorAttachment = { view: swapView, loadOp: 'clear', storeOp: 'store', clearValue: clear };
+    }
 
     const pass = encoder.beginRenderPass({
       colorAttachments: [colorAttachment],
@@ -351,6 +361,10 @@ export class WebGPURenderer {
     for (const mesh of this.transparent) this.drawMesh(pass, mesh);
 
     pass.end();
+
+    // Resolve the HDR target through the post chain into the swap chain.
+    if (this.postProcessing) this.post.run(encoder, swapView, this.fxaa);
+
     this.device.queue.submit([encoder.finish()]);
   }
 
@@ -606,11 +620,11 @@ export class WebGPURenderer {
       f[56] = 0;
     }
 
-    // envParams (60..63)
+    // envParams (60..63); w = linear output for the post pipeline.
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    f[63] = 0;
+    f[63] = this.postProcessing ? 1 : 0;
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

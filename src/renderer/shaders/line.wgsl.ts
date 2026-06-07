@@ -13,6 +13,9 @@ struct Frame {
   proj : mat4x4<f32>,
   cameraPos : vec4<f32>,
   ambient : vec4<f32>,
+  lightViewProj : mat4x4<f32>,
+  shadowParams : vec4<f32>,
+  envParams : vec4<f32>, // w = linear output (post pipeline tonemaps later)
 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 
@@ -60,6 +63,9 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
+  if (frame.envParams.w >= 0.5) {
+    return vec4<f32>(in.color.rgb, in.color.a); // linear output for the post pipeline
+  }
   return vec4<f32>(linearToSRGB(in.color.rgb), in.color.a);
 }
 `;
