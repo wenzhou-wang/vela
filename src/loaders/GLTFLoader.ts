@@ -505,6 +505,16 @@ export class GLTFLoader {
       material.clearcoatRoughness = clearcoat.clearcoatRoughnessFactor ?? 0;
     }
 
+    const iorExt = def.extensions?.KHR_materials_ior;
+    if (iorExt?.ior !== undefined) material.ior = iorExt.ior;
+
+    const specularExt = def.extensions?.KHR_materials_specular;
+    if (specularExt) {
+      if (specularExt.specularFactor !== undefined) material.specularIntensity = specularExt.specularFactor;
+      const scf = specularExt.specularColorFactor;
+      if (scf) material.specularColor.setRGB(scf[0], scf[1], scf[2]); // already linear
+    }
+
     if (def.doubleSided) material.side = 'double';
     if (def.alphaMode === 'BLEND') {
       material.transparent = true;

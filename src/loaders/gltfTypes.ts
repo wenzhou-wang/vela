@@ -88,6 +88,8 @@ export interface GLTFMaterial {
   extensions?: {
     KHR_materials_emissive_strength?: { emissiveStrength: number };
     KHR_materials_clearcoat?: { clearcoatFactor?: number; clearcoatRoughnessFactor?: number };
+    KHR_materials_ior?: { ior?: number };
+    KHR_materials_specular?: { specularFactor?: number; specularColorFactor?: [number, number, number] };
   };
 }
 

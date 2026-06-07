@@ -23,6 +23,12 @@ export interface StandardMaterialParams {
   clearcoat?: number;
   /** Clear-coat layer roughness [0,1]. */
   clearcoatRoughness?: number;
+  /** Index of refraction (KHR_materials_ior); default 1.5. */
+  ior?: number;
+  /** Dielectric specular strength [0,1] (KHR_materials_specular). */
+  specularIntensity?: number;
+  /** Dielectric specular tint (KHR_materials_specular). */
+  specularColor?: Color | number;
 }
 
 /**
@@ -43,6 +49,11 @@ export class StandardMaterial extends Material {
   /** Clear-coat layer (KHR_materials_clearcoat): a thin dielectric specular coat. */
   clearcoat = 0.0;
   clearcoatRoughness = 0.0;
+  /** Index of refraction (KHR_materials_ior); 1.5 → the default 0.04 dielectric F0. */
+  ior = 1.5;
+  /** Dielectric specular strength and tint (KHR_materials_specular). */
+  specularIntensity = 1.0;
+  specularColor = new Color(1, 1, 1);
 
   map: Texture | null = null;
   normalMap: Texture | null = null;
@@ -71,6 +82,9 @@ export class StandardMaterial extends Material {
     if (params.alphaTest !== undefined) this.alphaTest = params.alphaTest;
     if (params.clearcoat !== undefined) this.clearcoat = params.clearcoat;
     if (params.clearcoatRoughness !== undefined) this.clearcoatRoughness = params.clearcoatRoughness;
+    if (params.ior !== undefined) this.ior = params.ior;
+    if (params.specularIntensity !== undefined) this.specularIntensity = params.specularIntensity;
+    if (params.specularColor !== undefined) this.setColor(this.specularColor, params.specularColor);
   }
 
   private setColor(target: Color, value: Color | number): void {

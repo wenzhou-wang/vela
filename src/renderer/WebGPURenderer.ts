@@ -26,7 +26,7 @@ import { LINE_SHADER } from './shaders/line.wgsl';
 const MAX_LIGHTS = 32;
 const FRAME_SIZE = 160; // bytes
 const MODEL_SIZE = 128;
-const MATERIAL_SIZE = 64;
+const MATERIAL_SIZE = 96;
 const LIGHT_STRIDE = 48; // bytes per light
 
 interface MeshResources {
@@ -669,6 +669,11 @@ export class WebGPURenderer {
     data[13] = flags;
     data[14] = material.clearcoat; // misc.z
     data[15] = material.clearcoatRoughness; // misc.w
+    data[16] = material.specularColor.r; // specular.rgb = specular color factor
+    data[17] = material.specularColor.g;
+    data[18] = material.specularColor.b;
+    data[19] = material.specularIntensity; // specular.w = specular factor
+    data[20] = material.ior; // extra.x
     this.device.queue.writeBuffer(res.uniformBuffer, 0, data);
     return res;
   }

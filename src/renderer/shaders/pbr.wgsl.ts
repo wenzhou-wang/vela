@@ -35,6 +35,8 @@ struct MaterialU {
   emissive : vec4<f32>,
   params : vec4<f32>,
   misc : vec4<f32>,
+  specular : vec4<f32>,  // rgb = specular color factor, w = specular factor
+  extra : vec4<f32>,     // x = ior
 };
 
 @group(0) @binding(0) var<uniform> frame : Frame;
@@ -278,7 +280,12 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   let V = normalize(frame.cameraPos.xyz - in.worldPos);
   let NoV = max(dot(N, V), 1e-4);
 
-  let f0 = mix(vec3<f32>(0.04), baseColor, metalness);
+  // Dielectric F0 from IOR (KHR_materials_ior), tinted/scaled by specular
+  // (KHR_materials_specular). Defaults (ior 1.5, white, factor 1) give 0.04.
+  let ior = material.extra.x;
+  let iorF0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
+  let dielectricF0 = min(vec3<f32>(iorF0) * material.specular.rgb, vec3<f32>(1.0)) * material.specular.w;
+  let f0 = mix(dielectricF0, baseColor, metalness);
   let diffuseColor = baseColor * (1.0 - metalness);
 
   var color = vec3<f32>(0.0);
