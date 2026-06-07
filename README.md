@@ -79,6 +79,8 @@ Forward renderer, one pass:
   emissive textures + factors
 - Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
+- **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
+  interpolation, played via `AnimationMixer`
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 
 ## Verification

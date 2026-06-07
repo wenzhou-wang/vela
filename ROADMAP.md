@@ -31,12 +31,14 @@ The minimum viable engine: scene graph, PBR forward renderer, glTF viewer.
 
 Make loaded models move and sit in believable lighting.
 
-- ⬜ **Skeletal animation & skinning**
-  - Parse glTF `animations` (samplers/channels) and `skins` (inverse bind matrices).
-  - `AnimationClip` / `AnimationMixer` with linear + cubic-spline interpolation;
-    quaternion tracks use slerp.
-  - GPU skinning: upload joint matrices to a storage buffer, add a skinning vertex
-    stage variant (JOINTS_0/WEIGHTS_0 attributes) — pipeline key gains a `skinned` bit.
+- 🚧 **Skeletal animation & skinning**
+  - ✅ Keyframe animation — `KeyframeTrack` / `AnimationClip` / `AnimationMixer` with
+    STEP / LINEAR / CUBICSPLINE interpolation; quaternion tracks use slerp. glTF
+    `animations` (translation/rotation/scale channels) are parsed into clips; the viewer
+    plays them with an animation selector.
+  - ⬜ GPU skinning: parse `skins` (inverse bind matrices), add a `SkinnedMesh`, upload
+    joint matrices to a storage buffer, and add a skinning vertex variant
+    (JOINTS_0/WEIGHTS_0 attributes) — pipeline key gains a `skinned` bit.
 - ⬜ **Morph targets** — POSITION/NORMAL deltas as storage buffers, weights in the
       model uniform; resolve in the vertex shader.
 - ⬜ **Shadow maps** — directional/spot depth pass into a depth atlas; PCF (3×3) in the

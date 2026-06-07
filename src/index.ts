@@ -46,4 +46,10 @@ export { OrbitControls } from './controls/OrbitControls';
 export { GLTFLoader } from './loaders/GLTFLoader';
 export type { GLTFResult } from './loaders/GLTFLoader';
 
+// animation
+export { AnimationClip } from './animation/AnimationClip';
+export { AnimationMixer } from './animation/AnimationMixer';
+export { KeyframeTrack } from './animation/KeyframeTrack';
+export type { InterpolationMode, TrackPath } from './animation/KeyframeTrack';
+
 export const VERSION = '0.1.0';

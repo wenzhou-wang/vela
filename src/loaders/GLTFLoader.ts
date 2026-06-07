@@ -7,6 +7,8 @@ import { Texture } from '../textures/Texture';
 import { Box3 } from '../math/Box3';
 import { Vector3 } from '../math/Vector3';
 import { computeTangents } from './computeTangents';
+import { AnimationClip } from '../animation/AnimationClip';
+import { KeyframeTrack, type TrackPath, type InterpolationMode } from '../animation/KeyframeTrack';
 import {
   type GLTFRoot,
   type GLTFMaterial,
@@ -21,6 +23,8 @@ export interface GLTFResult {
   /** All top-level scenes' roots; `scene` is the default. */
   scenes: Object3D[];
   materials: StandardMaterial[];
+  /** Keyframe animation clips targeting the loaded nodes. */
+  animations: AnimationClip[];
   /** World-space bounding box of the loaded content. */
   boundingBox: Box3;
 }
@@ -32,8 +36,8 @@ const CHUNK_BIN = 0x004e4942; // "BIN\0"
 /**
  * Loads glTF 2.0 (.gltf + .bin + images) and binary glTF (.glb).
  * Supports node hierarchy, meshes/primitives, PBR metallic-roughness materials,
- * textures/samplers, and KHR_materials_emissive_strength. (No animation/skinning
- * yet — see roadmap.)
+ * textures/samplers, keyframe animation (translation/rotation/scale), and
+ * KHR_materials_emissive_strength. (Skinning/morph targets — see roadmap.)
  */
 export class GLTFLoader {
   /** Load from a URL (resolves relative buffers/images against it). */
@@ -117,9 +121,31 @@ export class GLTFLoader {
     const defaultScene = sceneRoots[json.scene ?? 0] ?? sceneRoots[0] ?? new Object3D();
     defaultScene.updateMatrixWorld(true);
 
+    const animations = this.buildAnimations(json, nodes, ctx);
     const boundingBox = this.computeBounds(defaultScene);
 
-    return { scene: defaultScene, scenes: sceneRoots, materials, boundingBox };
+    return { scene: defaultScene, scenes: sceneRoots, materials, animations, boundingBox };
+  }
+
+  private buildAnimations(json: GLTFRoot, nodes: Object3D[], ctx: BuildContext): AnimationClip[] {
+    const clips: AnimationClip[] = [];
+    json.animations?.forEach((anim, ai) => {
+      const tracks: KeyframeTrack[] = [];
+      for (const channel of anim.channels) {
+        const path = channel.target.path;
+        if (path === 'weights') continue; // morph targets: see roadmap
+        const nodeIndex = channel.target.node;
+        if (nodeIndex === undefined) continue;
+        const target = nodes[nodeIndex];
+        const sampler = anim.samplers[channel.sampler];
+        const times = this.readAccessorFloat(ctx, sampler.input);
+        const values = this.readAccessorFloat(ctx, sampler.output);
+        const interpolation = (sampler.interpolation ?? 'LINEAR') as InterpolationMode;
+        tracks.push(new KeyframeTrack(target, path as TrackPath, times, values, interpolation));
+      }
+      if (tracks.length) clips.push(new AnimationClip(anim.name ?? `clip_${ai}`, tracks));
+    });
+    return clips;
   }
 
   private buildNode(node: GLTFNode, ctx: BuildContext): Object3D {

@@ -13,6 +13,24 @@ export interface GLTFRoot {
   textures?: GLTFTextureDef[];
   images?: GLTFImage[];
   samplers?: GLTFSampler[];
+  animations?: GLTFAnimation[];
+}
+
+export interface GLTFAnimation {
+  name?: string;
+  channels: GLTFAnimationChannel[];
+  samplers: GLTFAnimationSampler[];
+}
+
+export interface GLTFAnimationChannel {
+  sampler: number;
+  target: { node?: number; path: 'translation' | 'rotation' | 'scale' | 'weights' };
+}
+
+export interface GLTFAnimationSampler {
+  input: number; // accessor of keyframe times
+  output: number; // accessor of keyframe values
+  interpolation?: 'LINEAR' | 'STEP' | 'CUBICSPLINE';
 }
 
 export interface GLTFNode {

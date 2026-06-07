@@ -16,6 +16,7 @@ import {
   Color,
   Box3,
   Vector3,
+  AnimationMixer,
   type GLTFResult,
 } from 'vela';
 
@@ -203,12 +204,39 @@ async function loadFromFiles(files: File[]): Promise<void> {
   }
 }
 
+let mixer: AnimationMixer | null = null;
+let clips: GLTFResult['animations'] = [];
+
 function onLoaded(result: GLTFResult): void {
   setModel(result.scene, result.boundingBox);
-  const size = new Vector3();
-  result.boundingBox.getSize(size);
-  status(`Loaded · ${result.materials.length} materials`);
+  setupAnimations(result.animations);
+  const extra = result.animations.length ? ` · ${result.animations.length} anim` : '';
+  status(`Loaded · ${result.materials.length} materials${extra}`);
 }
+
+function setupAnimations(animations: GLTFResult['animations']): void {
+  mixer = null;
+  clips = animations;
+  const row = document.getElementById('animRow') as HTMLElement;
+  const select = document.getElementById('animSelect') as HTMLSelectElement;
+  select.innerHTML = '';
+  if (!animations.length) { row.style.display = 'none'; return; }
+
+  row.style.display = 'flex';
+  animations.forEach((clip, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = clip.name || `clip ${i}`;
+    select.appendChild(opt);
+  });
+  mixer = new AnimationMixer().play(animations[0]);
+  select.value = '0';
+}
+
+document.getElementById('animSelect')!.addEventListener('change', (e) => {
+  const i = parseInt((e.target as HTMLSelectElement).value, 10);
+  if (clips[i]) mixer = new AnimationMixer().play(clips[i]);
+});
 
 // ---- UI wiring ----
 const exposureEl = document.getElementById('exposure') as HTMLInputElement;
@@ -273,10 +301,19 @@ resize();
 // ---- Render loop ----
 let frames = 0;
 let lastFpsTime = performance.now();
+let lastFrameTime = performance.now();
 let fps = 0;
 
 function animate(): void {
   requestAnimationFrame(animate);
+  const now0 = performance.now();
+  const dt = Math.min((now0 - lastFrameTime) / 1000, 0.1);
+  lastFrameTime = now0;
+
+  if (mixer) {
+    mixer.update(dt);
+    currentModel?.updateMatrixWorld(true);
+  }
   controls.update();
   renderer.render(scene, camera);
 
