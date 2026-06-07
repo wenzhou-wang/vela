@@ -19,6 +19,10 @@ export interface StandardMaterialParams {
   transparent?: boolean;
   opacity?: number;
   alphaTest?: number;
+  /** Clear-coat layer strength [0,1] (KHR_materials_clearcoat). */
+  clearcoat?: number;
+  /** Clear-coat layer roughness [0,1]. */
+  clearcoatRoughness?: number;
 }
 
 /**
@@ -36,6 +40,9 @@ export class StandardMaterial extends Material {
   emissiveIntensity = 1.0;
   normalScale = 1.0;
   occlusionStrength = 1.0;
+  /** Clear-coat layer (KHR_materials_clearcoat): a thin dielectric specular coat. */
+  clearcoat = 0.0;
+  clearcoatRoughness = 0.0;
 
   map: Texture | null = null;
   normalMap: Texture | null = null;
@@ -62,6 +69,8 @@ export class StandardMaterial extends Material {
     if (params.transparent !== undefined) this.transparent = params.transparent;
     if (params.opacity !== undefined) this.opacity = params.opacity;
     if (params.alphaTest !== undefined) this.alphaTest = params.alphaTest;
+    if (params.clearcoat !== undefined) this.clearcoat = params.clearcoat;
+    if (params.clearcoatRoughness !== undefined) this.clearcoatRoughness = params.clearcoatRoughness;
   }
 
   private setColor(target: Color, value: Color | number): void {

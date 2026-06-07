@@ -499,6 +499,12 @@ export class GLTFLoader {
       material.emissiveMap = configure(textures[def.emissiveTexture.index], 'srgb');
     }
 
+    const clearcoat = def.extensions?.KHR_materials_clearcoat;
+    if (clearcoat) {
+      material.clearcoat = clearcoat.clearcoatFactor ?? 0;
+      material.clearcoatRoughness = clearcoat.clearcoatRoughnessFactor ?? 0;
+    }
+
     if (def.doubleSided) material.side = 'double';
     if (def.alphaMode === 'BLEND') {
       material.transparent = true;

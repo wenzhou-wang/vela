@@ -87,6 +87,7 @@ export interface GLTFMaterial {
   doubleSided?: boolean;
   extensions?: {
     KHR_materials_emissive_strength?: { emissiveStrength: number };
+    KHR_materials_clearcoat?: { clearcoatFactor?: number; clearcoatRoughnessFactor?: number };
   };
 }
 

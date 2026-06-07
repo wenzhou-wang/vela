@@ -667,6 +667,8 @@ export class WebGPURenderer {
     let flags = 0;
     if (material.normalMap) flags |= 2;
     data[13] = flags;
+    data[14] = material.clearcoat; // misc.z
+    data[15] = material.clearcoatRoughness; // misc.w
     this.device.queue.writeBuffer(res.uniformBuffer, 0, data);
     return res;
   }

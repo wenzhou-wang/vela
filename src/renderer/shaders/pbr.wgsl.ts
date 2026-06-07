@@ -259,6 +259,10 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   let metalness = clamp(material.params.x * mrSample.b, 0.0, 1.0);
   var roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
 
+  // Clear-coat: a thin dielectric specular layer over the base (KHR_materials_clearcoat).
+  let clearcoat = clamp(material.misc.z, 0.0, 1.0);
+  let clearcoatRoughness = clamp(material.misc.w, 0.04, 1.0);
+
   var N = normalize(in.worldNormal);
   if (!frontFacing) {
     N = -N;
@@ -316,9 +320,18 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
     let specular = D * Vis * F;
     let kd = (vec3<f32>(1.0) - F);
     let diffuse = kd * diffuseColor / PI;
+    var lit = diffuse + specular;
+
+    // Add a clear-coat GGX lobe and attenuate the base layer by its Fresnel.
+    if (clearcoat > 0.0) {
+      let Dc = distributionGGX(NoH, clearcoatRoughness);
+      let Vc = visibilitySmith(NoV, NoL, clearcoatRoughness);
+      let Fc = fresnelSchlick(VoH, vec3<f32>(0.04)).x * clearcoat;
+      lit = lit * (1.0 - Fc) + vec3<f32>(Dc * Vc * Fc);
+    }
 
     radiance = radiance * attenuation * NoL;
-    color = color + (diffuse + specular) * radiance;
+    color = color + lit * radiance;
   }
 
   let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;

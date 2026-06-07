@@ -87,9 +87,11 @@ A post-processing stack and richer materials.
       ACES out of the material shader), FXAA, optional TAA with motion vectors.
 - 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
-      vertex variant, so no new pipeline is needed. ⬜ `KHR_materials_clearcoat`,
-      `_transmission`/`_volume` (refraction via screen-space sampling), `_sheen`,
-      `_specular`, `_ior`.
+      vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):
+      a second GGX specular lobe over the base, attenuating it by the coat's Fresnel; the
+      `clearcoat`/`clearcoatRoughness` factors reuse spare material-uniform slots (no size
+      change). ⬜ clearcoat textures, `_transmission`/`_volume` (screen-space refraction),
+      `_sheen`, `_specular`, `_ior`.
 - ⬜ **Transparency** — optional weighted-blended OIT to reduce sort artifacts.
 
 ---

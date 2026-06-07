@@ -81,7 +81,8 @@ Forward renderer, one pass:
 - Node hierarchy with matrix or TRS transforms; multi-primitive meshes
 - PBR metallic-roughness materials: base color, metallic-roughness, normal, occlusion,
   emissive textures + factors
-- Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`
+- Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`,
+  `KHR_materials_clearcoat` (factors)
 - Vertex colors (`COLOR_0`, VEC3 or VEC4) multiplied into base color
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
 - **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
