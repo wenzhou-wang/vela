@@ -90,13 +90,20 @@ Forward renderer, one pass:
 
 ## Verification
 
-Because the GPU paths can't run headless, the bug-prone foundations were verified offline:
+Because the GPU paths can't run headless, the bug-prone foundations were verified offline
+(runtime-tested via esbuild + Node):
 
-- **Math** (matrix multiply/invert, compose/decompose round-trip, WebGPU `[0,1]` depth
-  mapping, camera basis) — runtime-tested via esbuild + Node.
-- **WGSL** — parsed with `wgsl_reflect`; bind-group indices and struct byte sizes
-  (frame 160 / model 128 / material 64 / light stride 48) confirmed to match the
-  TypeScript buffer packing exactly.
+- **Math** — matrix multiply/invert, compose/decompose round-trip, WebGPU `[0,1]` depth
+  for both perspective and orthographic, camera basis.
+- **Frustum culling** — spheres in front / behind / beyond far / before near / off-axis;
+  Gribb-Hartmann extraction for `[0,1]` clip depth.
+- **Animation** — STEP / LINEAR / slerp / CUBICSPLINE interpolation, range clamping, and
+  `AnimationMixer` loop-wrap.
+- **Skinning** — bone = jointWorld transform, weighted multi-joint blend, and inverse-bind
+  cancelling the rest pose.
+- **WGSL** — all three vertex variants (static / skinned / instanced) parsed with
+  `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
+  material 64 / light stride 48) confirmed to match the TypeScript buffer packing.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 
 ## Roadmap
