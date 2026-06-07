@@ -129,7 +129,11 @@ Faster loads, broader inputs, and ergonomics.
 - Optional **WebGL2 fallback** behind the same scene-graph API (only if demand warrants
   the cost — it cuts against the project's modern-first thesis).
 - **Clustered forward+** lighting for hundreds of dynamic lights.
-- **glTF export** and a lightweight scene format.
+- ✅ **glTF export** (`GLTFExporter`) — writes node hierarchy + TRS, mesh geometry
+  (position/normal/uv/color/indices), and `StandardMaterial` PBR factors with the
+  clearcoat/ior/specular/sheen extensions to a binary `.glb`; verified by round-tripping
+  back through `GLTFLoader`. ⬜ textures, skinning, morphs, animation, and a lightweight
+  native scene format.
 - **WebXR** session support.
 - A small **node-based material** graph compiling to WGSL.
 

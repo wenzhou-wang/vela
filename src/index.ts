@@ -63,6 +63,8 @@ export { FlyControls } from './controls/FlyControls';
 // loaders
 export { GLTFLoader } from './loaders/GLTFLoader';
 export type { GLTFResult } from './loaders/GLTFLoader';
+export { GLTFExporter } from './loaders/GLTFExporter';
+export type { GLTFExportResult } from './loaders/GLTFExporter';
 
 // animation
 export { AnimationClip } from './animation/AnimationClip';

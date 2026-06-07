@@ -93,6 +93,8 @@ Forward renderer, one pass:
 - **Morph targets** — `primitives[].targets` (POSITION/NORMAL deltas), default `mesh.weights`,
   `targetNames`, and `weights` animation channels; deltas blended in a morph vertex variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
+- **glTF export** — `GLTFExporter` writes the scene (hierarchy, geometry, PBR materials +
+  extensions) back out to a binary `.glb`
 
 ## Verification
 
@@ -117,6 +119,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   defaults, and an end-to-end glTF load (targets, `targetNames`, weights animation).
 - **Vertex colors** — all four variants parse with the added color stream at the right
   locations (skinned at 6, others at 4) with no duplicates; glTF VEC3 `COLOR_0` padded to RGBA.
+- **glTF export** — a scene (transforms, geometry, indices, vertex colors, PBR materials +
+  clearcoat/ior/specular/sheen) survives an export→`GLTFLoader` round-trip intact.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
   material 112 / light stride 48) confirmed to match the TypeScript buffer packing.
