@@ -6,9 +6,9 @@
  * - ACES-approx filmic tonemap + linear->sRGB on output
  *
  * Single "uber" shader: missing material maps are bound as white/flat defaults,
- * so no per-texture pipeline variants are needed. Two vertex variants share one
- * fragment stage: a static path (PBR_SHADER) and a GPU-skinned path
- * (PBR_SKINNED_SHADER).
+ * so no per-texture pipeline variants are needed. Four vertex variants share one
+ * fragment stage: static (PBR_SHADER), GPU-skinned (PBR_SKINNED_SHADER), instanced
+ * (PBR_INSTANCED_SHADER), and morph-target (PBR_MORPH_SHADER).
  */
 
 // Shared: constants, uniform/storage layout, varyings.
@@ -142,6 +142,54 @@ fn vs_main(in : VSInSkinned) -> VSOut {
 
   out.worldNormal = normalize((skin * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldTangent = normalize((skin * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
+  out.tangentSign = in.tangent.w;
+  out.uv = in.uv;
+  return out;
+}
+`;
+
+// Morph vertex stage: accumulate weighted POSITION/NORMAL deltas (stored as flat
+// f32 arrays indexed [target * vertexCount + vertexId]) onto the base attributes,
+// then transform by the per-object model matrix like the static path.
+const VERTEX_MORPH = /* wgsl */ `
+struct Model {
+  model : mat4x4<f32>,
+  normalMat : mat4x4<f32>,
+};
+@group(1) @binding(0) var<uniform> model : Model;
+
+struct MorphInfo {
+  count : u32,
+  vertexCount : u32,
+  hasNormals : u32,
+  _pad : u32,
+};
+@group(3) @binding(0) var<uniform> morphInfo : MorphInfo;
+@group(3) @binding(1) var<storage, read> morphPos : array<f32>;
+@group(3) @binding(2) var<storage, read> morphNrm : array<f32>;
+@group(3) @binding(3) var<storage, read> morphWeights : array<f32>;
+
+@vertex
+fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
+  var out : VSOut;
+  var position = in.position;
+  var normal = in.normal;
+
+  for (var t = 0u; t < morphInfo.count; t = t + 1u) {
+    let w = morphWeights[t];
+    let o = (t * morphInfo.vertexCount + vid) * 3u;
+    position = position + w * vec3<f32>(morphPos[o], morphPos[o + 1u], morphPos[o + 2u]);
+    if (morphInfo.hasNormals != 0u) {
+      normal = normal + w * vec3<f32>(morphNrm[o], morphNrm[o + 1u], morphNrm[o + 2u]);
+    }
+  }
+
+  let worldPos4 = model.model * vec4<f32>(position, 1.0);
+  out.worldPos = worldPos4.xyz;
+  out.clipPosition = frame.proj * frame.view * worldPos4;
+
+  out.worldNormal = normalize((model.normalMat * vec4<f32>(normal, 0.0)).xyz);
+  out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
   return out;
@@ -284,3 +332,4 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 export const PBR_SHADER = HEADER + VERTEX_STATIC + FRAGMENT;
 export const PBR_SKINNED_SHADER = HEADER + VERTEX_SKINNED + FRAGMENT;
 export const PBR_INSTANCED_SHADER = HEADER + VERTEX_INSTANCED + FRAGMENT;
+export const PBR_MORPH_SHADER = HEADER + VERTEX_MORPH + FRAGMENT;

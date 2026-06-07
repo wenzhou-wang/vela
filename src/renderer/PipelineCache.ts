@@ -6,7 +6,7 @@ import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from
  * Because the shader is a single uber-shader, pipelines only vary by render
  * state (cull mode, blending, depth write) and whether the mesh is skinned.
  */
-export type PipelineVariant = 'static' | 'skinned' | 'instanced';
+export type PipelineVariant = 'static' | 'skinned' | 'instanced' | 'morph';
 
 export class PipelineCache {
   readonly frameLayout: GPUBindGroupLayout;
@@ -14,6 +14,7 @@ export class PipelineCache {
   readonly materialLayout: GPUBindGroupLayout;
   readonly bonesLayout: GPUBindGroupLayout;
   readonly instanceLayout: GPUBindGroupLayout;
+  readonly morphLayout: GPUBindGroupLayout;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
   private cache = new Map<string, GPURenderPipeline>();
@@ -25,11 +26,13 @@ export class PipelineCache {
     staticCode: string,
     skinnedCode: string,
     instancedCode: string,
+    morphCode: string,
   ) {
     this.modules = {
       static: device.createShaderModule({ code: staticCode, label: 'pbr' }),
       skinned: device.createShaderModule({ code: skinnedCode, label: 'pbr-skinned' }),
       instanced: device.createShaderModule({ code: instancedCode, label: 'pbr-instanced' }),
+      morph: device.createShaderModule({ code: morphCode, label: 'pbr-morph' }),
     };
 
     this.frameLayout = device.createBindGroupLayout({
@@ -80,6 +83,17 @@ export class PipelineCache {
       ],
     });
 
+    // Morph info uniform + position/normal delta + weight storage buffers.
+    this.morphLayout = device.createBindGroupLayout({
+      label: 'morph',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+
     this.layouts = {
       static: device.createPipelineLayout({
         bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout],
@@ -89,6 +103,9 @@ export class PipelineCache {
       }),
       instanced: device.createPipelineLayout({
         bindGroupLayouts: [this.frameLayout, this.instanceLayout, this.materialLayout],
+      }),
+      morph: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.morphLayout],
       }),
     };
   }

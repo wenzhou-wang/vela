@@ -40,8 +40,12 @@ Make loaded models move and sit in believable lighting.
     (`jointWorld · inverseBind`) upload to a per-mesh storage buffer (bind group 3) each
     frame, and a skinned vertex variant (JOINTS_0/WEIGHTS_0 attributes) blends them. The
     pipeline key gains a `skin` bit; the fragment stage is shared with the static path.
-- ⬜ **Morph targets** — POSITION/NORMAL deltas as storage buffers, weights in the
-      model uniform; resolve in the vertex shader.
+- ✅ **Morph targets** — `geometry.morphAttributes` (POSITION/NORMAL deltas) packed into
+      storage buffers; per-mesh `morphTargetInfluences` upload to a weights storage buffer
+      each frame and a morph vertex variant (bind group 3) accumulates them onto the base
+      attributes (indexed by `@builtin(vertex_index)`). glTF `mesh.primitives[].targets`,
+      default `mesh.weights`, `extras.targetNames`, and `weights` animation channels
+      (LINEAR/STEP/CUBICSPLINE) are parsed; the pipeline key gains a `morph` variant.
 - ⬜ **Shadow maps** — directional/spot depth pass into a depth atlas; PCF (3×3) in the
       PBR shader. Adds a `lightViewProj` array to the frame uniforms and a shadow
       sampler/atlas to group 0.
@@ -97,10 +101,15 @@ Faster loads, broader inputs, and ergonomics.
       preferred GPU format.
 - ⬜ **Worker-based loading** — parse glTF and decode images off the main thread;
       transfer typed arrays / `ImageBitmap`s.
-- 🚧 **More cameras/controls** — ✅ `OrthographicCamera`; ⬜ first-person & fly controls.
-- 🚧 **Raycasting / picking** — ✅ `Ray` + `Raycaster` pick meshes at the bounding-sphere
-      level (`setFromCamera` unprojects NDC; hits sorted nearest-first); ⬜ per-triangle
-      precision via a CPU BVH, or a GPU id-buffer pass.
+- ✅ **More cameras/controls** — `OrthographicCamera`; `FlyControls` (WASD + Q/E,
+      mouse-look via drag or pointer lock, frame-rate-independent `update(delta)`).
+- ✅ **Raycasting / picking** — `Ray` + `Raycaster` pick meshes; the broad phase
+      rejects on the world bounding sphere, then survivors are tested per-triangle in
+      local space (Möller–Trumbore), so hits carry an exact `point`, `faceIndex`, and a
+      barycentric-interpolated `uv`. `setFromCamera` unprojects NDC; `precise = false`
+      reverts to the coarse sphere test. Meshes at/above `bvhThreshold` triangles use a
+      cached median-split **CPU `BVH`** that prunes subtrees the ray misses. ⬜ A GPU
+      id-buffer pass for pixel-exact picking remains optional.
 - ⬜ **Helpers & debug** — grid, axes, bounding-box and light gizmos; a stats/inspector overlay.
 
 ---

@@ -9,6 +9,7 @@ export * from './math';
 export { Object3D } from './core/Object3D';
 export { Raycaster } from './core/Raycaster';
 export type { Intersection } from './core/Raycaster';
+export { BVH } from './core/BVH';
 export { Scene } from './core/Scene';
 export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
@@ -47,6 +48,7 @@ export type { RendererOptions } from './renderer/WebGPURenderer';
 
 // controls
 export { OrbitControls } from './controls/OrbitControls';
+export { FlyControls } from './controls/FlyControls';
 
 // loaders
 export { GLTFLoader } from './loaders/GLTFLoader';

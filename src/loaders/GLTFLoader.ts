@@ -39,8 +39,8 @@ const CHUNK_BIN = 0x004e4942; // "BIN\0"
 /**
  * Loads glTF 2.0 (.gltf + .bin + images) and binary glTF (.glb).
  * Supports node hierarchy, meshes/primitives, PBR metallic-roughness materials,
- * textures/samplers, keyframe animation (translation/rotation/scale), and
- * KHR_materials_emissive_strength. (Skinning/morph targets — see roadmap.)
+ * textures/samplers, skinning, morph targets, keyframe animation
+ * (translation/rotation/scale/weights), and KHR_materials_emissive_strength.
  */
 export class GLTFLoader {
   /** Load from a URL (resolves relative buffers/images against it). */
@@ -147,7 +147,6 @@ export class GLTFLoader {
       const tracks: KeyframeTrack[] = [];
       for (const channel of anim.channels) {
         const path = channel.target.path;
-        if (path === 'weights') continue; // morph targets: see roadmap
         const nodeIndex = channel.target.node;
         if (nodeIndex === undefined) continue;
         const target = nodes[nodeIndex];
@@ -155,6 +154,20 @@ export class GLTFLoader {
         const times = this.readAccessorFloat(ctx, sampler.input);
         const values = this.readAccessorFloat(ctx, sampler.output);
         const interpolation = (sampler.interpolation ?? 'LINEAR') as InterpolationMode;
+
+        if (path === 'weights') {
+          // glTF animates the node's mesh; here that mesh lives as child meshes.
+          // stride = morph-target count, derived from each mesh's influences.
+          for (const child of target.children) {
+            if (child instanceof Mesh && child.morphTargetInfluences.length > 0) {
+              tracks.push(
+                new KeyframeTrack(child, 'weights', times, values, interpolation, child.morphTargetInfluences.length),
+              );
+            }
+          }
+          continue;
+        }
+
         tracks.push(new KeyframeTrack(target, path as TrackPath, times, values, interpolation));
       }
       if (tracks.length) clips.push(new AnimationClip(anim.name ?? `clip_${ai}`, tracks));
@@ -196,6 +209,20 @@ export class GLTFLoader {
           mesh = new Mesh(geometry, material);
         }
         mesh.name = meshDef.name ? `${meshDef.name}_${p}` : object.name;
+
+        // Morph-target weights & names (mesh.weights are the defaults).
+        if (geometry.morphAttributes.position?.length) {
+          const n = geometry.morphAttributes.position.length;
+          if (meshDef.weights && meshDef.weights.length === n) {
+            mesh.morphTargetInfluences = meshDef.weights.slice();
+          }
+          const names = meshDef.extras?.targetNames;
+          if (names && names.length === n) {
+            mesh.morphTargetDictionary = {};
+            names.forEach((name, i) => (mesh.morphTargetDictionary![name] = i));
+          }
+        }
+
         object.add(mesh);
       }
     }
@@ -244,6 +271,24 @@ export class GLTFLoader {
     }
     if (attributes.WEIGHTS_0 !== undefined) {
       geometry.setAttribute('weights', new BufferAttribute(this.readAccessorFloat(ctx, attributes.WEIGHTS_0), 4));
+    }
+
+    if (prim.targets && prim.targets.length) {
+      const positions: BufferAttribute[] = [];
+      const normals: BufferAttribute[] = [];
+      let allHaveNormals = true;
+      for (const target of prim.targets) {
+        if (target.POSITION !== undefined) {
+          positions.push(new BufferAttribute(this.readAccessorFloat(ctx, target.POSITION), 3));
+        }
+        if (target.NORMAL !== undefined) {
+          normals.push(new BufferAttribute(this.readAccessorFloat(ctx, target.NORMAL), 3));
+        } else {
+          allHaveNormals = false;
+        }
+      }
+      if (positions.length === prim.targets.length) geometry.morphAttributes.position = positions;
+      if (allHaveNormals && normals.length === prim.targets.length) geometry.morphAttributes.normal = normals;
     }
 
     if (prim.indices !== undefined) {

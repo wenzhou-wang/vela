@@ -15,6 +15,13 @@ export class BufferGeometry {
   attributes: Record<string, BufferAttribute> = {};
   index: BufferAttribute | null = null;
 
+  /**
+   * Morph-target deltas. Each entry in `position`/`normal` is one target's
+   * per-vertex offset from the base attribute (same length/itemSize). Blend
+   * weights live on the `Mesh` (`morphTargetInfluences`).
+   */
+  morphAttributes: { position?: BufferAttribute[]; normal?: BufferAttribute[] } = {};
+
   boundingBox: Box3 | null = null;
   boundingSphere: Sphere | null = null;
 

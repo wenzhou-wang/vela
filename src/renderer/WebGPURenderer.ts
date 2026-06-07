@@ -19,7 +19,7 @@ import { GeometryBuffers } from './GeometryBuffers';
 import { TextureManager } from './TextureManager';
 import { PipelineCache } from './PipelineCache';
 import { DEPTH_FORMAT } from './constants';
-import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER } from './shaders/pbr.wgsl';
+import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER } from './shaders/pbr.wgsl';
 
 const MAX_LIGHTS = 32;
 const FRAME_SIZE = 160; // bytes
@@ -49,6 +49,13 @@ interface MaterialResources {
   uniformBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   textureSignature: string;
+}
+
+interface MorphResources {
+  infoBuffer: GPUBuffer;
+  weightBuffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+  count: number;
 }
 
 export interface RendererOptions {
@@ -88,6 +95,7 @@ export class WebGPURenderer {
   private materialResources = new WeakMap<Material, MaterialResources>();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
+  private morphResources = new WeakMap<Mesh, MorphResources>();
 
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
@@ -139,7 +147,7 @@ export class WebGPURenderer {
     this.textures = new TextureManager(this.device);
     this.pipelines = new PipelineCache(
       this.device, this.format, this.sampleCount,
-      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER,
+      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER,
     );
 
     this.createFrameResources();
@@ -381,11 +389,15 @@ export class WebGPURenderer {
 
     const instanced = mesh instanceof InstancedMesh;
     const skinned = !instanced && mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
-    const variant = instanced ? 'instanced' : skinned ? 'skinned' : 'static';
+    const morphed =
+      !instanced && !skinned &&
+      mesh.morphTargetInfluences.length > 0 &&
+      !!mesh.geometry.morphAttributes.position?.length;
+    const variant = instanced ? 'instanced' : skinned ? 'skinned' : morphed ? 'morph' : 'static';
 
     pass.setPipeline(this.pipelines.get(material, variant));
 
-    // Group 1: model uniform (static/skinned) or instance storage (instanced)
+    // Group 1: model uniform (static/skinned/morph) or instance storage (instanced)
     if (instanced) {
       pass.setBindGroup(1, this.getInstancedResources(mesh as InstancedMesh).bindGroup);
     } else {
@@ -402,6 +414,8 @@ export class WebGPURenderer {
       pass.setBindGroup(3, this.getSkinnedResources(mesh as SkinnedMesh).bindGroup);
       pass.setVertexBuffer(4, geometry.joints!);
       pass.setVertexBuffer(5, geometry.weights!);
+    } else if (morphed) {
+      pass.setBindGroup(3, this.getMorphResources(mesh).bindGroup);
     }
 
     const instanceCount = instanced ? (mesh as InstancedMesh).count : 1;
@@ -452,6 +466,68 @@ export class WebGPURenderer {
     // Joints are already updated by scene.updateMatrixWorld(); refresh bones.
     skeleton.update();
     this.device.queue.writeBuffer(res.boneBuffer, 0, skeleton.boneMatrices);
+    return res;
+  }
+
+  private getMorphResources(mesh: Mesh): MorphResources {
+    const geometry = mesh.geometry;
+    const positions = geometry.morphAttributes.position!;
+    const count = positions.length;
+
+    let res = this.morphResources.get(mesh);
+    if (!res || res.count !== count) {
+      const vertexCount = geometry.attributes.position.count;
+      const normals = geometry.morphAttributes.normal;
+      const hasNormals = normals && normals.length === count ? 1 : 0;
+
+      // Pack per-target deltas contiguously: [target][vertex][xyz].
+      const packed = (attrs: typeof positions | undefined): Float32Array<ArrayBuffer> => {
+        const out = new Float32Array(count * vertexCount * 3);
+        if (attrs) {
+          for (let t = 0; t < count; t++) out.set(attrs[t].array, t * vertexCount * 3);
+        }
+        return out;
+      };
+      const posData = packed(positions);
+      const nrmData = hasNormals ? packed(normals) : new Float32Array(1);
+
+      const storage = (data: Float32Array<ArrayBuffer>): GPUBuffer => {
+        const buffer = this.device.createBuffer({
+          size: Math.max(data.byteLength, 4),
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(buffer, 0, data);
+        return buffer;
+      };
+      const posBuffer = storage(posData);
+      const nrmBuffer = storage(nrmData);
+
+      const infoBuffer = this.device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.device.queue.writeBuffer(infoBuffer, 0, new Uint32Array([count, vertexCount, hasNormals, 0]));
+
+      const weightBuffer = this.device.createBuffer({
+        size: Math.max(count * 4, 4),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.morphLayout,
+        entries: [
+          { binding: 0, resource: { buffer: infoBuffer } },
+          { binding: 1, resource: { buffer: posBuffer } },
+          { binding: 2, resource: { buffer: nrmBuffer } },
+          { binding: 3, resource: { buffer: weightBuffer } },
+        ],
+      });
+      res = { infoBuffer, weightBuffer, bindGroup, count };
+      this.morphResources.set(mesh, res);
+    }
+
+    // Weights change every frame (animation); deltas/info are static.
+    this.device.queue.writeBuffer(res.weightBuffer, 0, new Float32Array(mesh.morphTargetInfluences));
     return res;
   }
 

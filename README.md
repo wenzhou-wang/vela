@@ -13,7 +13,7 @@ old-browser support. PBR shading, a glTF loader, and an interactive viewer in ~3
    ├─ materials/   Material, StandardMaterial (PBR metallic-roughness)
    ├─ textures/    Texture (+ sampler descriptors)
    ├─ lights/      Ambient, Directional, Point
-   ├─ controls/    OrbitControls (orbit / pan / dolly, with damping)
+   ├─ controls/    OrbitControls (orbit / pan / dolly), FlyControls (WASD + mouse-look)
    ├─ loaders/     GLTFLoader (.gltf + .glb), tangent generation
    └─ renderer/    WebGPURenderer, pipeline cache, geometry/texture managers,
                    mipmap generator, and the WGSL PBR shader
@@ -26,7 +26,7 @@ targets **WebGPU exclusively**, which means:
 
 - A single modern shading path (WGSL), no GLSL transpilation or `#define` soup.
 - Explicit GPU resources: buffers, bind groups, and pipelines are cached and reused.
-- A tiny footprint — the whole engine + viewer bundles to **~64 KB (21 KB gzip)**,
+- A tiny footprint — the whole engine + viewer bundles to **~82 KB (26 KB gzip)**,
   versus ~600 KB for three.js.
 
 ## Running the viewer
@@ -63,7 +63,7 @@ Forward renderer, one pass:
   per-instance matrix storage buffer.
 - A single **"uber" shader**: absent material maps bind white/flat 1×1 defaults, so
   pipeline variants only depend on render state (cull / blend / depth-write) plus the
-  vertex path (static / skinned / instanced) — not on which textures a material uses.
+  vertex path (static / skinned / instanced / morph) — not on which textures a material uses.
 
 ### Bind group layout
 
@@ -72,7 +72,7 @@ Forward renderer, one pass:
 | 0 | frame uniforms (view, proj, camera, ambient) + lights storage buffer |
 | 1 | per-object model + normal matrix |
 | 2 | material uniforms + 5 (texture, sampler) pairs: base, normal, metal-rough, emissive, occlusion |
-| 3 | bone matrices storage buffer (skinned meshes only) |
+| 3 | bone matrices (skinned) **or** morph info + position/normal deltas + weights (morphed) |
 
 ## glTF support
 
@@ -86,6 +86,8 @@ Forward renderer, one pass:
   interpolation, played via `AnimationMixer`
 - **GPU skinning** — `skins` / inverse bind matrices → `SkinnedMesh`, bone matrices blended
   in a skinned vertex shader variant
+- **Morph targets** — `primitives[].targets` (POSITION/NORMAL deltas), default `mesh.weights`,
+  `targetNames`, and `weights` animation channels; deltas blended in a morph vertex variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 
 ## Verification
@@ -101,7 +103,12 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   `AnimationMixer` loop-wrap.
 - **Skinning** — bone = jointWorld transform, weighted multi-joint blend, and inverse-bind
   cancelling the rest pose.
-- **WGSL** — all three vertex variants (static / skinned / instanced) parsed with
+- **Raycasting** — Möller–Trumbore triangle hits (front/back/miss/behind), local-space
+  picking through a scaled mesh, barycentric UV interpolation, coarse-sphere fallback, and
+  a CPU **BVH** whose hits match a brute-force scan across 200 rays on a 1.5k-tri mesh.
+- **Morph targets** — `weights` track interpolation (LINEAR/STEP/CUBICSPLINE), influence
+  defaults, and an end-to-end glTF load (targets, `targetNames`, weights animation).
+- **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
   material 64 / light stride 48) confirmed to match the TypeScript buffer packing.
 - **Whole project** type-checks under `strict` and bundles via Vite.

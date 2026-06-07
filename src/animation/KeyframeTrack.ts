@@ -2,7 +2,12 @@ import type { Object3D } from '../core/Object3D';
 import { Quaternion } from '../math/Quaternion';
 
 export type InterpolationMode = 'STEP' | 'LINEAR' | 'CUBICSPLINE';
-export type TrackPath = 'translation' | 'rotation' | 'scale';
+export type TrackPath = 'translation' | 'rotation' | 'scale' | 'weights';
+
+/** A node carrying animatable morph-target weights (a `Mesh`). */
+interface MorphTarget extends Object3D {
+  morphTargetInfluences: number[];
+}
 
 const _qa = new Quaternion();
 const _qb = new Quaternion();
@@ -20,7 +25,10 @@ export class KeyframeTrack {
   times: Float32Array;
   values: Float32Array;
   interpolation: InterpolationMode;
-  /** Components per value: 3 for translation/scale, 4 for rotation. */
+  /**
+   * Components per value: 3 for translation/scale, 4 for rotation, or the
+   * morph-target count for weights (supplied via `valueSize`).
+   */
   readonly stride: number;
 
   private _cachedIndex = 0;
@@ -31,13 +39,14 @@ export class KeyframeTrack {
     times: Float32Array,
     values: Float32Array,
     interpolation: InterpolationMode = 'LINEAR',
+    valueSize?: number,
   ) {
     this.target = target;
     this.path = path;
     this.times = times;
     this.values = values;
     this.interpolation = interpolation;
-    this.stride = path === 'rotation' ? 4 : 3;
+    this.stride = valueSize ?? (path === 'rotation' ? 4 : 3);
   }
 
   get duration(): number {
@@ -109,6 +118,11 @@ export class KeyframeTrack {
     const a = i0 * s;
     const b = i1 * s;
     const t = this.target;
+    if (this.path === 'weights') {
+      const w = (t as MorphTarget).morphTargetInfluences;
+      for (let k = 0; k < s; k++) w[k] = v[a + k] + (v[b + k] - v[a + k]) * alpha;
+      return;
+    }
     if (this.path === 'rotation') {
       _qa.set(v[a], v[a + 1], v[a + 2], v[a + 3]);
       _qb.set(v[b], v[b + 1], v[b + 2], v[b + 3]);
@@ -139,7 +153,8 @@ export class KeyframeTrack {
     const p1 = i1 * s * 3 + s;
     const m1 = i1 * s * 3; // inTangent of key i1
 
-    const out = _tmp;
+    const node = this.target;
+    const out = this.path === 'weights' ? (node as MorphTarget).morphTargetInfluences : _tmp;
     for (let k = 0; k < s; k++) {
       out[k] =
         h00 * v[p0 + k] +
@@ -148,7 +163,9 @@ export class KeyframeTrack {
         h11 * dt * v[m1 + k];
     }
 
-    const node = this.target;
+    if (this.path === 'weights') {
+      return; // written directly into the influences array above
+    }
     if (this.path === 'rotation') {
       _qa.set(out[0], out[1], out[2], out[3]).normalize();
       node.quaternion.copy(_qa);
@@ -160,6 +177,11 @@ export class KeyframeTrack {
 
   private applyVector(v: Float32Array, base: number): void {
     const t = this.target;
+    if (this.path === 'weights') {
+      const w = (t as MorphTarget).morphTargetInfluences;
+      for (let k = 0; k < this.stride; k++) w[k] = v[base + k];
+      return;
+    }
     if (this.path === 'rotation') {
       t.quaternion.set(v[base], v[base + 1], v[base + 2], v[base + 3]);
     } else {

@@ -55,6 +55,9 @@ export interface GLTFNode {
 export interface GLTFMesh {
   name?: string;
   primitives: GLTFPrimitive[];
+  /** Default morph-target weights for the mesh. */
+  weights?: number[];
+  extras?: { targetNames?: string[] };
 }
 
 export interface GLTFPrimitive {
@@ -62,6 +65,8 @@ export interface GLTFPrimitive {
   indices?: number;
   material?: number;
   mode?: number;
+  /** Morph-target attribute accessors: each entry maps POSITION/NORMAL → accessor. */
+  targets?: Record<string, number>[];
 }
 
 export interface GLTFMaterial {

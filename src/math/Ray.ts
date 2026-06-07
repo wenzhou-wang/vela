@@ -1,8 +1,14 @@
 import { Vector3 } from './Vector3';
 import type { Sphere } from './Sphere';
 import type { Box3 } from './Box3';
+import type { Matrix4 } from './Matrix4';
 
 const _v = new Vector3();
+const _edge1 = new Vector3();
+const _edge2 = new Vector3();
+const _pvec = new Vector3();
+const _tvec = new Vector3();
+const _qvec = new Vector3();
 
 /** A ray with an origin and a normalized direction. */
 export class Ray {
@@ -17,6 +23,12 @@ export class Ray {
   set(origin: Vector3, direction: Vector3): this {
     this.origin.copy(origin);
     this.direction.copy(direction);
+    return this;
+  }
+
+  copy(ray: Ray): this {
+    this.origin.copy(ray.origin);
+    this.direction.copy(ray.direction);
     return this;
   }
 
@@ -62,5 +74,50 @@ export class Ray {
 
     if (tmax < 0) return null;
     return tmin >= 0 ? tmin : tmax;
+  }
+
+  /**
+   * Distance along the ray to a triangle intersection, or null. Möller–Trumbore.
+   * When `backfaceCulling` is true, triangles facing away (CCW winding) are skipped.
+   * If `target` is given, the hit point is written into it.
+   */
+  intersectTriangle(
+    a: Vector3,
+    b: Vector3,
+    c: Vector3,
+    backfaceCulling: boolean,
+    target?: Vector3,
+  ): number | null {
+    _edge1.subVectors(b, a);
+    _edge2.subVectors(c, a);
+    _pvec.crossVectors(this.direction, _edge2);
+    const det = _edge1.dot(_pvec);
+
+    if (backfaceCulling) {
+      if (det < 1e-12) return null; // back-facing or parallel
+    } else if (det > -1e-12 && det < 1e-12) {
+      return null; // ray parallel to triangle
+    }
+
+    const invDet = 1 / det;
+    _tvec.subVectors(this.origin, a);
+    const u = _tvec.dot(_pvec) * invDet;
+    if (u < 0 || u > 1) return null;
+
+    _qvec.crossVectors(_tvec, _edge1);
+    const vbary = this.direction.dot(_qvec) * invDet;
+    if (vbary < 0 || u + vbary > 1) return null;
+
+    const t = _edge2.dot(_qvec) * invDet;
+    if (t < 0) return null; // behind the ray origin
+    if (target) this.at(t, target);
+    return t;
+  }
+
+  /** Transform the ray by a matrix (origin as a point, direction as a vector). */
+  applyMatrix4(m: Matrix4): this {
+    this.origin.applyMatrix4(m);
+    this.direction.transformDirection(m);
+    return this;
   }
 }
