@@ -10,6 +10,8 @@ import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
+import { LineBasicMaterial } from '../materials/LineBasicMaterial';
+import { BufferAttribute } from '../core/BufferAttribute';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
 import { Matrix4 } from '../math/Matrix4';
@@ -20,6 +22,7 @@ import { TextureManager } from './TextureManager';
 import { PipelineCache } from './PipelineCache';
 import { DEPTH_FORMAT } from './constants';
 import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER } from './shaders/pbr.wgsl';
+import { LINE_SHADER } from './shaders/line.wgsl';
 
 const MAX_LIGHTS = 32;
 const FRAME_SIZE = 160; // bytes
@@ -96,6 +99,7 @@ export class WebGPURenderer {
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
   private morphResources = new WeakMap<Mesh, MorphResources>();
+  private lineResources = new WeakMap<LineBasicMaterial, { buffer: GPUBuffer; bindGroup: GPUBindGroup }>();
 
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
@@ -147,7 +151,7 @@ export class WebGPURenderer {
     this.textures = new TextureManager(this.device);
     this.pipelines = new PipelineCache(
       this.device, this.format, this.sampleCount,
-      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER,
+      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER, LINE_SHADER,
     );
 
     this.createFrameResources();
@@ -383,9 +387,13 @@ export class WebGPURenderer {
   exposure = 1.0;
 
   private drawMesh(pass: GPURenderPassEncoder, mesh: Mesh): void {
-    const geometry = this.geometries.get(mesh.geometry);
     const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    if (material instanceof LineBasicMaterial) {
+      this.drawLine(pass, mesh, material);
+      return;
+    }
     if (!(material instanceof StandardMaterial)) return;
+    const geometry = this.geometries.get(mesh.geometry);
 
     const instanced = mesh instanceof InstancedMesh;
     const skinned = !instanced && mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
@@ -425,6 +433,54 @@ export class WebGPURenderer {
     } else {
       pass.draw(geometry.drawCount, instanceCount);
     }
+  }
+
+  private drawLine(pass: GPURenderPassEncoder, mesh: Mesh, material: LineBasicMaterial): void {
+    const geom = mesh.geometry;
+    // The line pipeline always reads a per-vertex color stream; default to white.
+    if (!geom.getAttribute('color')) {
+      const n = geom.attributes.position.count;
+      geom.setAttribute('color', new BufferAttribute(new Float32Array(n * 4).fill(1), 4));
+      geom.version++;
+    }
+    const geometry = this.geometries.get(geom);
+
+    pass.setPipeline(this.pipelines.getLine(material));
+    pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    pass.setBindGroup(2, this.getLineResources(material).bindGroup);
+    pass.setVertexBuffer(0, geometry.position);
+    pass.setVertexBuffer(1, geometry.color!);
+
+    if (geometry.index) {
+      pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+      pass.drawIndexed(geometry.drawCount);
+    } else {
+      pass.draw(geometry.drawCount);
+    }
+  }
+
+  private getLineResources(material: LineBasicMaterial): { buffer: GPUBuffer; bindGroup: GPUBindGroup } {
+    let res = this.lineResources.get(material);
+    if (!res) {
+      const buffer = this.device.createBuffer({
+        size: 32,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.lineMaterialLayout,
+        entries: [{ binding: 0, resource: { buffer } }],
+      });
+      res = { buffer, bindGroup };
+      this.lineResources.set(material, res);
+    }
+    const data = new Float32Array(8);
+    data[0] = material.color.r;
+    data[1] = material.color.g;
+    data[2] = material.color.b;
+    data[3] = material.opacity;
+    data[4] = material.vertexColors ? 1 : 0;
+    this.device.queue.writeBuffer(res.buffer, 0, data);
+    return res;
   }
 
   private getInstancedResources(mesh: InstancedMesh): InstancedResources {

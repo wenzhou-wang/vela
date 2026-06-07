@@ -6,6 +6,8 @@ interface GPUGeometry {
   normal: GPUBuffer;
   uv: GPUBuffer;
   tangent: GPUBuffer;
+  /** Per-vertex vec4 color, present only when the geometry has a `color` attribute. */
+  color: GPUBuffer | null;
   /** Skinning streams, present only for skinned geometries. */
   joints: GPUBuffer | null;
   weights: GPUBuffer | null;
@@ -54,6 +56,10 @@ export class GeometryBuffers {
     const uvBuf = this.upload(uv.array as Float32Array, GPUBufferUsage.VERTEX);
     const tangentBuf = this.upload(tangent.array as Float32Array, GPUBufferUsage.VERTEX);
 
+    // Per-vertex color (optional; used by the line path / vertex colors)
+    const colorAttr = geometry.getAttribute('color');
+    const color = colorAttr ? this.upload(colorAttr.array as Float32Array, GPUBufferUsage.VERTEX) : null;
+
     // Skinning streams (optional)
     const jointsAttr = geometry.getAttribute('joints');
     const weightsAttr = geometry.getAttribute('weights');
@@ -84,6 +90,7 @@ export class GeometryBuffers {
       normal: normalBuf,
       uv: uvBuf,
       tangent: tangentBuf,
+      color,
       joints,
       weights,
       index,
@@ -108,6 +115,7 @@ export class GeometryBuffers {
     gpu.normal.destroy();
     gpu.uv.destroy();
     gpu.tangent.destroy();
+    gpu.color?.destroy();
     gpu.joints?.destroy();
     gpu.weights?.destroy();
     gpu.index?.destroy();

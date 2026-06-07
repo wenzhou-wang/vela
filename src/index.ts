@@ -15,6 +15,7 @@ export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
 export { OrthographicCamera } from './core/OrthographicCamera';
 export { Mesh } from './core/Mesh';
+export { LineSegments } from './core/LineSegments';
 export { SkinnedMesh } from './core/SkinnedMesh';
 export { InstancedMesh } from './core/InstancedMesh';
 export { Skeleton } from './core/Skeleton';
@@ -31,6 +32,13 @@ export { PlaneGeometry } from './geometries/PlaneGeometry';
 export { Material } from './materials/Material';
 export { StandardMaterial } from './materials/StandardMaterial';
 export type { StandardMaterialParams } from './materials/StandardMaterial';
+export { LineBasicMaterial } from './materials/LineBasicMaterial';
+export type { LineBasicMaterialParams } from './materials/LineBasicMaterial';
+
+// helpers
+export { GridHelper } from './helpers/GridHelper';
+export { AxesHelper } from './helpers/AxesHelper';
+export { Box3Helper } from './helpers/Box3Helper';
 
 // textures
 export { Texture } from './textures/Texture';

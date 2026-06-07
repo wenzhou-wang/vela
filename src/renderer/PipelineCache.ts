@@ -1,5 +1,7 @@
 import type { StandardMaterial } from '../materials/StandardMaterial';
+import type { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
+import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
@@ -15,8 +17,11 @@ export class PipelineCache {
   readonly bonesLayout: GPUBindGroupLayout;
   readonly instanceLayout: GPUBindGroupLayout;
   readonly morphLayout: GPUBindGroupLayout;
+  readonly lineMaterialLayout: GPUBindGroupLayout;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
+  private lineLayout: GPUPipelineLayout;
+  private lineModule: GPUShaderModule;
   private cache = new Map<string, GPURenderPipeline>();
 
   constructor(
@@ -27,6 +32,7 @@ export class PipelineCache {
     skinnedCode: string,
     instancedCode: string,
     morphCode: string,
+    lineCode: string,
   ) {
     this.modules = {
       static: device.createShaderModule({ code: staticCode, label: 'pbr' }),
@@ -108,6 +114,52 @@ export class PipelineCache {
         bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.morphLayout],
       }),
     };
+
+    // Unlit line path: frame + model + a small line-material uniform.
+    this.lineMaterialLayout = device.createBindGroupLayout({
+      label: 'line-material',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    this.lineModule = device.createShaderModule({ code: lineCode, label: 'line' });
+    this.lineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [this.frameLayout, this.modelLayout, this.lineMaterialLayout],
+    });
+  }
+
+  /** Compile/cache the `line-list` pipeline for a line material's render state. */
+  getLine(material: LineBasicMaterial): GPURenderPipeline {
+    const blend = material.transparent ? 'blend' : 'opaque';
+    const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
+    const depthTest = material.depthTest ? 'dt1' : 'dt0';
+    const key = `line|${blend}|${depthWrite}|${depthTest}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    const target: GPUColorTargetState = { format: this.format };
+    if (blend === 'blend') {
+      target.blend = {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      };
+    }
+
+    pipeline = this.device.createRenderPipeline({
+      label: key,
+      layout: this.lineLayout,
+      vertex: { module: this.lineModule, entryPoint: 'vs_main', buffers: LINE_VERTEX_BUFFER_LAYOUT },
+      fragment: { module: this.lineModule, entryPoint: 'fs_main', targets: [target] },
+      primitive: { topology: 'line-list' },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: depthWrite === 'dw1',
+        depthCompare: depthTest === 'dt1' ? 'less' : 'always',
+      },
+      multisample: { count: this.sampleCount },
+    });
+    this.cache.set(key, pipeline);
+    return pipeline;
   }
 
   private keyFor(material: StandardMaterial, variant: PipelineVariant): string {

@@ -14,6 +14,7 @@ old-browser support. PBR shading, a glTF loader, and an interactive viewer in ~3
    ├─ textures/    Texture (+ sampler descriptors)
    ├─ lights/      Ambient, Directional, Point
    ├─ controls/    OrbitControls (orbit / pan / dolly), FlyControls (WASD + mouse-look)
+   ├─ helpers/     GridHelper, AxesHelper, Box3Helper (unlit line gizmos)
    ├─ loaders/     GLTFLoader (.gltf + .glb), tangent generation
    └─ renderer/    WebGPURenderer, pipeline cache, geometry/texture managers,
                    mipmap generator, and the WGSL PBR shader
@@ -26,7 +27,7 @@ targets **WebGPU exclusively**, which means:
 
 - A single modern shading path (WGSL), no GLSL transpilation or `#define` soup.
 - Explicit GPU resources: buffers, bind groups, and pipelines are cached and reused.
-- A tiny footprint — the whole engine + viewer bundles to **~82 KB (26 KB gzip)**,
+- A tiny footprint — the whole engine + viewer bundles to **~86 KB (26 KB gzip)**,
   versus ~600 KB for three.js.
 
 ## Running the viewer
@@ -106,6 +107,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **Raycasting** — Möller–Trumbore triangle hits (front/back/miss/behind), local-space
   picking through a scaled mesh, barycentric UV interpolation, coarse-sphere fallback, and
   a CPU **BVH** whose hits match a brute-force scan across 200 rays on a 1.5k-tri mesh.
+- **Debug helpers** — `GridHelper`/`AxesHelper`/`Box3Helper` geometry (vertex counts, axis
+  colors, box-edge extents) and the unlit line shader (bind-group + vertex-stream layout).
 - **Morph targets** — `weights` track interpolation (LINEAR/STEP/CUBICSPLINE), influence
   defaults, and an end-to-end glTF load (targets, `targetNames`, weights animation).
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
