@@ -29,6 +29,10 @@ export interface StandardMaterialParams {
   specularIntensity?: number;
   /** Dielectric specular tint (KHR_materials_specular). */
   specularColor?: Color | number;
+  /** Sheen tint (KHR_materials_sheen); black (default) disables sheen. */
+  sheenColor?: Color | number;
+  /** Sheen roughness [0,1] (KHR_materials_sheen). */
+  sheenRoughness?: number;
 }
 
 /**
@@ -54,6 +58,9 @@ export class StandardMaterial extends Material {
   /** Dielectric specular strength and tint (KHR_materials_specular). */
   specularIntensity = 1.0;
   specularColor = new Color(1, 1, 1);
+  /** Sheen layer (KHR_materials_sheen): a cloth-like retroreflective lobe. */
+  sheenColor = new Color(0, 0, 0);
+  sheenRoughness = 0.0;
 
   map: Texture | null = null;
   normalMap: Texture | null = null;
@@ -85,6 +92,8 @@ export class StandardMaterial extends Material {
     if (params.ior !== undefined) this.ior = params.ior;
     if (params.specularIntensity !== undefined) this.specularIntensity = params.specularIntensity;
     if (params.specularColor !== undefined) this.setColor(this.specularColor, params.specularColor);
+    if (params.sheenColor !== undefined) this.setColor(this.sheenColor, params.sheenColor);
+    if (params.sheenRoughness !== undefined) this.sheenRoughness = params.sheenRoughness;
   }
 
   private setColor(target: Color, value: Color | number): void {

@@ -82,7 +82,8 @@ Forward renderer, one pass:
 - PBR metallic-roughness materials: base color, metallic-roughness, normal, occlusion,
   emissive textures + factors
 - Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`,
-  `KHR_materials_clearcoat` (factors), `KHR_materials_ior`, `KHR_materials_specular`
+  `KHR_materials_clearcoat` (factors), `KHR_materials_ior`, `KHR_materials_specular`,
+  `KHR_materials_sheen`
 - Vertex colors (`COLOR_0`, VEC3 or VEC4) multiplied into base color
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
 - **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
@@ -118,7 +119,7 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   locations (skinned at 6, others at 4) with no duplicates; glTF VEC3 `COLOR_0` padded to RGBA.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
-  material 96 / light stride 48) confirmed to match the TypeScript buffer packing.
+  material 112 / light stride 48) confirmed to match the TypeScript buffer packing.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 
 ## Roadmap

@@ -515,6 +515,13 @@ export class GLTFLoader {
       if (scf) material.specularColor.setRGB(scf[0], scf[1], scf[2]); // already linear
     }
 
+    const sheenExt = def.extensions?.KHR_materials_sheen;
+    if (sheenExt) {
+      const scf = sheenExt.sheenColorFactor;
+      if (scf) material.sheenColor.setRGB(scf[0], scf[1], scf[2]); // already linear
+      if (sheenExt.sheenRoughnessFactor !== undefined) material.sheenRoughness = sheenExt.sheenRoughnessFactor;
+    }
+
     if (def.doubleSided) material.side = 'double';
     if (def.alphaMode === 'BLEND') {
       material.transparent = true;

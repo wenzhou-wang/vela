@@ -90,6 +90,7 @@ export interface GLTFMaterial {
     KHR_materials_clearcoat?: { clearcoatFactor?: number; clearcoatRoughnessFactor?: number };
     KHR_materials_ior?: { ior?: number };
     KHR_materials_specular?: { specularFactor?: number; specularColorFactor?: [number, number, number] };
+    KHR_materials_sheen?: { sheenColorFactor?: [number, number, number]; sheenRoughnessFactor?: number };
   };
 }
 

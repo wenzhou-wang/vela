@@ -37,6 +37,7 @@ struct MaterialU {
   misc : vec4<f32>,
   specular : vec4<f32>,  // rgb = specular color factor, w = specular factor
   extra : vec4<f32>,     // x = ior
+  sheen : vec4<f32>,     // rgb = sheen color factor, w = sheen roughness
 };
 
 @group(0) @binding(0) var<uniform> frame : Frame;
@@ -227,6 +228,19 @@ fn fresnelSchlick(VoH : f32, f0 : vec3<f32>) -> vec3<f32> {
   return f0 + (vec3<f32>(1.0) - f0) * f;
 }
 
+// Charlie sheen NDF + Ashikhmin visibility (KHR_materials_sheen), for cloth-like
+// retroreflection at grazing angles.
+fn distributionCharlie(NoH : f32, roughness : f32) -> f32 {
+  let invR = 1.0 / roughness;
+  let cos2h = NoH * NoH;
+  let sin2h = max(1.0 - cos2h, 0.0078125);
+  return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * PI);
+}
+
+fn visibilitySheen(NoV : f32, NoL : f32) -> f32 {
+  return 1.0 / max(4.0 * (NoL + NoV - NoL * NoV), 1e-7);
+}
+
 fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
   let a = 2.51;
   let b = 0.03;
@@ -264,6 +278,11 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   // Clear-coat: a thin dielectric specular layer over the base (KHR_materials_clearcoat).
   let clearcoat = clamp(material.misc.z, 0.0, 1.0);
   let clearcoatRoughness = clamp(material.misc.w, 0.04, 1.0);
+
+  // Sheen: a soft retroreflective lobe for cloth (KHR_materials_sheen).
+  let sheenColor = material.sheen.rgb;
+  let sheenRoughness = clamp(material.sheen.w, 0.07, 1.0);
+  let hasSheen = sheenColor.r + sheenColor.g + sheenColor.b > 0.0;
 
   var N = normalize(in.worldNormal);
   if (!frontFacing) {
@@ -328,6 +347,13 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
     let kd = (vec3<f32>(1.0) - F);
     let diffuse = kd * diffuseColor / PI;
     var lit = diffuse + specular;
+
+    // Add a sheen lobe (Charlie NDF) over the base layer.
+    if (hasSheen) {
+      let Ds = distributionCharlie(NoH, sheenRoughness);
+      let Vs = visibilitySheen(NoV, NoL);
+      lit = lit + sheenColor * (Ds * Vs);
+    }
 
     // Add a clear-coat GGX lobe and attenuate the base layer by its Fresnel.
     if (clearcoat > 0.0) {
