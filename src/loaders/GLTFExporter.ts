@@ -25,7 +25,8 @@ const CHUNK_BIN = 0x004e4942;
  * round-trippable core: node hierarchy + TRS, mesh geometry (position / normal /
  * uv / color / indices), and `StandardMaterial` PBR factors with the clearcoat /
  * ior / specular / sheen extensions. Textures, skinning, morphs, and animation
- * are not yet emitted.
+ * are not yet emitted. Output as `.glb` ({@link parseGLB}) or a self-contained
+ * `.gltf` JSON with an embedded base64 buffer ({@link parseGLTF}).
  */
 export class GLTFExporter {
   private json!: {
@@ -48,6 +49,31 @@ export class GLTFExporter {
   private skinnedMeshes!: SkinnedMesh[];
 
   parse(root: Object3D, animations: AnimationClip[] = []): GLTFExportResult {
+    const binary = this.assemble(root, animations);
+    this.json.buffers.push({ byteLength: binary.byteLength });
+    return { json: this.json, glb: this.buildGLB(this.json, binary) };
+  }
+
+  /** Convenience: export just the `.glb` ArrayBuffer. */
+  parseGLB(root: Object3D, animations: AnimationClip[] = []): ArrayBuffer {
+    return this.parse(root, animations).glb;
+  }
+
+  /**
+   * Export to a standalone `.gltf` JSON object with the binary embedded as a
+   * base64 data-URI buffer (re-loadable directly by `GLTFLoader`).
+   */
+  parseGLTF(root: Object3D, animations: AnimationClip[] = []): Record<string, unknown> {
+    const binary = this.assemble(root, animations);
+    this.json.buffers.push({
+      byteLength: binary.byteLength,
+      uri: 'data:application/octet-stream;base64,' + base64Encode(binary),
+    } as { byteLength: number });
+    return this.json;
+  }
+
+  /** Build the glTF JSON + packed binary; shared by every output format. */
+  private assemble(root: Object3D, animations: AnimationClip[]): Uint8Array {
     this.json = {
       asset: { version: '2.0', generator: 'vela GLTFExporter' },
       scene: 0,
@@ -75,15 +101,7 @@ export class GLTFExporter {
     if (animations.length) this.addAnimations(animations);
 
     if (this.json.materials.length === 0) delete (this.json as Record<string, unknown>).materials;
-    const binary = this.concatChunks();
-    this.json.buffers.push({ byteLength: binary.byteLength });
-
-    return { json: this.json, glb: this.buildGLB(this.json, binary) };
-  }
-
-  /** Convenience: export just the `.glb` ArrayBuffer. */
-  parseGLB(root: Object3D, animations: AnimationClip[] = []): ArrayBuffer {
-    return this.parse(root, animations).glb;
+    return this.concatChunks();
   }
 
   private addNode(object: Object3D): number {
@@ -359,4 +377,18 @@ export class GLTFExporter {
     }
     return buffer;
   }
+}
+
+/** Base64-encode bytes via the platform's `btoa` (or Node's `Buffer` as a fallback). */
+function base64Encode(bytes: Uint8Array): string {
+  if (typeof btoa === 'function') {
+    let binary = '';
+    const chunk = 0x8000; // avoid arg-count limits on String.fromCharCode
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+  const nodeBuffer = (globalThis as { Buffer?: { from(b: Uint8Array): { toString(enc: string): string } } }).Buffer;
+  return nodeBuffer!.from(bytes).toString('base64');
 }
