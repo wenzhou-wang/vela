@@ -11,7 +11,6 @@ import { InstancedMesh } from '../core/InstancedMesh';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
-import { BufferAttribute } from '../core/BufferAttribute';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
 import { Matrix4 } from '../math/Matrix4';
@@ -422,8 +421,10 @@ export class WebGPURenderer {
       pass.setBindGroup(3, this.getSkinnedResources(mesh as SkinnedMesh).bindGroup);
       pass.setVertexBuffer(4, geometry.joints!);
       pass.setVertexBuffer(5, geometry.weights!);
-    } else if (morphed) {
-      pass.setBindGroup(3, this.getMorphResources(mesh).bindGroup);
+      pass.setVertexBuffer(6, geometry.color); // color follows the skinning streams
+    } else {
+      pass.setVertexBuffer(4, geometry.color);
+      if (morphed) pass.setBindGroup(3, this.getMorphResources(mesh).bindGroup);
     }
 
     const instanceCount = instanced ? (mesh as InstancedMesh).count : 1;
@@ -436,20 +437,14 @@ export class WebGPURenderer {
   }
 
   private drawLine(pass: GPURenderPassEncoder, mesh: Mesh, material: LineBasicMaterial): void {
-    const geom = mesh.geometry;
-    // The line pipeline always reads a per-vertex color stream; default to white.
-    if (!geom.getAttribute('color')) {
-      const n = geom.attributes.position.count;
-      geom.setAttribute('color', new BufferAttribute(new Float32Array(n * 4).fill(1), 4));
-      geom.version++;
-    }
-    const geometry = this.geometries.get(geom);
+    // The color stream is always present (white default), so lines need no setup.
+    const geometry = this.geometries.get(mesh.geometry);
 
     pass.setPipeline(this.pipelines.getLine(material));
     pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
     pass.setBindGroup(2, this.getLineResources(material).bindGroup);
     pass.setVertexBuffer(0, geometry.position);
-    pass.setVertexBuffer(1, geometry.color!);
+    pass.setVertexBuffer(1, geometry.color);
 
     if (geometry.index) {
       pass.setIndexBuffer(geometry.index, geometry.indexFormat);

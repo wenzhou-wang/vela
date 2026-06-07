@@ -85,8 +85,11 @@ A post-processing stack and richer materials.
       target, then a chain of fullscreen passes resolving to the swap chain.
 - ⬜ **Post effects** — bloom (threshold + Kawase blur), SSAO, tone-mapping pass (move
       ACES out of the material shader), FXAA, optional TAA with motion vectors.
-- ⬜ **Material extensions** — `KHR_materials_clearcoat`, `_transmission`/`_volume`
-      (refraction via screen-space sampling), `_sheen`, `_specular`, `_ior`, vertex colors.
+- 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
+      always-present per-vertex color stream (white default) multiplies base color in every
+      vertex variant, so no new pipeline is needed. ⬜ `KHR_materials_clearcoat`,
+      `_transmission`/`_volume` (refraction via screen-space sampling), `_sheen`,
+      `_specular`, `_ior`.
 - ⬜ **Transparency** — optional weighted-blended OIT to reduce sort artifacts.
 
 ---

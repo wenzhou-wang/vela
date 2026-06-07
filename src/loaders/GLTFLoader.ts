@@ -264,7 +264,16 @@ export class GLTFLoader {
       geometry.setAttribute('tangent', new BufferAttribute(this.readAccessorFloat(ctx, attributes.TANGENT), 4));
     }
     if (attributes.COLOR_0 !== undefined) {
-      geometry.setAttribute('color', new BufferAttribute(this.readAccessorFloat(ctx, attributes.COLOR_0), 4));
+      // COLOR_0 may be VEC3 or VEC4; the renderer expects vec4, so pad RGB with a=1.
+      let color = this.readAccessorFloat(ctx, attributes.COLOR_0);
+      if (ctx.json.accessors![attributes.COLOR_0].type === 'VEC3') {
+        const rgba = new Float32Array((color.length / 3) * 4);
+        for (let i = 0, j = 0; i < color.length; i += 3, j += 4) {
+          rgba[j] = color[i]; rgba[j + 1] = color[i + 1]; rgba[j + 2] = color[i + 2]; rgba[j + 3] = 1;
+        }
+        color = rgba;
+      }
+      geometry.setAttribute('color', new BufferAttribute(color, 4));
     }
     if (attributes.JOINTS_0 !== undefined) {
       geometry.setAttribute('joints', new BufferAttribute(this.readAccessorUint(ctx, attributes.JOINTS_0), 4));

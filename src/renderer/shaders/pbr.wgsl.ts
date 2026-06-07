@@ -59,6 +59,7 @@ struct VSOut {
   @location(2) uv : vec2<f32>,
   @location(3) worldTangent : vec3<f32>,
   @location(4) tangentSign : f32,
+  @location(5) color : vec4<f32>,
 };
 
 struct VSIn {
@@ -66,6 +67,7 @@ struct VSIn {
   @location(1) normal : vec3<f32>,
   @location(2) uv : vec2<f32>,
   @location(3) tangent : vec4<f32>,
+  @location(4) color : vec4<f32>,
 };
 `;
 
@@ -88,6 +90,7 @@ fn vs_main(in : VSIn) -> VSOut {
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
+  out.color = in.color;
   return out;
 }
 `;
@@ -109,6 +112,7 @@ fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
   out.worldTangent = normalize((model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
+  out.color = in.color;
   return out;
 }
 `;
@@ -125,6 +129,7 @@ struct VSInSkinned {
   @location(3) tangent : vec4<f32>,
   @location(4) joints : vec4<u32>,
   @location(5) weights : vec4<f32>,
+  @location(6) color : vec4<f32>,
 };
 
 @vertex
@@ -144,6 +149,7 @@ fn vs_main(in : VSInSkinned) -> VSOut {
   out.worldTangent = normalize((skin * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
+  out.color = in.color;
   return out;
 }
 `;
@@ -192,6 +198,7 @@ fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
+  out.color = in.color;
   return out;
 }
 `;
@@ -240,8 +247,8 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   let hasNormalMap = (flags & 2u) != 0u;
 
   let baseSample = textureSample(baseColorTex, baseColorSmp, in.uv);
-  let baseColor = material.baseColor.rgb * baseSample.rgb;
-  let alpha = material.baseColor.a * baseSample.a;
+  let baseColor = material.baseColor.rgb * baseSample.rgb * in.color.rgb;
+  let alpha = material.baseColor.a * baseSample.a * in.color.a;
 
   let alphaCutoff = material.misc.x;
   if (alphaCutoff > 0.0 && alpha < alphaCutoff) {

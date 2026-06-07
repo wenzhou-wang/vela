@@ -82,6 +82,7 @@ Forward renderer, one pass:
 - PBR metallic-roughness materials: base color, metallic-roughness, normal, occlusion,
   emissive textures + factors
 - Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`
+- Vertex colors (`COLOR_0`, VEC3 or VEC4) multiplied into base color
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
 - **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
   interpolation, played via `AnimationMixer`
@@ -112,6 +113,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   unlit line shader (bind-group + vertex-stream layout).
 - **Morph targets** — `weights` track interpolation (LINEAR/STEP/CUBICSPLINE), influence
   defaults, and an end-to-end glTF load (targets, `targetNames`, weights animation).
+- **Vertex colors** — all four variants parse with the added color stream at the right
+  locations (skinned at 6, others at 4) with no duplicates; glTF VEC3 `COLOR_0` padded to RGBA.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
   material 64 / light stride 48) confirmed to match the TypeScript buffer packing.

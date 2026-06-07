@@ -6,8 +6,8 @@ interface GPUGeometry {
   normal: GPUBuffer;
   uv: GPUBuffer;
   tangent: GPUBuffer;
-  /** Per-vertex vec4 color, present only when the geometry has a `color` attribute. */
-  color: GPUBuffer | null;
+  /** Per-vertex vec4 color; defaults to opaque white when the geometry has none. */
+  color: GPUBuffer;
   /** Skinning streams, present only for skinned geometries. */
   joints: GPUBuffer | null;
   weights: GPUBuffer | null;
@@ -56,9 +56,10 @@ export class GeometryBuffers {
     const uvBuf = this.upload(uv.array as Float32Array, GPUBufferUsage.VERTEX);
     const tangentBuf = this.upload(tangent.array as Float32Array, GPUBufferUsage.VERTEX);
 
-    // Per-vertex color (optional; used by the line path / vertex colors)
-    const colorAttr = geometry.getAttribute('color');
-    const color = colorAttr ? this.upload(colorAttr.array as Float32Array, GPUBufferUsage.VERTEX) : null;
+    // Per-vertex color (white default keeps the stream always present, so vertex
+    // colors need no pipeline variant — absent colors multiply by 1).
+    const colorAttr = geometry.getAttribute('color') ?? defaultColors(vertexCount);
+    const color = this.upload(colorAttr.array as Float32Array, GPUBufferUsage.VERTEX);
 
     // Skinning streams (optional)
     const jointsAttr = geometry.getAttribute('joints');
@@ -129,4 +130,8 @@ function defaultTangents(count: number): BufferAttribute {
     array[i * 4 + 3] = 1; // handedness
   }
   return new BufferAttribute(array, 4);
+}
+
+function defaultColors(count: number): BufferAttribute {
+  return new BufferAttribute(new Float32Array(count * 4).fill(1), 4);
 }
