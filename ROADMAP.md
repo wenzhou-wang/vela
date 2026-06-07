@@ -98,7 +98,9 @@ Faster loads, broader inputs, and ergonomics.
 - ⬜ **Worker-based loading** — parse glTF and decode images off the main thread;
       transfer typed arrays / `ImageBitmap`s.
 - 🚧 **More cameras/controls** — ✅ `OrthographicCamera`; ⬜ first-person & fly controls.
-- ⬜ **Raycasting / picking** — CPU BVH for interaction, or a GPU id-buffer pass.
+- 🚧 **Raycasting / picking** — ✅ `Ray` + `Raycaster` pick meshes at the bounding-sphere
+      level (`setFromCamera` unprojects NDC; hits sorted nearest-first); ⬜ per-triangle
+      precision via a CPU BVH, or a GPU id-buffer pass.
 - ⬜ **Helpers & debug** — grid, axes, bounding-box and light gizmos; a stats/inspector overlay.
 
 ---

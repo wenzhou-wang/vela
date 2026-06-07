@@ -7,6 +7,8 @@ export * from './math';
 
 // core
 export { Object3D } from './core/Object3D';
+export { Raycaster } from './core/Raycaster';
+export type { Intersection } from './core/Raycaster';
 export { Scene } from './core/Scene';
 export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';

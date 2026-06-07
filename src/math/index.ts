@@ -12,3 +12,4 @@ export * from './Box3';
 export * from './Plane';
 export * from './Sphere';
 export * from './Frustum';
+export * from './Ray';
