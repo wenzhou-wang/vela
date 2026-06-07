@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vela · glTF viewer</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --panel: rgba(20, 22, 28, 0.82);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #e6e8ec;
+        --muted: #9aa0aa;
+        --accent: #5b9dff;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--text);
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+      .panel {
+        position: absolute;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        backdrop-filter: blur(12px);
+        padding: 14px 16px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      #info { top: 16px; left: 16px; max-width: 280px; }
+      #info h1 { margin: 0 0 4px; font-size: 16px; letter-spacing: 0.3px; }
+      #info h1 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+      #info .hint { color: var(--muted); margin-top: 8px; }
+      #info a { color: var(--accent); text-decoration: none; }
+
+      #controls { top: 16px; right: 16px; width: 230px; }
+      #controls label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); }
+      #controls input[type="range"] { width: 110px; accent-color: var(--accent); }
+      #controls .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      button {
+        background: rgba(91, 157, 255, 0.14);
+        color: var(--text);
+        border: 1px solid rgba(91, 157, 255, 0.4);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover { background: rgba(91, 157, 255, 0.26); }
+      button.ghost { background: transparent; border-color: var(--border); color: var(--muted); }
+
+      #stats { bottom: 16px; left: 16px; font-variant-numeric: tabular-nums; color: var(--muted); }
+      #stats b { color: var(--text); }
+
+      #drop {
+        position: absolute; inset: 0; display: none;
+        align-items: center; justify-content: center;
+        background: rgba(11, 12, 16, 0.7); backdrop-filter: blur(4px);
+        border: 3px dashed var(--accent); border-radius: 16px;
+        font-size: 22px; color: var(--accent); pointer-events: none; z-index: 10;
+      }
+      body.dragging #drop { display: flex; }
+
+      #unsupported {
+        position: absolute; inset: 0; display: none;
+        align-items: center; justify-content: center; text-align: center; padding: 40px;
+        flex-direction: column; gap: 12px;
+      }
+      #unsupported code { color: var(--accent); }
+      input[type="file"] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="canvas"></canvas>
+
+      <div id="info" class="panel">
+        <h1>vela <small>· WebGPU engine</small></h1>
+        <div>A from-scratch TypeScript renderer with PBR metallic-roughness shading.</div>
+        <div class="hint">Drag &amp; drop a <b>.glb</b> / <b>.gltf</b> to view it. Drag to orbit · scroll to zoom · right-drag to pan.</div>
+      </div>
+
+      <div id="controls" class="panel">
+        <label>Exposure <input id="exposure" type="range" min="0.2" max="3" step="0.01" value="1" /></label>
+        <label>Light <input id="lightIntensity" type="range" min="0" max="6" step="0.05" value="3" /></label>
+        <label>Auto-rotate <input id="autorotate" type="checkbox" /></label>
+        <label>Wireframe bg <input id="darkbg" type="checkbox" checked /></label>
+        <div class="row">
+          <button id="loadFile">Open file…</button>
+          <button id="reset" class="ghost">Reset view</button>
+        </div>
+        <div class="row">
+          <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb">Helmet</button>
+          <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/FlightHelmet/glTF/FlightHelmet.gltf">Flight</button>
+          <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/BoomBox/glTF-Binary/BoomBox.glb">BoomBox</button>
+        </div>
+      </div>
+
+      <div id="stats" class="panel"></div>
+      <div id="drop">Drop glTF / GLB to load</div>
+      <input id="fileInput" type="file" accept=".glb,.gltf,.bin,image/*" multiple />
+
+      <div id="unsupported" class="panel">
+        <h1>WebGPU not available</h1>
+        <div>This viewer needs a browser with <code>navigator.gpu</code> (Chrome/Edge 113+, or Safari 18 / Firefox with WebGPU enabled).</div>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
