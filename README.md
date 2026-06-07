@@ -27,7 +27,7 @@ targets **WebGPU exclusively**, which means:
 
 - A single modern shading path (WGSL), no GLSL transpilation or `#define` soup.
 - Explicit GPU resources: buffers, bind groups, and pipelines are cached and reused.
-- A tiny footprint — the whole engine + viewer bundles to **~86 KB (26 KB gzip)**,
+- A tiny footprint — the whole engine + viewer bundles to **~90 KB (28 KB gzip)**,
   versus ~600 KB for three.js.
 
 ## Running the viewer
