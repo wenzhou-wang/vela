@@ -1,5 +1,6 @@
 import { Object3D } from '../core/Object3D';
 import { Mesh } from '../core/Mesh';
+import { SkinnedMesh } from '../core/SkinnedMesh';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import type { AnimationClip } from '../animation/AnimationClip';
 
@@ -12,6 +13,7 @@ export interface GLTFExportResult {
 
 const FLOAT = 5126;
 const UNSIGNED_INT = 5125;
+const UNSIGNED_SHORT = 5123;
 const ARRAY_BUFFER = 34962;
 const ELEMENT_ARRAY_BUFFER = 34963;
 const GLB_MAGIC = 0x46546c67;
@@ -43,6 +45,7 @@ export class GLTFExporter {
   private materialIndex!: Map<StandardMaterial, number>;
   private meshIndex!: Map<string, number>;
   private nodeMap!: Map<Object3D, number>;
+  private skinnedMeshes!: SkinnedMesh[];
 
   parse(root: Object3D, animations: AnimationClip[] = []): GLTFExportResult {
     this.json = {
@@ -61,12 +64,14 @@ export class GLTFExporter {
     this.materialIndex = new Map();
     this.meshIndex = new Map();
     this.nodeMap = new Map();
+    this.skinnedMeshes = [];
 
     root.updateMatrixWorld(true);
     // A Mesh root is exported directly; a container's children become the scene.
     const topLevel = root instanceof Mesh ? [root] : root.children;
     this.json.scenes[0].nodes = topLevel.map((child) => this.addNode(child));
 
+    this.addSkins();
     if (animations.length) this.addAnimations(animations);
 
     if (this.json.materials.length === 0) delete (this.json as Record<string, unknown>).materials;
@@ -95,6 +100,7 @@ export class GLTFExporter {
     if (object instanceof Mesh) {
       const material = Array.isArray(object.material) ? object.material[0] : object.material;
       node.mesh = this.addMesh(object, material instanceof StandardMaterial ? material : null);
+      if (object instanceof SkinnedMesh) this.skinnedMeshes.push(object);
     }
 
     const index = this.json.nodes.push(node) - 1; // reserve index before recursing
@@ -102,6 +108,33 @@ export class GLTFExporter {
     const children = object.children.map((c) => this.addNode(c));
     if (children.length) node.children = children;
     return index;
+  }
+
+  private addSkins(): void {
+    if (!this.skinnedMeshes.length) return;
+    const skins: Record<string, unknown>[] = [];
+    for (const mesh of this.skinnedMeshes) {
+      const nodeIndex = this.nodeMap.get(mesh);
+      const skeleton = mesh.skeleton;
+      if (nodeIndex === undefined || !skeleton || skeleton.jointCount === 0) continue;
+
+      const jointIndices: number[] = [];
+      let allMapped = true;
+      for (const joint of skeleton.joints) {
+        const ji = this.nodeMap.get(joint);
+        if (ji === undefined) { allMapped = false; break; }
+        jointIndices.push(ji);
+      }
+      if (!allMapped) continue; // joints must live in the exported subtree
+
+      const ibm = new Float32Array(skeleton.jointCount * 16);
+      for (let i = 0; i < skeleton.boneInverses.length; i++) ibm.set(skeleton.boneInverses[i].elements, i * 16);
+      const inverseBindMatrices = this.addAccessor(ibm, 16, FLOAT, undefined);
+
+      const skinIndex = skins.push({ joints: jointIndices, inverseBindMatrices }) - 1;
+      this.json.nodes[nodeIndex].skin = skinIndex;
+    }
+    if (skins.length) (this.json as Record<string, unknown>).skins = skins;
   }
 
   private addAnimations(clips: AnimationClip[]): void {
@@ -145,6 +178,13 @@ export class GLTFExporter {
     if (uv) attributes.TEXCOORD_0 = this.addAccessor(uv.array as Float32Array, 2, FLOAT, ARRAY_BUFFER);
     const color = geometry.attributes.color;
     if (color) attributes.COLOR_0 = this.addAccessor(color.array as Float32Array, color.itemSize, FLOAT, ARRAY_BUFFER);
+    const joints = geometry.attributes.joints;
+    const weights = geometry.attributes.weights;
+    if (joints && weights) {
+      const u16 = Uint16Array.from(joints.array as ArrayLike<number>); // glTF JOINTS_0 = unsigned short
+      attributes.JOINTS_0 = this.addAccessor(u16, 4, UNSIGNED_SHORT, ARRAY_BUFFER);
+      attributes.WEIGHTS_0 = this.addAccessor(weights.array as Float32Array, 4, FLOAT, ARRAY_BUFFER);
+    }
 
     const primitive: Record<string, unknown> = { attributes };
     if (geometry.index) {
@@ -237,7 +277,7 @@ export class GLTFExporter {
 
   /** Append a typed array as a bufferView + accessor; returns the accessor index. */
   private addAccessor(
-    data: Float32Array | Uint32Array,
+    data: Float32Array | Uint32Array | Uint16Array,
     itemSize: number,
     componentType: number,
     target?: number,
@@ -253,7 +293,7 @@ export class GLTFExporter {
     if (target !== undefined) viewDef.target = target;
     const bufferView = this.json.bufferViews.push(viewDef) - 1;
 
-    const TYPE = ['', 'SCALAR', 'VEC2', 'VEC3', 'VEC4'][itemSize];
+    const TYPE = itemSize === 16 ? 'MAT4' : ['', 'SCALAR', 'VEC2', 'VEC3', 'VEC4'][itemSize];
     const accessor: Record<string, unknown> = {
       bufferView, componentType, count: data.length / itemSize, type: TYPE,
     };

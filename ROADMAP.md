@@ -134,8 +134,8 @@ Faster loads, broader inputs, and ergonomics.
   (position/normal/uv/color/indices), and `StandardMaterial` PBR factors with the
   clearcoat/ior/specular/sheen extensions, **morph targets** (deltas + default weights +
   `targetNames`), and keyframe **animation** clips (translation/rotation/scale/weights, all
-  interpolations) to a binary `.glb`; verified by round-tripping back through `GLTFLoader`.
-  ⬜ textures, skinning.
+  interpolations) and **skinning** (JOINTS/WEIGHTS, skins + inverse bind matrices) to a
+  binary `.glb`; verified by round-tripping back through `GLTFLoader`. ⬜ textures.
 - ✅ **Lightweight scene format** (`SceneSerializer`) — lossless JSON round-trip of the scene
   graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
   `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved

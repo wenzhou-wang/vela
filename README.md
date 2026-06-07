@@ -94,7 +94,7 @@ Forward renderer, one pass:
   `targetNames`, and `weights` animation channels; deltas blended in a morph vertex variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 - **glTF export** — `GLTFExporter` writes the scene (hierarchy, geometry, morph targets,
-  PBR materials + extensions, and keyframe animation clips) back out to a binary `.glb`
+  skinning, PBR materials + extensions, and keyframe animation clips) back out to a binary `.glb`
 - **Native scene format** — `SceneSerializer` round-trips the scene graph to/from compact
   JSON (geometry/material tables, de-duplicated)
 
