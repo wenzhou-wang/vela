@@ -1,6 +1,5 @@
 import { Object3D } from '../core/Object3D';
 import { Mesh } from '../core/Mesh';
-import { BufferGeometry } from '../core/BufferGeometry';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import type { AnimationClip } from '../animation/AnimationClip';
 
@@ -95,7 +94,7 @@ export class GLTFExporter {
 
     if (object instanceof Mesh) {
       const material = Array.isArray(object.material) ? object.material[0] : object.material;
-      node.mesh = this.addMesh(object.geometry, material instanceof StandardMaterial ? material : null);
+      node.mesh = this.addMesh(object, material instanceof StandardMaterial ? material : null);
     }
 
     const index = this.json.nodes.push(node) - 1; // reserve index before recursing
@@ -129,9 +128,11 @@ export class GLTFExporter {
     if (animations.length) this.json.animations = animations;
   }
 
-  private addMesh(geometry: BufferGeometry, material: StandardMaterial | null): number {
+  private addMesh(mesh: Mesh, material: StandardMaterial | null): number {
+    const geometry = mesh.geometry;
     const matIndex = material ? this.addMaterial(material) : -1;
-    const key = `${geometry.id}|${matIndex}`;
+    // Influences are per-mesh, so include them in the dedup key.
+    const key = `${geometry.id}|${matIndex}|${mesh.morphTargetInfluences.join(',')}`;
     const cached = this.meshIndex.get(key);
     if (cached !== undefined) return cached;
 
@@ -154,8 +155,29 @@ export class GLTFExporter {
     }
     if (matIndex >= 0) primitive.material = matIndex;
 
+    // Morph targets: per-target POSITION (and NORMAL) delta accessors.
+    const morphPos = geometry.morphAttributes.position;
+    if (morphPos?.length) {
+      const morphNrm = geometry.morphAttributes.normal;
+      primitive.targets = morphPos.map((p, i) => {
+        const target: Record<string, number> = {
+          POSITION: this.addAccessor(p.array as Float32Array, 3, FLOAT, ARRAY_BUFFER, true),
+        };
+        if (morphNrm?.[i]) target.NORMAL = this.addAccessor(morphNrm[i].array as Float32Array, 3, FLOAT, ARRAY_BUFFER);
+        return target;
+      });
+    }
+
     const meshDef: Record<string, unknown> = { primitives: [primitive] };
     if (geometry.name) meshDef.name = geometry.name;
+    if (morphPos?.length) {
+      meshDef.weights = mesh.morphTargetInfluences.slice();
+      if (mesh.morphTargetDictionary) {
+        const names: string[] = [];
+        for (const [name, i] of Object.entries(mesh.morphTargetDictionary)) names[i] = name;
+        if (names.length === morphPos.length) meshDef.extras = { targetNames: names };
+      }
+    }
     const index = this.json.meshes.push(meshDef) - 1;
     this.meshIndex.set(key, index);
     return index;
