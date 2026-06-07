@@ -95,6 +95,8 @@ Forward renderer, one pass:
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 - **glTF export** — `GLTFExporter` writes the scene (hierarchy, geometry, PBR materials +
   extensions) back out to a binary `.glb`
+- **Native scene format** — `SceneSerializer` round-trips the scene graph to/from compact
+  JSON (geometry/material tables, de-duplicated)
 
 ## Verification
 
@@ -121,6 +123,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   locations (skinned at 6, others at 4) with no duplicates; glTF VEC3 `COLOR_0` padded to RGBA.
 - **glTF export** — a scene (transforms, geometry, indices, vertex colors, PBR materials +
   clearcoat/ior/specular/sheen) survives an export→`GLTFLoader` round-trip intact.
+- **Scene format** — `SceneSerializer` round-trips hierarchy, transforms, geometry,
+  lights, and materials through JSON, with shared geometry/material instances preserved.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
   material 112 / light stride 48) confirmed to match the TypeScript buffer packing.

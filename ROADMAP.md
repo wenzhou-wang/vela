@@ -132,8 +132,11 @@ Faster loads, broader inputs, and ergonomics.
 - ✅ **glTF export** (`GLTFExporter`) — writes node hierarchy + TRS, mesh geometry
   (position/normal/uv/color/indices), and `StandardMaterial` PBR factors with the
   clearcoat/ior/specular/sheen extensions to a binary `.glb`; verified by round-tripping
-  back through `GLTFLoader`. ⬜ textures, skinning, morphs, animation, and a lightweight
-  native scene format.
+  back through `GLTFLoader`. ⬜ textures, skinning, morphs, animation.
+- ✅ **Lightweight scene format** (`SceneSerializer`) — lossless JSON round-trip of the scene
+  graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
+  `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved
+  across load. Verified by a serialize→stringify→parse→deserialize round-trip.
 - **WebXR** session support.
 - A small **node-based material** graph compiling to WGSL.
 

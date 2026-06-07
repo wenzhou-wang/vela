@@ -65,6 +65,7 @@ export { GLTFLoader } from './loaders/GLTFLoader';
 export type { GLTFResult } from './loaders/GLTFLoader';
 export { GLTFExporter } from './loaders/GLTFExporter';
 export type { GLTFExportResult } from './loaders/GLTFExporter';
+export { SceneSerializer } from './loaders/SceneSerializer';
 
 // animation
 export { AnimationClip } from './animation/AnimationClip';
