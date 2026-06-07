@@ -94,7 +94,7 @@ Forward renderer, one pass:
   `targetNames`, and `weights` animation channels; deltas blended in a morph vertex variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 - **glTF export** — `GLTFExporter` writes the scene (hierarchy, geometry, PBR materials +
-  extensions) back out to a binary `.glb`
+  extensions, and keyframe animation clips) back out to a binary `.glb`
 - **Native scene format** — `SceneSerializer` round-trips the scene graph to/from compact
   JSON (geometry/material tables, de-duplicated)
 
@@ -122,7 +122,7 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **Vertex colors** — all four variants parse with the added color stream at the right
   locations (skinned at 6, others at 4) with no duplicates; glTF VEC3 `COLOR_0` padded to RGBA.
 - **glTF export** — a scene (transforms, geometry, indices, vertex colors, PBR materials +
-  clearcoat/ior/specular/sheen) survives an export→`GLTFLoader` round-trip intact.
+  clearcoat/ior/specular/sheen, and animation clips) survives an export→`GLTFLoader` round-trip.
 - **Scene format** — `SceneSerializer` round-trips hierarchy, transforms, geometry,
   lights, and materials through JSON, with shared geometry/material instances preserved.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with

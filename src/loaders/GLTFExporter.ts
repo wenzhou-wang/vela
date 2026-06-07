@@ -2,6 +2,7 @@ import { Object3D } from '../core/Object3D';
 import { Mesh } from '../core/Mesh';
 import { BufferGeometry } from '../core/BufferGeometry';
 import { StandardMaterial } from '../materials/StandardMaterial';
+import type { AnimationClip } from '../animation/AnimationClip';
 
 /** Result of an export: the glTF JSON plus the packed binary (a `.glb`). */
 export interface GLTFExportResult {
@@ -36,13 +37,15 @@ export class GLTFExporter {
     accessors: Record<string, unknown>[];
     bufferViews: Record<string, unknown>[];
     buffers: { byteLength: number }[];
+    animations?: Record<string, unknown>[];
   };
   private chunks!: Uint8Array[];
   private byteLength!: number;
   private materialIndex!: Map<StandardMaterial, number>;
   private meshIndex!: Map<string, number>;
+  private nodeMap!: Map<Object3D, number>;
 
-  parse(root: Object3D): GLTFExportResult {
+  parse(root: Object3D, animations: AnimationClip[] = []): GLTFExportResult {
     this.json = {
       asset: { version: '2.0', generator: 'vela GLTFExporter' },
       scene: 0,
@@ -58,11 +61,14 @@ export class GLTFExporter {
     this.byteLength = 0;
     this.materialIndex = new Map();
     this.meshIndex = new Map();
+    this.nodeMap = new Map();
 
     root.updateMatrixWorld(true);
     // A Mesh root is exported directly; a container's children become the scene.
     const topLevel = root instanceof Mesh ? [root] : root.children;
     this.json.scenes[0].nodes = topLevel.map((child) => this.addNode(child));
+
+    if (animations.length) this.addAnimations(animations);
 
     if (this.json.materials.length === 0) delete (this.json as Record<string, unknown>).materials;
     const binary = this.concatChunks();
@@ -72,8 +78,8 @@ export class GLTFExporter {
   }
 
   /** Convenience: export just the `.glb` ArrayBuffer. */
-  parseGLB(root: Object3D): ArrayBuffer {
-    return this.parse(root).glb;
+  parseGLB(root: Object3D, animations: AnimationClip[] = []): ArrayBuffer {
+    return this.parse(root, animations).glb;
   }
 
   private addNode(object: Object3D): number {
@@ -93,9 +99,34 @@ export class GLTFExporter {
     }
 
     const index = this.json.nodes.push(node) - 1; // reserve index before recursing
+    this.nodeMap.set(object, index);
     const children = object.children.map((c) => this.addNode(c));
     if (children.length) node.children = children;
     return index;
+  }
+
+  private addAnimations(clips: AnimationClip[]): void {
+    const animations: Record<string, unknown>[] = [];
+    for (const clip of clips) {
+      const samplers: Record<string, unknown>[] = [];
+      const channels: Record<string, unknown>[] = [];
+      for (const track of clip.tracks) {
+        const nodeIndex = this.nodeMap.get(track.target);
+        if (nodeIndex === undefined) continue; // target outside the exported subtree
+        const input = this.addAccessor(track.times as Float32Array, 1, FLOAT, undefined, true);
+        // Weights are a stream of SCALARs (count = keyframes × targets × [3 if cubic]).
+        const comps = track.path === 'rotation' ? 4 : track.path === 'weights' ? 1 : 3;
+        const output = this.addAccessor(track.values as Float32Array, comps, FLOAT, undefined);
+        const sampler = samplers.push({ input, output, interpolation: track.interpolation }) - 1;
+        channels.push({ sampler, target: { node: nodeIndex, path: track.path } });
+      }
+      if (channels.length) {
+        const anim: Record<string, unknown> = { samplers, channels };
+        if (clip.name) anim.name = clip.name;
+        animations.push(anim);
+      }
+    }
+    if (animations.length) this.json.animations = animations;
   }
 
   private addMesh(geometry: BufferGeometry, material: StandardMaterial | null): number {
@@ -187,7 +218,7 @@ export class GLTFExporter {
     data: Float32Array | Uint32Array,
     itemSize: number,
     componentType: number,
-    target: number,
+    target?: number,
     computeMinMax = false,
   ): number {
     this.align4();
@@ -196,9 +227,9 @@ export class GLTFExporter {
     this.chunks.push(bytes);
     this.byteLength += bytes.byteLength;
 
-    const bufferView = this.json.bufferViews.push({
-      buffer: 0, byteOffset, byteLength: bytes.byteLength, target,
-    }) - 1;
+    const viewDef: Record<string, unknown> = { buffer: 0, byteOffset, byteLength: bytes.byteLength };
+    if (target !== undefined) viewDef.target = target;
+    const bufferView = this.json.bufferViews.push(viewDef) - 1;
 
     const TYPE = ['', 'SCALAR', 'VEC2', 'VEC3', 'VEC4'][itemSize];
     const accessor: Record<string, unknown> = {

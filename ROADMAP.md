@@ -131,8 +131,9 @@ Faster loads, broader inputs, and ergonomics.
 - **Clustered forward+** lighting for hundreds of dynamic lights.
 - ✅ **glTF export** (`GLTFExporter`) — writes node hierarchy + TRS, mesh geometry
   (position/normal/uv/color/indices), and `StandardMaterial` PBR factors with the
-  clearcoat/ior/specular/sheen extensions to a binary `.glb`; verified by round-tripping
-  back through `GLTFLoader`. ⬜ textures, skinning, morphs, animation.
+  clearcoat/ior/specular/sheen extensions, plus keyframe **animation** clips
+  (translation/rotation/scale, all interpolations) to a binary `.glb`; verified by
+  round-tripping back through `GLTFLoader`. ⬜ textures, skinning, morphs.
 - ✅ **Lightweight scene format** (`SceneSerializer`) — lossless JSON round-trip of the scene
   graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
   `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved
