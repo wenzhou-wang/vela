@@ -60,8 +60,8 @@ Forward renderer, one pass:
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
 - A single **"uber" shader**: absent material maps bind white/flat 1×1 defaults, so
-  pipeline variants only depend on render state (cull / blend / depth-write), not on
-  which textures a material happens to have.
+  pipeline variants only depend on render state (cull / blend / depth-write) plus a
+  static-vs-skinned bit — not on which textures a material happens to have.
 
 ### Bind group layout
 
@@ -70,6 +70,7 @@ Forward renderer, one pass:
 | 0 | frame uniforms (view, proj, camera, ambient) + lights storage buffer |
 | 1 | per-object model + normal matrix |
 | 2 | material uniforms + 5 (texture, sampler) pairs: base, normal, metal-rough, emissive, occlusion |
+| 3 | bone matrices storage buffer (skinned meshes only) |
 
 ## glTF support
 
@@ -81,6 +82,8 @@ Forward renderer, one pass:
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
 - **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
   interpolation, played via `AnimationMixer`
+- **GPU skinning** — `skins` / inverse bind matrices → `SkinnedMesh`, bone matrices blended
+  in a skinned vertex shader variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
 
 ## Verification

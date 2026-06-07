@@ -1,10 +1,13 @@
 import { Object3D } from '../core/Object3D';
 import { Mesh } from '../core/Mesh';
+import { SkinnedMesh } from '../core/SkinnedMesh';
+import { Skeleton } from '../core/Skeleton';
 import { BufferGeometry } from '../core/BufferGeometry';
 import { BufferAttribute } from '../core/BufferAttribute';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { Texture } from '../textures/Texture';
 import { Box3 } from '../math/Box3';
+import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
 import { computeTangents } from './computeTangents';
 import { AnimationClip } from '../animation/AnimationClip';
@@ -97,7 +100,7 @@ export class GLTFLoader {
     const materials = (json.materials ?? []).map((m) => this.buildMaterial(m, textures));
     if (materials.length === 0) materials.push(new StandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.8 }));
 
-    const ctx: BuildContext = { json, buffers, materials, geometryCache: new Map() };
+    const ctx: BuildContext = { json, buffers, materials, geometryCache: new Map(), pendingSkins: [] };
 
     // Build nodes
     const nodes: Object3D[] = (json.nodes ?? []).map((n) => this.buildNode(n, ctx));
@@ -116,6 +119,17 @@ export class GLTFLoader {
       root.name = s.name ?? 'Scene';
       for (const nodeIndex of s.nodes ?? []) root.add(nodes[nodeIndex]);
       sceneRoots.push(root);
+    }
+
+    // Resolve skinned meshes now that all joint nodes exist.
+    const skeletonCache = new Map<number, Skeleton>();
+    for (const { mesh, skinIndex } of ctx.pendingSkins) {
+      let skeleton = skeletonCache.get(skinIndex);
+      if (!skeleton) {
+        skeleton = this.buildSkeleton(skinIndex, nodes, ctx);
+        skeletonCache.set(skinIndex, skeleton);
+      }
+      mesh.skeleton = skeleton;
     }
 
     const defaultScene = sceneRoots[json.scene ?? 0] ?? sceneRoots[0] ?? new Object3D();
@@ -172,13 +186,34 @@ export class GLTFLoader {
         if (material.normalMap && !geometry.getAttribute('tangent')) {
           computeTangents(geometry);
         }
-        const mesh = new Mesh(geometry, material);
+        let mesh: Mesh;
+        if (node.skin !== undefined) {
+          // placeholder skeleton; resolved after all nodes are built
+          const skinned = new SkinnedMesh(geometry, material, new Skeleton([], []));
+          ctx.pendingSkins.push({ mesh: skinned, skinIndex: node.skin });
+          mesh = skinned;
+        } else {
+          mesh = new Mesh(geometry, material);
+        }
         mesh.name = meshDef.name ? `${meshDef.name}_${p}` : object.name;
         object.add(mesh);
       }
     }
 
     return object;
+  }
+
+  private buildSkeleton(skinIndex: number, nodes: Object3D[], ctx: BuildContext): Skeleton {
+    const skin = ctx.json.skins![skinIndex];
+    const joints = skin.joints.map((i) => nodes[i]);
+    let inverses: Matrix4[];
+    if (skin.inverseBindMatrices !== undefined) {
+      const data = this.readAccessorFloat(ctx, skin.inverseBindMatrices); // 16 floats per joint
+      inverses = joints.map((_, j) => new Matrix4().fromArray(data, j * 16));
+    } else {
+      inverses = joints.map(() => new Matrix4());
+    }
+    return new Skeleton(joints, inverses);
   }
 
   private buildGeometry(prim: GLTFPrimitive, ctx: BuildContext): BufferGeometry {
@@ -203,6 +238,12 @@ export class GLTFLoader {
     }
     if (attributes.COLOR_0 !== undefined) {
       geometry.setAttribute('color', new BufferAttribute(this.readAccessorFloat(ctx, attributes.COLOR_0), 4));
+    }
+    if (attributes.JOINTS_0 !== undefined) {
+      geometry.setAttribute('joints', new BufferAttribute(this.readAccessorUint(ctx, attributes.JOINTS_0), 4));
+    }
+    if (attributes.WEIGHTS_0 !== undefined) {
+      geometry.setAttribute('weights', new BufferAttribute(this.readAccessorFloat(ctx, attributes.WEIGHTS_0), 4));
     }
 
     if (prim.indices !== undefined) {
@@ -259,6 +300,31 @@ export class GLTFLoader {
       for (let c = 0; c < numComponents; c++) {
         const o = elementOffset + c * compSize;
         out[i * numComponents + c] = this.readComponent(dv, o, accessor.componentType, normalize);
+      }
+    }
+    return out;
+  }
+
+  /** Read an integer accessor (e.g. JOINTS_0) into a Uint32Array. */
+  private readAccessorUint(ctx: BuildContext, accessorIndex: number): Uint32Array {
+    const accessor = ctx.json.accessors![accessorIndex];
+    const numComponents = TYPE_COMPONENTS[accessor.type];
+    const out = new Uint32Array(accessor.count * numComponents);
+    const bufferView = accessor.bufferView !== undefined ? ctx.json.bufferViews![accessor.bufferView] : undefined;
+    if (!bufferView) return out;
+
+    const buffer = ctx.buffers[bufferView.buffer];
+    const compSize = COMPONENT_SIZE[accessor.componentType];
+    const byteStride = bufferView.byteStride ?? numComponents * compSize;
+    const baseOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const dv = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+    for (let i = 0; i < accessor.count; i++) {
+      const elementOffset = baseOffset + i * byteStride;
+      for (let c = 0; c < numComponents; c++) {
+        const o = elementOffset + c * compSize;
+        out[i * numComponents + c] =
+          accessor.componentType === 5123 ? dv.getUint16(o, true) : dv.getUint8(o);
       }
     }
     return out;
@@ -414,6 +480,8 @@ interface BuildContext {
   buffers: Uint8Array[];
   materials: StandardMaterial[];
   geometryCache: Map<string, BufferGeometry>;
+  /** Skinned meshes awaiting skeleton resolution (joints built after nodes). */
+  pendingSkins: { mesh: SkinnedMesh; skinIndex: number }[];
 }
 
 function configure(texture: Texture | undefined, colorSpace: 'srgb' | 'linear'): Texture | null {

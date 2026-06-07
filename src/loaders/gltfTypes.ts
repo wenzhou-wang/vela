@@ -14,6 +14,14 @@ export interface GLTFRoot {
   images?: GLTFImage[];
   samplers?: GLTFSampler[];
   animations?: GLTFAnimation[];
+  skins?: GLTFSkin[];
+}
+
+export interface GLTFSkin {
+  name?: string;
+  joints: number[];
+  inverseBindMatrices?: number; // accessor of mat4 per joint
+  skeleton?: number;
 }
 
 export interface GLTFAnimation {
@@ -36,6 +44,7 @@ export interface GLTFAnimationSampler {
 export interface GLTFNode {
   name?: string;
   mesh?: number;
+  skin?: number;
   children?: number[];
   matrix?: number[];
   translation?: [number, number, number];

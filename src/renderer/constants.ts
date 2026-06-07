@@ -26,3 +26,16 @@ export const VERTEX_BUFFER_LAYOUT: GPUVertexBufferLayout[] = [
     attributes: [{ shaderLocation: 3, offset: 0, format: 'float32x4' }],
   },
 ];
+
+/** Static layout plus joints (uint32x4) and weights (float32x4) streams. */
+export const SKINNED_VERTEX_BUFFER_LAYOUT: GPUVertexBufferLayout[] = [
+  ...VERTEX_BUFFER_LAYOUT,
+  {
+    arrayStride: 16,
+    attributes: [{ shaderLocation: 4, offset: 0, format: 'uint32x4' }],
+  },
+  {
+    arrayStride: 16,
+    attributes: [{ shaderLocation: 5, offset: 0, format: 'float32x4' }],
+  },
+];

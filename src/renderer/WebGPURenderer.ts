@@ -6,6 +6,7 @@ import { Light } from '../lights/Light';
 import { AmbientLight } from '../lights/AmbientLight';
 import { DirectionalLight } from '../lights/DirectionalLight';
 import { PointLight } from '../lights/PointLight';
+import { SkinnedMesh } from '../core/SkinnedMesh';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { Vector3 } from '../math/Vector3';
@@ -17,7 +18,7 @@ import { GeometryBuffers } from './GeometryBuffers';
 import { TextureManager } from './TextureManager';
 import { PipelineCache } from './PipelineCache';
 import { DEPTH_FORMAT } from './constants';
-import { PBR_SHADER } from './shaders/pbr.wgsl';
+import { PBR_SHADER, PBR_SKINNED_SHADER } from './shaders/pbr.wgsl';
 
 const MAX_LIGHTS = 32;
 const FRAME_SIZE = 160; // bytes
@@ -28,6 +29,12 @@ const LIGHT_STRIDE = 48; // bytes per light
 interface MeshResources {
   modelBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
+}
+
+interface SkinnedResources {
+  boneBuffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+  jointCount: number;
 }
 
 interface MaterialResources {
@@ -71,6 +78,7 @@ export class WebGPURenderer {
 
   private meshResources = new WeakMap<Mesh, MeshResources>();
   private materialResources = new WeakMap<Material, MaterialResources>();
+  private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
 
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
@@ -120,7 +128,7 @@ export class WebGPURenderer {
 
     this.geometries = new GeometryBuffers(this.device);
     this.textures = new TextureManager(this.device);
-    this.pipelines = new PipelineCache(this.device, this.format, this.sampleCount, PBR_SHADER);
+    this.pipelines = new PipelineCache(this.device, this.format, this.sampleCount, PBR_SHADER, PBR_SKINNED_SHADER);
 
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
@@ -359,9 +367,9 @@ export class WebGPURenderer {
     const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (!(material instanceof StandardMaterial)) return;
 
-    const pipeline = this.pipelines.get(material);
-    pass.setPipeline(pipeline);
+    const skinned = mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
 
+    pass.setPipeline(this.pipelines.get(material, skinned));
     pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
     pass.setBindGroup(2, this.getMaterialResources(material).bindGroup);
 
@@ -370,12 +378,39 @@ export class WebGPURenderer {
     pass.setVertexBuffer(2, geometry.uv);
     pass.setVertexBuffer(3, geometry.tangent);
 
+    if (skinned) {
+      pass.setBindGroup(3, this.getSkinnedResources(mesh as SkinnedMesh).bindGroup);
+      pass.setVertexBuffer(4, geometry.joints!);
+      pass.setVertexBuffer(5, geometry.weights!);
+    }
+
     if (geometry.index) {
       pass.setIndexBuffer(geometry.index, geometry.indexFormat);
       pass.drawIndexed(geometry.drawCount);
     } else {
       pass.draw(geometry.drawCount);
     }
+  }
+
+  private getSkinnedResources(mesh: SkinnedMesh): SkinnedResources {
+    const skeleton = mesh.skeleton;
+    let res = this.skinnedResources.get(mesh);
+    if (!res || res.jointCount !== skeleton.jointCount) {
+      const boneBuffer = this.device.createBuffer({
+        size: Math.max(skeleton.jointCount, 1) * 64,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.bonesLayout,
+        entries: [{ binding: 0, resource: { buffer: boneBuffer } }],
+      });
+      res = { boneBuffer, bindGroup, jointCount: skeleton.jointCount };
+      this.skinnedResources.set(mesh, res);
+    }
+    // Joints are already updated by scene.updateMatrixWorld(); refresh bones.
+    skeleton.update();
+    this.device.queue.writeBuffer(res.boneBuffer, 0, skeleton.boneMatrices);
+    return res;
   }
 
   private getMeshResources(mesh: Mesh): MeshResources {

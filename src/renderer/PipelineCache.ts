@@ -1,26 +1,31 @@
 import type { StandardMaterial } from '../materials/StandardMaterial';
-import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT } from './constants';
+import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
  * Because the shader is a single uber-shader, pipelines only vary by render
- * state (cull mode, blending, depth write).
+ * state (cull mode, blending, depth write) and whether the mesh is skinned.
  */
 export class PipelineCache {
   readonly frameLayout: GPUBindGroupLayout;
   readonly modelLayout: GPUBindGroupLayout;
   readonly materialLayout: GPUBindGroupLayout;
-  private pipelineLayout: GPUPipelineLayout;
-  private module: GPUShaderModule;
+  readonly bonesLayout: GPUBindGroupLayout;
+  private staticPipelineLayout: GPUPipelineLayout;
+  private skinnedPipelineLayout: GPUPipelineLayout;
+  private staticModule: GPUShaderModule;
+  private skinnedModule: GPUShaderModule;
   private cache = new Map<string, GPURenderPipeline>();
 
   constructor(
     private device: GPUDevice,
     private format: GPUTextureFormat,
     private sampleCount: number,
-    shaderCode: string,
+    staticCode: string,
+    skinnedCode: string,
   ) {
-    this.module = device.createShaderModule({ code: shaderCode, label: 'pbr' });
+    this.staticModule = device.createShaderModule({ code: staticCode, label: 'pbr' });
+    this.skinnedModule = device.createShaderModule({ code: skinnedCode, label: 'pbr-skinned' });
 
     this.frameLayout = device.createBindGroupLayout({
       label: 'frame',
@@ -55,24 +60,34 @@ export class PipelineCache {
     }
     this.materialLayout = device.createBindGroupLayout({ label: 'material', entries: materialEntries });
 
-    this.pipelineLayout = device.createPipelineLayout({
+    this.bonesLayout = device.createBindGroupLayout({
+      label: 'bones',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+
+    this.staticPipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout],
+    });
+    this.skinnedPipelineLayout = device.createPipelineLayout({
+      bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.bonesLayout],
     });
   }
 
-  private keyFor(material: StandardMaterial): string {
+  private keyFor(material: StandardMaterial, skinned: boolean): string {
     const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
-    return `${cull}|${blend}|${depthWrite}`;
+    return `${skinned ? 'skin' : 'static'}|${cull}|${blend}|${depthWrite}`;
   }
 
-  get(material: StandardMaterial): GPURenderPipeline {
-    const key = this.keyFor(material);
+  get(material: StandardMaterial, skinned = false): GPURenderPipeline {
+    const key = this.keyFor(material, skinned);
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
-    const [cull, blend, depthWrite] = key.split('|');
+    const [, cull, blend, depthWrite] = key.split('|');
 
     const target: GPUColorTargetState = { format: this.format };
     if (blend === 'blend') {
@@ -84,14 +99,14 @@ export class PipelineCache {
 
     pipeline = this.device.createRenderPipeline({
       label: `pbr-${key}`,
-      layout: this.pipelineLayout,
+      layout: skinned ? this.skinnedPipelineLayout : this.staticPipelineLayout,
       vertex: {
-        module: this.module,
+        module: skinned ? this.skinnedModule : this.staticModule,
         entryPoint: 'vs_main',
-        buffers: VERTEX_BUFFER_LAYOUT,
+        buffers: skinned ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
       },
       fragment: {
-        module: this.module,
+        module: skinned ? this.skinnedModule : this.staticModule,
         entryPoint: 'fs_main',
         targets: [target],
       },

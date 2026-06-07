@@ -6,6 +6,9 @@ interface GPUGeometry {
   normal: GPUBuffer;
   uv: GPUBuffer;
   tangent: GPUBuffer;
+  /** Skinning streams, present only for skinned geometries. */
+  joints: GPUBuffer | null;
+  weights: GPUBuffer | null;
   index: GPUBuffer | null;
   indexFormat: GPUIndexFormat;
   drawCount: number;
@@ -51,6 +54,12 @@ export class GeometryBuffers {
     const uvBuf = this.upload(uv.array as Float32Array, GPUBufferUsage.VERTEX);
     const tangentBuf = this.upload(tangent.array as Float32Array, GPUBufferUsage.VERTEX);
 
+    // Skinning streams (optional)
+    const jointsAttr = geometry.getAttribute('joints');
+    const weightsAttr = geometry.getAttribute('weights');
+    const joints = jointsAttr ? this.upload(jointsAttr.array as Uint32Array, GPUBufferUsage.VERTEX) : null;
+    const weights = weightsAttr ? this.upload(weightsAttr.array as Float32Array, GPUBufferUsage.VERTEX) : null;
+
     let index: GPUBuffer | null = null;
     let indexFormat: GPUIndexFormat = 'uint32';
     if (geometry.index) {
@@ -75,6 +84,8 @@ export class GeometryBuffers {
       normal: normalBuf,
       uv: uvBuf,
       tangent: tangentBuf,
+      joints,
+      weights,
       index,
       indexFormat,
       drawCount: geometry.getDrawCount(),
@@ -97,6 +108,8 @@ export class GeometryBuffers {
     gpu.normal.destroy();
     gpu.uv.destroy();
     gpu.tangent.destroy();
+    gpu.joints?.destroy();
+    gpu.weights?.destroy();
     gpu.index?.destroy();
   }
 }

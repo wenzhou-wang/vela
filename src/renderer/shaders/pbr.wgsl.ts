@@ -6,9 +6,13 @@
  * - ACES-approx filmic tonemap + linear->sRGB on output
  *
  * Single "uber" shader: missing material maps are bound as white/flat defaults,
- * so no per-texture pipeline variants are needed.
+ * so no per-texture pipeline variants are needed. Two vertex variants share one
+ * fragment stage: a static path (PBR_SHADER) and a GPU-skinned path
+ * (PBR_SKINNED_SHADER).
  */
-export const PBR_SHADER = /* wgsl */ `
+
+// Shared: constants, uniform/storage layout, varyings.
+const HEADER = /* wgsl */ `
 const PI = 3.141592653589793;
 const LIGHT_DIRECTIONAL = 0u;
 const LIGHT_POINT = 1u;
@@ -21,11 +25,8 @@ struct Frame {
 };
 
 struct Light {
-  // xyz = world position (point) or direction-target base, w = kind
   positionKind : vec4<f32>,
-  // xyz = normalized direction (directional), w = range (point, 0 = infinite)
   directionRange : vec4<f32>,
-  // xyz = color * intensity, w = decay
   colorDecay : vec4<f32>,
 };
 
@@ -35,10 +36,10 @@ struct Model {
 };
 
 struct MaterialU {
-  baseColor : vec4<f32>,        // rgb + opacity
-  emissive : vec4<f32>,         // rgb + emissiveIntensity
-  params : vec4<f32>,           // metalness, roughness, normalScale, occlusionStrength
-  misc : vec4<f32>,             // alphaCutoff, flags, pad, pad
+  baseColor : vec4<f32>,
+  emissive : vec4<f32>,
+  params : vec4<f32>,
+  misc : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame : Frame;
@@ -58,13 +59,6 @@ struct MaterialU {
 @group(2) @binding(9) var occlusionTex : texture_2d<f32>;
 @group(2) @binding(10) var occlusionSmp : sampler;
 
-struct VSIn {
-  @location(0) position : vec3<f32>,
-  @location(1) normal : vec3<f32>,
-  @location(2) uv : vec2<f32>,
-  @location(3) tangent : vec4<f32>,
-};
-
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
   @location(0) worldPos : vec3<f32>,
@@ -72,6 +66,16 @@ struct VSOut {
   @location(2) uv : vec2<f32>,
   @location(3) worldTangent : vec3<f32>,
   @location(4) tangentSign : f32,
+};
+`;
+
+// Static vertex stage: transform by the per-object model matrix.
+const VERTEX_STATIC = /* wgsl */ `
+struct VSIn {
+  @location(0) position : vec3<f32>,
+  @location(1) normal : vec3<f32>,
+  @location(2) uv : vec2<f32>,
+  @location(3) tangent : vec4<f32>,
 };
 
 @vertex
@@ -81,16 +85,51 @@ fn vs_main(in : VSIn) -> VSOut {
   out.worldPos = worldPos4.xyz;
   out.clipPosition = frame.proj * frame.view * worldPos4;
 
-  let n = normalize((model.normalMat * vec4<f32>(in.normal, 0.0)).xyz);
-  out.worldNormal = n;
+  out.worldNormal = normalize((model.normalMat * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
   return out;
 }
+`;
 
-// ---- BRDF helpers ----
+// Skinned vertex stage: blend joint matrices, ignoring the mesh node transform
+// (per the glTF skinning spec — joint matrices are already world-space).
+const VERTEX_SKINNED = /* wgsl */ `
+@group(3) @binding(0) var<storage, read> bones : array<mat4x4<f32>>;
 
+struct VSInSkinned {
+  @location(0) position : vec3<f32>,
+  @location(1) normal : vec3<f32>,
+  @location(2) uv : vec2<f32>,
+  @location(3) tangent : vec4<f32>,
+  @location(4) joints : vec4<u32>,
+  @location(5) weights : vec4<f32>,
+};
+
+@vertex
+fn vs_main(in : VSInSkinned) -> VSOut {
+  var out : VSOut;
+  let skin =
+    in.weights.x * bones[in.joints.x] +
+    in.weights.y * bones[in.joints.y] +
+    in.weights.z * bones[in.joints.z] +
+    in.weights.w * bones[in.joints.w];
+
+  let worldPos4 = skin * vec4<f32>(in.position, 1.0);
+  out.worldPos = worldPos4.xyz;
+  out.clipPosition = frame.proj * frame.view * worldPos4;
+
+  out.worldNormal = normalize((skin * vec4<f32>(in.normal, 0.0)).xyz);
+  out.worldTangent = normalize((skin * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
+  out.tangentSign = in.tangent.w;
+  out.uv = in.uv;
+  return out;
+}
+`;
+
+// Shared fragment stage: PBR shading, tonemap, sRGB encode.
+const FRAGMENT = /* wgsl */ `
 fn distributionGGX(NoH : f32, roughness : f32) -> f32 {
   let a = roughness * roughness;
   let a2 = a * a;
@@ -132,7 +171,6 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   let flags = u32(material.misc.y);
   let hasNormalMap = (flags & 2u) != 0u;
 
-  // Base color (sRGB texture decoded by hardware sampler)
   let baseSample = textureSample(baseColorTex, baseColorSmp, in.uv);
   let baseColor = material.baseColor.rgb * baseSample.rgb;
   let alpha = material.baseColor.a * baseSample.a;
@@ -142,12 +180,10 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
     discard;
   }
 
-  // Metalness / roughness (linear). glTF: G = roughness, B = metalness.
   let mrSample = textureSample(mrTex, mrSmp, in.uv);
   let metalness = clamp(material.params.x * mrSample.b, 0.0, 1.0);
   var roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
 
-  // Geometric + mapped normal (flip for back faces of double-sided materials)
   var N = normalize(in.worldNormal);
   if (!frontFacing) {
     N = -N;
@@ -163,7 +199,6 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   let V = normalize(frame.cameraPos.xyz - in.worldPos);
   let NoV = max(dot(N, V), 1e-4);
 
-  // Dielectric F0 = 0.04, metals tint specular with base color
   let f0 = mix(vec3<f32>(0.04), baseColor, metalness);
   let diffuseColor = baseColor * (1.0 - metalness);
 
@@ -211,17 +246,13 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
     color = color + (diffuse + specular) * radiance;
   }
 
-  // Ambient (flat irradiance) modulated by occlusion. AO affects only the
-  // indirect/ambient term, not direct lighting.
   let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;
   let ao = mix(1.0, aoSample, material.params.w);
   color = color + frame.ambient.rgb * diffuseColor * ao;
 
-  // Emissive
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
 
-  // Exposure, tonemap, sRGB encode
   color = color * frame.ambient.w;
   color = acesFilmic(color);
   color = linearToSRGB(color);
@@ -229,3 +260,6 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   return vec4<f32>(color, alpha);
 }
 `;
+
+export const PBR_SHADER = HEADER + VERTEX_STATIC + FRAGMENT;
+export const PBR_SKINNED_SHADER = HEADER + VERTEX_SKINNED + FRAGMENT;
