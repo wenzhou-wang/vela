@@ -39,6 +39,8 @@ export type { LineBasicMaterialParams } from './materials/LineBasicMaterial';
 export { GridHelper } from './helpers/GridHelper';
 export { AxesHelper } from './helpers/AxesHelper';
 export { Box3Helper } from './helpers/Box3Helper';
+export { DirectionalLightHelper } from './helpers/DirectionalLightHelper';
+export { PointLightHelper } from './helpers/PointLightHelper';
 
 // textures
 export { Texture } from './textures/Texture';

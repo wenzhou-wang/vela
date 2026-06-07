@@ -14,7 +14,7 @@ old-browser support. PBR shading, a glTF loader, and an interactive viewer in ~3
    ├─ textures/    Texture (+ sampler descriptors)
    ├─ lights/      Ambient, Directional, Point
    ├─ controls/    OrbitControls (orbit / pan / dolly), FlyControls (WASD + mouse-look)
-   ├─ helpers/     GridHelper, AxesHelper, Box3Helper (unlit line gizmos)
+   ├─ helpers/     Grid, Axes, Box3, Directional/Point light gizmos (unlit lines)
    ├─ loaders/     GLTFLoader (.gltf + .glb), tangent generation
    └─ renderer/    WebGPURenderer, pipeline cache, geometry/texture managers,
                    mipmap generator, and the WGSL PBR shader
@@ -108,7 +108,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   picking through a scaled mesh, barycentric UV interpolation, coarse-sphere fallback, and
   a CPU **BVH** whose hits match a brute-force scan across 200 rays on a 1.5k-tri mesh.
 - **Debug helpers** — `GridHelper`/`AxesHelper`/`Box3Helper` geometry (vertex counts, axis
-  colors, box-edge extents) and the unlit line shader (bind-group + vertex-stream layout).
+  colors, box-edge extents), light-gizmo placement/orientation/color tracking, and the
+  unlit line shader (bind-group + vertex-stream layout).
 - **Morph targets** — `weights` track interpolation (LINEAR/STEP/CUBICSPLINE), influence
   defaults, and an end-to-end glTF load (targets, `targetNames`, weights animation).
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
