@@ -24,6 +24,7 @@ struct Frame {
   ambient : vec4<f32>,     // rgb = ambient irradiance, w = exposure
   lightViewProj : mat4x4<f32>, // directional shadow caster's view-projection
   shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
+  envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = unused
 };
 
 struct Light {
@@ -46,6 +47,8 @@ struct MaterialU {
 @group(0) @binding(1) var<storage, read> lights : array<Light>;
 @group(0) @binding(2) var shadowMap : texture_depth_2d;
 @group(0) @binding(3) var shadowSampler : sampler_comparison;
+@group(0) @binding(4) var envMap : texture_2d<f32>;
+@group(0) @binding(5) var envSampler : sampler;
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -254,6 +257,26 @@ fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// Equirectangular lookup: direction -> panorama UV, sampled at an explicit mip.
+fn dirToEquirectUv(d : vec3<f32>) -> vec2<f32> {
+  let u = atan2(d.z, d.x) * (0.5 / PI) + 0.5;
+  let v = acos(clamp(d.y, -1.0, 1.0)) / PI;
+  return vec2<f32>(u, v);
+}
+
+fn sampleEnv(dir : vec3<f32>, lod : f32) -> vec3<f32> {
+  return textureSampleLevel(envMap, envSampler, dirToEquirectUv(normalize(dir)), lod).rgb;
+}
+
+// Karis' analytic environment-BRDF fit (avoids a precomputed LUT).
+fn envBRDFApprox(roughness : f32, NoV : f32) -> vec2<f32> {
+  let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+  let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+  let r = roughness * c0 + c1;
+  let a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+  return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+}
+
 // 3x3 PCF against the directional shadow atlas. Returns 1 (fully lit) when
 // shadows are disabled or the point falls outside the light frustum.
 fn sampleShadow(worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
@@ -400,7 +423,20 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 
   let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;
   let ao = mix(1.0, aoSample, material.params.w);
-  color = color + frame.ambient.rgb * diffuseColor * ao;
+
+  // Indirect light: image-based when an environment is bound, else flat ambient.
+  if (frame.envParams.x > 0.5) {
+    let maxMip = frame.envParams.z;
+    let irradiance = sampleEnv(N, maxMip); // crude diffuse: smallest mip
+    let R = reflect(-V, N);
+    let prefiltered = sampleEnv(R, roughness * maxMip);
+    let ab = envBRDFApprox(roughness, NoV);
+    let diffuseIBL = irradiance * diffuseColor;
+    let specularIBL = prefiltered * (f0 * ab.x + ab.y);
+    color = color + (diffuseIBL + specularIBL) * ao * frame.envParams.y;
+  } else {
+    color = color + frame.ambient.rgb * diffuseColor * ao;
+  }
 
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;

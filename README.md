@@ -57,6 +57,8 @@ Forward renderer, one pass:
   Schlick Fresnel, Lambertian diffuse (matches the glTF 2.0 spec).
 - **Multi-light** (directional + point) packed into a read-only storage buffer; ambient
   is a flat irradiance term modulated by the occlusion map.
+- **Image-based lighting** — an equirectangular `scene.environment` drives mip-prefiltered
+  diffuse + specular indirect light (analytic env-BRDF), replacing flat ambient when set.
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
@@ -126,8 +128,10 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   clearcoat/ior/specular/sheen, and animation clips) survives an export→`GLTFLoader` round-trip.
 - **Scene format** — `SceneSerializer` round-trips hierarchy, transforms, geometry,
   lights, and materials through JSON, with shared geometry/material instances preserved.
-- **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, the frame uniform
-  is 240 bytes, and the light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
+- **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, and the
+  light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
+- **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
+  and the analytic env-BRDF fit check out at reference directions.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 240 / model 128 /
   material 112 / light stride 48) confirmed to match the TypeScript buffer packing.

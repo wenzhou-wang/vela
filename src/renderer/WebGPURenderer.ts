@@ -28,7 +28,7 @@ import { SHADOW_DEPTH_FORMAT } from './constants';
 const MAX_LIGHTS = 32;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
-const FRAME_SIZE = 240; // bytes (adds lightViewProj mat4 + shadowParams vec4)
+const FRAME_SIZE = 256; // bytes (lightViewProj mat4 + shadowParams + envParams vec4s)
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 112;
 const LIGHT_STRIDE = 48; // bytes per light
@@ -110,6 +110,13 @@ export class WebGPURenderer {
   private shadowLightBuffer!: GPUBuffer;
   private shadowLightBindGroup!: GPUBindGroup;
   private shadowMapAllocated = 0;
+  // Environment (IBL): resolved each frame from scene.environment.
+  private envView!: GPUTextureView;
+  private envSampler!: GPUSampler;
+  private envEnabled = false;
+  private envIntensity = 1;
+  private envMaxMip = 0;
+  private envKey = '';
   private _lightView = new Matrix4();
   private _lightProj = new Matrix4();
   private _lightViewProj = new Matrix4();
@@ -180,6 +187,8 @@ export class WebGPURenderer {
     );
 
     this.createShadowResources();
+    this.envView = this.textures.defaultWhiteView;
+    this.envSampler = this.textures.defaultSampler;
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
   }
@@ -204,6 +213,8 @@ export class WebGPURenderer {
         { binding: 1, resource: { buffer: this.lightBuffer } },
         { binding: 2, resource: this.shadowView },
         { binding: 3, resource: this.shadowSampler },
+        { binding: 4, resource: this.envView },
+        { binding: 5, resource: this.envSampler },
       ],
     });
   }
@@ -289,6 +300,7 @@ export class WebGPURenderer {
 
     this.collect(scene);
     this.prepareShadow();
+    this.prepareEnvironment(scene);
     this.uploadFrame(scene, camera);
 
     // Sort transparent back-to-front
@@ -425,6 +437,32 @@ export class WebGPURenderer {
 
     this.device.queue.writeBuffer(this.shadowLightBuffer, 0, new Float32Array(this._lightViewProj.elements));
     this.shadowCasterIndex = packedIndex;
+  }
+
+  /** Resolve `scene.environment` into the env bindings, rebuilding on change. */
+  private prepareEnvironment(scene: Scene): void {
+    const env = scene.environment;
+    if (env && env.source) {
+      const entry = this.textures.get(env);
+      const key = `${env.id}:${env.version}`;
+      if (key !== this.envKey) {
+        this.envView = entry.view;
+        this.envSampler = entry.sampler;
+        this.envKey = key;
+        this.buildFrameBindGroup();
+      }
+      this.envEnabled = true;
+      this.envIntensity = scene.environmentIntensity;
+      this.envMaxMip = Math.max(0, entry.texture.mipLevelCount - 1);
+    } else {
+      if (this.envKey !== '') {
+        this.envView = this.textures.defaultWhiteView;
+        this.envSampler = this.textures.defaultSampler;
+        this.envKey = '';
+        this.buildFrameBindGroup();
+      }
+      this.envEnabled = false;
+    }
   }
 
   private renderShadowPass(encoder: GPUCommandEncoder): void {
@@ -567,6 +605,12 @@ export class WebGPURenderer {
     } else {
       f[56] = 0;
     }
+
+    // envParams (60..63)
+    f[60] = this.envEnabled ? 1 : 0;
+    f[61] = this.envIntensity;
+    f[62] = this.envMaxMip;
+    f[63] = 0;
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

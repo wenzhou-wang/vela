@@ -52,9 +52,12 @@ Make loaded models move and sit in believable lighting.
       uniforms gained `lightViewProj` + shadow params; group 0 gained the shadow map +
       comparison sampler. Enable via `renderer.shadows` + `light.castShadow`. ⬜ spot/point
       shadows and a multi-light atlas.
-- ⬜ **Image-based lighting (IBL)** — load HDR/`.hdr` equirect, compute a diffuse
-      irradiance cube and a GGX-prefiltered specular mip chain (compute shaders) +
-      a precomputed BRDF LUT. Replaces the flat ambient term with proper indirect light.
+- 🚧 **Image-based lighting (IBL)** — ✅ an equirectangular `scene.environment` drives
+      indirect light: diffuse from the smallest mip, specular from a roughness-selected mip
+      (the mip chain as a cheap prefilter), combined via Karis' analytic env-BRDF fit;
+      replaces the flat ambient when set. Frame uniforms gained `envParams`; group 0 gained
+      the env map + sampler. ⬜ `.hdr`/`rgba16float` loading, a true GGX-prefiltered cube +
+      irradiance via compute, and a precomputed BRDF LUT for higher fidelity.
 
 ---
 
