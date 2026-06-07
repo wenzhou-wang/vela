@@ -22,9 +22,13 @@ import { PipelineCache } from './PipelineCache';
 import { DEPTH_FORMAT } from './constants';
 import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER } from './shaders/pbr.wgsl';
 import { LINE_SHADER } from './shaders/line.wgsl';
+import { SHADOW_SHADER } from './shaders/shadow.wgsl';
+import { SHADOW_DEPTH_FORMAT } from './constants';
 
 const MAX_LIGHTS = 32;
-const FRAME_SIZE = 160; // bytes
+const UNIT_Y = new Vector3(0, 1, 0);
+const UNIT_Z = new Vector3(0, 0, 1);
+const FRAME_SIZE = 240; // bytes (adds lightViewProj mat4 + shadowParams vec4)
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 112;
 const LIGHT_STRIDE = 48; // bytes per light
@@ -93,6 +97,28 @@ export class WebGPURenderer {
   private width = 1;
   private height = 1;
 
+  // Shadow mapping (directional, single caster).
+  /** Enable directional shadow mapping for the first `castShadow` light. */
+  shadows = false;
+  /** Shadow map resolution (square). */
+  shadowMapSize = 2048;
+  /** World-space normal offset applied before the depth comparison (reduces acne). */
+  shadowNormalBias = 0.02;
+  private shadowTexture!: GPUTexture;
+  private shadowView!: GPUTextureView;
+  private shadowSampler!: GPUSampler;
+  private shadowLightBuffer!: GPUBuffer;
+  private shadowLightBindGroup!: GPUBindGroup;
+  private shadowMapAllocated = 0;
+  private _lightView = new Matrix4();
+  private _lightProj = new Matrix4();
+  private _lightViewProj = new Matrix4();
+  private _lightPos = new Vector3();
+  private _lightDir = new Vector3();
+  private _sceneCenter = new Vector3();
+  private _corner = new Vector3();
+  private shadowCasterIndex = -1;
+
   private meshResources = new WeakMap<Mesh, MeshResources>();
   private materialResources = new WeakMap<Material, MaterialResources>();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
@@ -150,9 +176,10 @@ export class WebGPURenderer {
     this.textures = new TextureManager(this.device);
     this.pipelines = new PipelineCache(
       this.device, this.format, this.sampleCount,
-      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER, LINE_SHADER,
+      PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER, LINE_SHADER, SHADOW_SHADER,
     );
 
+    this.createShadowResources();
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
   }
@@ -166,13 +193,49 @@ export class WebGPURenderer {
       size: MAX_LIGHTS * LIGHT_STRIDE,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.buildFrameBindGroup();
+  }
+
+  private buildFrameBindGroup(): void {
     this.frameBindGroup = this.device.createBindGroup({
       layout: this.pipelines.frameLayout,
       entries: [
         { binding: 0, resource: { buffer: this.frameBuffer } },
         { binding: 1, resource: { buffer: this.lightBuffer } },
+        { binding: 2, resource: this.shadowView },
+        { binding: 3, resource: this.shadowSampler },
       ],
     });
+  }
+
+  /** Allocate the shadow map (sized to `shadowMapSize` when enabled, else 1×1). */
+  private createShadowResources(): void {
+    const size = this.shadows ? this.shadowMapSize : 1;
+    if (this.shadowMapAllocated !== size) {
+      this.shadowTexture?.destroy();
+      this.shadowTexture = this.device.createTexture({
+        label: 'shadow-map',
+        size: [size, size],
+        format: SHADOW_DEPTH_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.shadowView = this.shadowTexture.createView();
+      this.shadowMapAllocated = size;
+      if (this.frameBuffer) this.buildFrameBindGroup(); // shadowView changed → rebind
+    }
+    if (!this.shadowSampler) {
+      this.shadowSampler = this.device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
+    }
+    if (!this.shadowLightBuffer) {
+      this.shadowLightBuffer = this.device.createBuffer({
+        size: 64, // lightViewProj mat4
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.shadowLightBindGroup = this.device.createBindGroup({
+        layout: this.pipelines.shadowLightLayout,
+        entries: [{ binding: 0, resource: { buffer: this.shadowLightBuffer } }],
+      });
+    }
   }
 
   setPixelRatio(ratio: number): void {
@@ -225,6 +288,7 @@ export class WebGPURenderer {
     this._frustum.setFromProjectionMatrix(this._viewProjection);
 
     this.collect(scene);
+    this.prepareShadow();
     this.uploadFrame(scene, camera);
 
     // Sort transparent back-to-front
@@ -237,6 +301,10 @@ export class WebGPURenderer {
     });
 
     const encoder = this.device.createCommandEncoder();
+
+    // Shadow depth pass (before the main pass) when a caster is active.
+    if (this.shadowCasterIndex >= 0) this.renderShadowPass(encoder);
+
     const swapView = this.context.getCurrentTexture().createView();
 
     const colorAttachment: GPURenderPassColorAttachment =
@@ -272,6 +340,118 @@ export class WebGPURenderer {
 
     pass.end();
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Choose the shadow-casting directional light and fit an orthographic light
+   * frustum to the opaque scene bounds, producing `_lightViewProj`. Sets
+   * `shadowCasterIndex` (the light's index in the packed light array) or -1.
+   */
+  private prepareShadow(): void {
+    this.shadowCasterIndex = -1;
+    if (!this.shadows) return;
+    this.createShadowResources(); // (re)allocate if size/enabled changed
+
+    // Find the first directional light flagged castShadow, tracking its packed index.
+    let caster: DirectionalLight | null = null;
+    let packedIndex = -1;
+    let i = 0;
+    for (const light of this.lights) {
+      if (light instanceof AmbientLight) continue;
+      if (light instanceof DirectionalLight && light.castShadow) {
+        caster = light;
+        packedIndex = i;
+        break;
+      }
+      i++;
+    }
+    if (!caster) return;
+
+    // World-space bounds of the opaque casters (from their bounding spheres).
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const mesh of this.opaque) {
+      const geo = mesh.geometry;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      const s = geo.boundingSphere;
+      if (!s || s.isEmpty()) continue;
+      this._worldSphere.copy(s).applyMatrix4(mesh.matrixWorld);
+      const c = this._worldSphere.center, r = this._worldSphere.radius;
+      minX = Math.min(minX, c.x - r); maxX = Math.max(maxX, c.x + r);
+      minY = Math.min(minY, c.y - r); maxY = Math.max(maxY, c.y + r);
+      minZ = Math.min(minZ, c.z - r); maxZ = Math.max(maxZ, c.z + r);
+    }
+    if (minX > maxX) return; // nothing to shadow
+
+    this._sceneCenter.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+    const radius = 0.5 * Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+
+    // Light direction: from the light position toward its target.
+    caster.getWorldPosition(this._lightPos);
+    caster.target.updateWorldMatrix(true, false);
+    this._lightDir.set(
+      caster.target.matrixWorld.elements[12] - this._lightPos.x,
+      caster.target.matrixWorld.elements[13] - this._lightPos.y,
+      caster.target.matrixWorld.elements[14] - this._lightPos.z,
+    );
+    if (this._lightDir.lengthSq() === 0) this._lightDir.set(0, -1, 0);
+    this._lightDir.normalize();
+
+    // Place the light camera back along -dir from the scene center.
+    const eye = this._lightPos.set(
+      this._sceneCenter.x - this._lightDir.x * radius,
+      this._sceneCenter.y - this._lightDir.y * radius,
+      this._sceneCenter.z - this._lightDir.z * radius,
+    );
+    const up = Math.abs(this._lightDir.y) > 0.99 ? UNIT_Z : UNIT_Y;
+    // identity() first: lookAt only writes the upper 3x3.
+    this._lightView.identity().lookAt(eye, this._sceneCenter, up).setPosition(eye).invert();
+
+    // Fit the ortho box to the bounds transformed into light space.
+    let lminX = Infinity, lminY = Infinity, lminZ = Infinity;
+    let lmaxX = -Infinity, lmaxY = -Infinity, lmaxZ = -Infinity;
+    for (let k = 0; k < 8; k++) {
+      this._corner.set(k & 1 ? maxX : minX, k & 2 ? maxY : minY, k & 4 ? maxZ : minZ);
+      this._corner.applyMatrix4(this._lightView);
+      lminX = Math.min(lminX, this._corner.x); lmaxX = Math.max(lmaxX, this._corner.x);
+      lminY = Math.min(lminY, this._corner.y); lmaxY = Math.max(lmaxY, this._corner.y);
+      lminZ = Math.min(lminZ, this._corner.z); lmaxZ = Math.max(lmaxZ, this._corner.z);
+    }
+    // In view space the camera looks down -Z; depth distance d = -z.
+    const near = -lmaxZ;
+    const far = -lminZ;
+    this._lightProj.makeOrthographic(lminX, lmaxX, lmaxY, lminY, near, far);
+    this._lightViewProj.multiplyMatrices(this._lightProj, this._lightView);
+
+    this.device.queue.writeBuffer(this.shadowLightBuffer, 0, new Float32Array(this._lightViewProj.elements));
+    this.shadowCasterIndex = packedIndex;
+  }
+
+  private renderShadowPass(encoder: GPUCommandEncoder): void {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: this.shadowView,
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    pass.setPipeline(this.pipelines.shadowPipeline);
+    pass.setBindGroup(0, this.shadowLightBindGroup);
+    for (const mesh of this.opaque) {
+      if (mesh instanceof InstancedMesh) continue; // instanced casters unsupported in v1
+      const geometry = this.geometries.get(mesh.geometry);
+      pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+      pass.setVertexBuffer(0, geometry.position);
+      if (geometry.index) {
+        pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+        pass.drawIndexed(geometry.drawCount);
+      } else {
+        pass.draw(geometry.drawCount);
+      }
+    }
+    pass.end();
   }
 
   private clearColor(scene: Scene): GPUColor {
@@ -376,6 +556,17 @@ export class WebGPURenderer {
     f[37] = ag;
     f[38] = ab;
     f[39] = this.exposure; // ambient.w
+
+    // lightViewProj (40..55) + shadowParams (56..59)
+    if (this.shadowCasterIndex >= 0) {
+      f.set(this._lightViewProj.elements, 40);
+      f[56] = 1; // enabled
+      f[57] = this.shadowMapSize;
+      f[58] = this.shadowNormalBias;
+      f[59] = this.shadowCasterIndex;
+    } else {
+      f[56] = 0;
+    }
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

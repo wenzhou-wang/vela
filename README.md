@@ -60,6 +60,7 @@ Forward renderer, one pass:
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
+- **Directional shadow maps** — opt-in depth pass + 3×3 PCF; light frustum auto-fits the scene.
 - **Instanced rendering** — `InstancedMesh` draws a whole batch in one call via a
   per-instance matrix storage buffer.
 - A single **"uber" shader**: absent material maps bind white/flat 1×1 defaults, so
@@ -70,7 +71,7 @@ Forward renderer, one pass:
 
 | Group | Contents |
 |-------|----------|
-| 0 | frame uniforms (view, proj, camera, ambient) + lights storage buffer |
+| 0 | frame uniforms (view, proj, camera, ambient, shadow matrix) + lights storage + shadow map & sampler |
 | 1 | per-object model + normal matrix |
 | 2 | material uniforms + 5 (texture, sampler) pairs: base, normal, metal-rough, emissive, occlusion |
 | 3 | bone matrices (skinned) **or** morph info + position/normal deltas + weights (morphed) |
@@ -125,8 +126,10 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   clearcoat/ior/specular/sheen, and animation clips) survives an export→`GLTFLoader` round-trip.
 - **Scene format** — `SceneSerializer` round-trips hierarchy, transforms, geometry,
   lights, and materials through JSON, with shared geometry/material instances preserved.
+- **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, the frame uniform
+  is 240 bytes, and the light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
-  `wgsl_reflect`; bind-group indices and struct byte sizes (frame 160 / model 128 /
+  `wgsl_reflect`; bind-group indices and struct byte sizes (frame 240 / model 128 /
   material 112 / light stride 48) confirmed to match the TypeScript buffer packing.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 

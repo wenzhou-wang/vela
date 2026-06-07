@@ -22,6 +22,8 @@ struct Frame {
   proj : mat4x4<f32>,
   cameraPos : vec4<f32>,   // xyz = position, w = numLights
   ambient : vec4<f32>,     // rgb = ambient irradiance, w = exposure
+  lightViewProj : mat4x4<f32>, // directional shadow caster's view-projection
+  shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
 };
 
 struct Light {
@@ -42,6 +44,8 @@ struct MaterialU {
 
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var<storage, read> lights : array<Light>;
+@group(0) @binding(2) var shadowMap : texture_depth_2d;
+@group(0) @binding(3) var shadowSampler : sampler_comparison;
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -250,6 +254,28 @@ fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// 3x3 PCF against the directional shadow atlas. Returns 1 (fully lit) when
+// shadows are disabled or the point falls outside the light frustum.
+fn sampleShadow(worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
+  if (frame.shadowParams.x < 0.5) { return 1.0; }
+  let bias = frame.shadowParams.z;
+  let lp = frame.lightViewProj * vec4<f32>(worldPos + N * bias, 1.0);
+  let ndc = lp.xyz / lp.w;
+  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
+    return 1.0;
+  }
+  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+  let texel = 1.0 / frame.shadowParams.y;
+  var sum = 0.0;
+  for (var dy = -1; dy <= 1; dy = dy + 1) {
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+      let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
+      sum = sum + textureSampleCompareLevel(shadowMap, shadowSampler, uv + offset, ndc.z);
+    }
+  }
+  return sum / 9.0;
+}
+
 fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   let cutoff = step(vec3<f32>(0.0031308), c);
   let lo = c * 12.92;
@@ -331,6 +357,11 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
       }
     } else {
       L = -light.directionRange.xyz;
+    }
+
+    // The designated directional caster is attenuated by the shadow map.
+    if (i == u32(frame.shadowParams.w)) {
+      radiance = radiance * sampleShadow(in.worldPos, N);
     }
 
     let H = normalize(V + L);

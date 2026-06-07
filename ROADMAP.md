@@ -46,9 +46,12 @@ Make loaded models move and sit in believable lighting.
       attributes (indexed by `@builtin(vertex_index)`). glTF `mesh.primitives[].targets`,
       default `mesh.weights`, `extras.targetNames`, and `weights` animation channels
       (LINEAR/STEP/CUBICSPLINE) are parsed; the pipeline key gains a `morph` variant.
-- ⬜ **Shadow maps** — directional/spot depth pass into a depth atlas; PCF (3×3) in the
-      PBR shader. Adds a `lightViewProj` array to the frame uniforms and a shadow
-      sampler/atlas to group 0.
+- 🚧 **Shadow maps** — ✅ directional shadow mapping: a depth pass renders casters from
+      the light's POV into a `depth32float` map (light frustum auto-fit to the opaque scene
+      bounds), sampled with 3×3 PCF (`textureSampleCompareLevel`) in the PBR shader. Frame
+      uniforms gained `lightViewProj` + shadow params; group 0 gained the shadow map +
+      comparison sampler. Enable via `renderer.shadows` + `light.castShadow`. ⬜ spot/point
+      shadows and a multi-light atlas.
 - ⬜ **Image-based lighting (IBL)** — load HDR/`.hdr` equirect, compute a diffuse
       irradiance cube and a GGX-prefiltered specular mip chain (compute shaders) +
       a precomputed BRDF LUT. Replaces the flat ambient term with proper indirect light.

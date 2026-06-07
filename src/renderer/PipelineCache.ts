@@ -1,7 +1,8 @@
 import type { StandardMaterial } from '../materials/StandardMaterial';
 import type { LineBasicMaterial } from '../materials/LineBasicMaterial';
-import { DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
+import { DEPTH_FORMAT, SHADOW_DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
 import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
+import { SHADOW_VERTEX_BUFFER_LAYOUT } from './shaders/shadow.wgsl';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
@@ -18,6 +19,8 @@ export class PipelineCache {
   readonly instanceLayout: GPUBindGroupLayout;
   readonly morphLayout: GPUBindGroupLayout;
   readonly lineMaterialLayout: GPUBindGroupLayout;
+  readonly shadowLightLayout: GPUBindGroupLayout;
+  readonly shadowPipeline: GPURenderPipeline;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
   private lineLayout: GPUPipelineLayout;
@@ -33,6 +36,7 @@ export class PipelineCache {
     instancedCode: string,
     morphCode: string,
     lineCode: string,
+    shadowCode: string,
   ) {
     this.modules = {
       static: device.createShaderModule({ code: staticCode, label: 'pbr' }),
@@ -46,6 +50,8 @@ export class PipelineCache {
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
       ],
     });
 
@@ -125,6 +131,20 @@ export class PipelineCache {
     this.lineModule = device.createShaderModule({ code: lineCode, label: 'line' });
     this.lineLayout = device.createPipelineLayout({
       bindGroupLayouts: [this.frameLayout, this.modelLayout, this.lineMaterialLayout],
+    });
+
+    // Shadow depth pass: light-matrix uniform (group 0) + the shared model group.
+    this.shadowLightLayout = device.createBindGroupLayout({
+      label: 'shadow-light',
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
+    });
+    const shadowModule = device.createShaderModule({ code: shadowCode, label: 'shadow' });
+    this.shadowPipeline = device.createRenderPipeline({
+      label: 'shadow-depth',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.shadowLightLayout, this.modelLayout] }),
+      vertex: { module: shadowModule, entryPoint: 'vs_main', buffers: SHADOW_VERTEX_BUFFER_LAYOUT },
+      primitive: { topology: 'triangle-list', cullMode: 'none', frontFace: 'ccw' },
+      depthStencil: { format: SHADOW_DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
     });
   }
 

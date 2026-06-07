@@ -28,8 +28,9 @@ graph. The renderer is the only place that talks to WebGPU.
    matrices down the tree; the camera computes its `matrixWorldInverse` (the view matrix).
 2. **Collect** — one `traverseVisible` pass buckets meshes into **opaque** and
    **transparent** lists and gathers **lights**.
-3. **Upload frame state** — view/projection/camera-position/ambient go into a 160-byte
-   uniform buffer; each light is packed into a 48-byte stride in a read-only storage buffer.
+3. **Upload frame state** — view/projection/camera-position/ambient (+ the shadow caster's
+   light-matrix and params) go into a 240-byte uniform buffer; each light is packed into a
+   48-byte stride in a read-only storage buffer.
    Ambient lights are folded into the flat ambient term rather than the light array.
 4. **Sort** transparent meshes back-to-front by distance to the camera.
 5. **Encode one render pass** — bind frame state (group 0) once, then for each mesh set its
@@ -46,13 +47,14 @@ Three bind groups, fixed across all pipelines so they bind once and stay stable:
 
 | Group | Binding | Resource | Visibility |
 |-------|---------|----------|------------|
-| **0** frame | 0 | `Frame` uniform: view, proj, camera+numLights, ambient+exposure | vertex + fragment |
+| **0** frame | 0 | `Frame` uniform: view, proj, camera+numLights, ambient+exposure, shadow light-matrix+params | vertex + fragment |
 |        | 1 | `array<Light>` read-only storage | fragment |
+|        | 2–3 | shadow depth map + comparison sampler | fragment |
 | **1** model | 0 | `Model` uniform: model matrix + normal matrix | vertex |
 | **2** material | 0 | `MaterialU` uniform: base color, emissive, metal/rough/normal/AO, clearcoat, ior/specular, sheen | fragment |
 |        | 1–10 | 5 × (texture, sampler): base, normal, metal-rough, emissive, occlusion | fragment |
 
-Struct byte sizes (frame 160 / model 128 / material 112 / light 48) are asserted against the
+Struct byte sizes (frame 240 / model 128 / material 112 / light 48) are asserted against the
 TypeScript buffer-packing code via `wgsl_reflect` — a mismatch there silently corrupts
 rendering, so it's verified offline.
 

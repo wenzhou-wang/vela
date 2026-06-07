@@ -7,6 +7,8 @@ export class DirectionalLight extends Light {
   readonly isDirectionalLight = true;
   /** Direction is from this object's world position toward the target. */
   target = new Object3D();
+  /** When true and `renderer.shadows` is on, this light casts a shadow map. */
+  castShadow = false;
 
   constructor(color: number | Color = 0xffffff, intensity = 1) {
     super(color, intensity);
