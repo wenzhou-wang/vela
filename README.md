@@ -88,7 +88,7 @@ Forward renderer, one pass:
   emissive textures + factors
 - Per-texture samplers (wrap / filter), `KHR_materials_emissive_strength`,
   `KHR_materials_clearcoat` (factors), `KHR_materials_ior`, `KHR_materials_specular`,
-  `KHR_materials_sheen`
+  `KHR_materials_sheen`, `KHR_materials_transmission` + `_volume` (env-refraction approx)
 - Vertex colors (`COLOR_0`, VEC3 or VEC4) multiplied into base color
 - `OPAQUE` / `MASK` (alpha cutoff) / `BLEND` alpha modes, double-sided materials
 - **Keyframe animation** (translation / rotation / scale) with STEP / LINEAR / CUBICSPLINE
@@ -138,7 +138,7 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   bindings, and the line shader's frame struct matches the 256-byte layout.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 240 / model 128 /
-  material 112 / light stride 48) confirmed to match the TypeScript buffer packing.
+  material 144 / light stride 48) confirmed to match the TypeScript buffer packing.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 
 ## Roadmap

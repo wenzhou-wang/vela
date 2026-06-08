@@ -286,6 +286,16 @@ export class GLTFExporter {
         sheenRoughnessFactor: material.sheenRoughness,
       };
     }
+    if (material.transmission > 0) {
+      extensions.KHR_materials_transmission = { transmissionFactor: material.transmission };
+    }
+    if (material.thickness > 0 || material.attenuationDistance > 0) {
+      extensions.KHR_materials_volume = {
+        thicknessFactor: material.thickness,
+        attenuationDistance: material.attenuationDistance,
+        attenuationColor: [material.attenuationColor.r, material.attenuationColor.g, material.attenuationColor.b],
+      };
+    }
     if (Object.keys(extensions).length) def.extensions = extensions;
 
     const index = this.json.materials.push(def) - 1;

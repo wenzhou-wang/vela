@@ -52,10 +52,10 @@ Three bind groups, fixed across all pipelines so they bind once and stay stable:
 |        | 2–3 | shadow depth map + comparison sampler | fragment |
 |        | 4–5 | environment (equirect) map + sampler for IBL | fragment |
 | **1** model | 0 | `Model` uniform: model matrix + normal matrix | vertex |
-| **2** material | 0 | `MaterialU` uniform: base color, emissive, metal/rough/normal/AO, clearcoat, ior/specular, sheen | fragment |
+| **2** material | 0 | `MaterialU` uniform: base color, emissive, metal/rough/normal/AO, clearcoat, ior/specular, sheen, transmission/volume | fragment |
 |        | 1–10 | 5 × (texture, sampler): base, normal, metal-rough, emissive, occlusion | fragment |
 
-Struct byte sizes (frame 256 / model 128 / material 112 / light 48) are asserted against the
+Struct byte sizes (frame 256 / model 128 / material 144 / light 48) are asserted against the
 TypeScript buffer-packing code via `wgsl_reflect` — a mismatch there silently corrupts
 rendering, so it's verified offline.
 

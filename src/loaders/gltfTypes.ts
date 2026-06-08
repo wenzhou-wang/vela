@@ -91,6 +91,8 @@ export interface GLTFMaterial {
     KHR_materials_ior?: { ior?: number };
     KHR_materials_specular?: { specularFactor?: number; specularColorFactor?: [number, number, number] };
     KHR_materials_sheen?: { sheenColorFactor?: [number, number, number]; sheenRoughnessFactor?: number };
+    KHR_materials_transmission?: { transmissionFactor?: number };
+    KHR_materials_volume?: { thicknessFactor?: number; attenuationDistance?: number; attenuationColor?: [number, number, number] };
   };
 }
 

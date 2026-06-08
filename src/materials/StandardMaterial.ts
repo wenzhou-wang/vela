@@ -33,6 +33,14 @@ export interface StandardMaterialParams {
   sheenColor?: Color | number;
   /** Sheen roughness [0,1] (KHR_materials_sheen). */
   sheenRoughness?: number;
+  /** Transmission factor [0,1] (KHR_materials_transmission). */
+  transmission?: number;
+  /** Volume thickness (KHR_materials_volume). */
+  thickness?: number;
+  /** Attenuation distance (KHR_materials_volume); 0 = none. */
+  attenuationDistance?: number;
+  /** Attenuation color (KHR_materials_volume). */
+  attenuationColor?: Color | number;
 }
 
 /**
@@ -61,6 +69,13 @@ export class StandardMaterial extends Material {
   /** Sheen layer (KHR_materials_sheen): a cloth-like retroreflective lobe. */
   sheenColor = new Color(0, 0, 0);
   sheenRoughness = 0.0;
+  /** Transmission factor (KHR_materials_transmission): glass-like refraction. */
+  transmission = 0.0;
+  /** Volume thickness (KHR_materials_volume); 0 = thin-walled. */
+  thickness = 0.0;
+  /** Distance light travels before attenuating to `attenuationColor`; 0 = none. */
+  attenuationDistance = 0.0;
+  attenuationColor = new Color(1, 1, 1);
 
   map: Texture | null = null;
   normalMap: Texture | null = null;
@@ -94,6 +109,10 @@ export class StandardMaterial extends Material {
     if (params.specularColor !== undefined) this.setColor(this.specularColor, params.specularColor);
     if (params.sheenColor !== undefined) this.setColor(this.sheenColor, params.sheenColor);
     if (params.sheenRoughness !== undefined) this.sheenRoughness = params.sheenRoughness;
+    if (params.transmission !== undefined) this.transmission = params.transmission;
+    if (params.thickness !== undefined) this.thickness = params.thickness;
+    if (params.attenuationDistance !== undefined) this.attenuationDistance = params.attenuationDistance;
+    if (params.attenuationColor !== undefined) this.setColor(this.attenuationColor, params.attenuationColor);
   }
 
   private setColor(target: Color, value: Color | number): void {

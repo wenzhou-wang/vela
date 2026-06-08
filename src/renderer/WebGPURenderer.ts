@@ -31,7 +31,7 @@ const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
 const FRAME_SIZE = 256; // bytes (lightViewProj mat4 + shadowParams + envParams vec4s)
 const MODEL_SIZE = 128;
-const MATERIAL_SIZE = 112;
+const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 48; // bytes per light
 
 interface MeshResources {
@@ -938,6 +938,12 @@ export class WebGPURenderer {
     data[25] = material.sheenColor.g;
     data[26] = material.sheenColor.b;
     data[27] = material.sheenRoughness; // sheen.w = sheen roughness
+    data[28] = material.transmission; // transmission.x
+    data[29] = material.thickness; // transmission.y
+    data[30] = material.attenuationDistance; // transmission.z
+    data[32] = material.attenuationColor.r; // attenuation.rgb
+    data[33] = material.attenuationColor.g;
+    data[34] = material.attenuationColor.b;
     this.device.queue.writeBuffer(res.uniformBuffer, 0, data);
     return res;
   }

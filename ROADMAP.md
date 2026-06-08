@@ -103,8 +103,10 @@ A post-processing stack and richer materials.
       change). ✅ **`KHR_materials_ior`** + **`KHR_materials_specular`** shape the dielectric
       F0 (IOR → F0, scaled/tinted by the specular factor & color); defaults (ior 1.5, white,
       1) reproduce the old flat 0.04. ✅ **`KHR_materials_sheen`** adds a Charlie-NDF
-      retroreflective lobe for cloth (black sheen color = disabled). ⬜ clearcoat textures,
-      `_transmission`/`_volume` (screen-space refraction).
+      retroreflective lobe for cloth (black sheen color = disabled). ✅ **`KHR_materials_transmission`**
+      + **`_volume`** refract the environment/ambient through the surface with Beer–Lambert
+      volume attenuation (an approximation avoiding a screen-space capture). ⬜ clearcoat
+      textures, true screen-space refraction.
 - ⬜ **Transparency** — optional weighted-blended OIT to reduce sort artifacts.
 
 ---

@@ -41,6 +41,8 @@ struct MaterialU {
   specular : vec4<f32>,  // rgb = specular color factor, w = specular factor
   extra : vec4<f32>,     // x = ior
   sheen : vec4<f32>,     // rgb = sheen color factor, w = sheen roughness
+  transmission : vec4<f32>, // x = factor, y = thickness, z = attenuation distance
+  attenuation : vec4<f32>,  // rgb = attenuation color
 };
 
 @group(0) @binding(0) var<uniform> frame : Frame;
@@ -440,6 +442,25 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
+
+  // Transmission: refract the environment (or ambient) through the surface and
+  // attenuate by the volume (Beer-Lambert). Approximate — no screen-space capture.
+  let transmissionFactor = material.transmission.x;
+  if (transmissionFactor > 0.0) {
+    let refr = refract(-V, N, 1.0 / max(ior, 1.0001));
+    var background = frame.ambient.rgb;
+    if (frame.envParams.x > 0.5) {
+      background = sampleEnv(refr, roughness * frame.envParams.z) * frame.envParams.y;
+    }
+    var attenuation = vec3<f32>(1.0);
+    let attenuationDistance = material.transmission.z;
+    if (attenuationDistance > 0.0) {
+      let absorbance = -log(clamp(material.attenuation.rgb, vec3<f32>(1e-4), vec3<f32>(1.0))) / attenuationDistance;
+      attenuation = exp(-absorbance * material.transmission.y);
+    }
+    let transmitted = background * attenuation * baseColor;
+    color = mix(color, transmitted, transmissionFactor);
+  }
 
   color = color * frame.ambient.w;
   // envParams.w flags "linear output": the post pipeline tonemaps in a later pass.

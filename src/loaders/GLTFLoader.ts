@@ -522,6 +522,17 @@ export class GLTFLoader {
       if (sheenExt.sheenRoughnessFactor !== undefined) material.sheenRoughness = sheenExt.sheenRoughnessFactor;
     }
 
+    const transmissionExt = def.extensions?.KHR_materials_transmission;
+    if (transmissionExt?.transmissionFactor !== undefined) material.transmission = transmissionExt.transmissionFactor;
+
+    const volumeExt = def.extensions?.KHR_materials_volume;
+    if (volumeExt) {
+      if (volumeExt.thicknessFactor !== undefined) material.thickness = volumeExt.thicknessFactor;
+      if (volumeExt.attenuationDistance !== undefined) material.attenuationDistance = volumeExt.attenuationDistance;
+      const ac = volumeExt.attenuationColor;
+      if (ac) material.attenuationColor.setRGB(ac[0], ac[1], ac[2]);
+    }
+
     if (def.doubleSided) material.side = 'double';
     if (def.alphaMode === 'BLEND') {
       material.transparent = true;
