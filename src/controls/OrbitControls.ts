@@ -164,15 +164,19 @@ export class OrbitControls {
       this.sphericalDelta.theta -= (2 * Math.PI / 60 / 60) * this.autoRotateSpeed * 60 * 0.016;
     }
 
-    this.spherical.theta += this.sphericalDelta.theta;
-    this.spherical.phi += this.sphericalDelta.phi;
+    // With damping, apply only a fraction of the accumulated delta each frame and
+    // let the remainder carry over (inertia). Applying the full delta every frame
+    // would integrate one drag impulse to ~1/dampingFactor of its intended amount.
+    const damp = this.enableDamping ? this.dampingFactor : 1;
+    this.spherical.theta += this.sphericalDelta.theta * damp;
+    this.spherical.phi += this.sphericalDelta.phi * damp;
     this.spherical.phi = Math.max(this.minPolarAngle, Math.min(this.maxPolarAngle, this.spherical.phi));
     this.spherical.makeSafe();
 
     this.spherical.radius *= this.scale;
     this.spherical.radius = Math.max(this.minDistance, Math.min(this.maxDistance, this.spherical.radius));
 
-    this.target.add(this.panOffset);
+    this.target.addScaledVector(this.panOffset, damp);
 
     offset.setFromSpherical(this.spherical.radius, this.spherical.phi, this.spherical.theta);
     this.camera.position.copy(this.target).add(offset);
