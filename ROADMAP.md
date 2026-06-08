@@ -56,8 +56,9 @@ Make loaded models move and sit in believable lighting.
       indirect light: diffuse from the smallest mip, specular from a roughness-selected mip
       (the mip chain as a cheap prefilter), combined via Karis' analytic env-BRDF fit;
       replaces the flat ambient when set. Frame uniforms gained `envParams`; group 0 gained
-      the env map + sampler. ⬜ `.hdr`/`rgba16float` loading, a true GGX-prefiltered cube +
-      irradiance via compute, and a precomputed BRDF LUT for higher fidelity.
+      the env map + sampler. ✅ **`.hdr` (RGBE) loading** (`RGBELoader` → a float
+      `DataTexture` uploaded as `rgba16float`). ⬜ a true GGX-prefiltered cube + irradiance
+      via compute, and a precomputed BRDF LUT for higher fidelity.
 
 ---
 

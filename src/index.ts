@@ -46,6 +46,7 @@ export { Stats } from './helpers/Stats';
 // textures
 export { Texture } from './textures/Texture';
 export type { TextureOptions } from './textures/Texture';
+export { DataTexture } from './textures/DataTexture';
 
 // lights
 export { Light } from './lights/Light';
@@ -64,6 +65,7 @@ export { FlyControls } from './controls/FlyControls';
 // loaders
 export { GLTFLoader } from './loaders/GLTFLoader';
 export type { GLTFResult } from './loaders/GLTFLoader';
+export { RGBELoader } from './loaders/RGBELoader';
 export { GLTFExporter } from './loaders/GLTFExporter';
 export type { GLTFExportResult } from './loaders/GLTFExporter';
 export { SceneSerializer } from './loaders/SceneSerializer';

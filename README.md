@@ -58,7 +58,8 @@ Forward renderer, one pass:
 - **Multi-light** (directional + point) packed into a read-only storage buffer; ambient
   is a flat irradiance term modulated by the occlusion map.
 - **Image-based lighting** — an equirectangular `scene.environment` drives mip-prefiltered
-  diffuse + specular indirect light (analytic env-BRDF), replacing flat ambient when set.
+  diffuse + specular indirect light (analytic env-BRDF), replacing flat ambient when set;
+  load `.hdr` panoramas via `RGBELoader` (float `DataTexture`, uploaded `rgba16float`).
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **Post-processing** (opt-in) — render to an HDR offscreen target, then fullscreen passes
@@ -133,7 +134,9 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, and the
   light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
-  and the analytic env-BRDF fit check out at reference directions.
+  and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
+  hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit
+  patterns.
 - **Post-processing** — the fullscreen tonemap/FXAA/copy shaders parse with the expected
   bindings, and the line shader's frame struct matches the 256-byte layout.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
