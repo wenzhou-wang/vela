@@ -10,6 +10,7 @@ import { Box3 } from '../math/Box3';
 import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
 import { computeTangents } from './computeTangents';
+import type { MeshoptDecoder, KTX2TextureLoader } from './decoders';
 import { AnimationClip } from '../animation/AnimationClip';
 import { KeyframeTrack, type TrackPath, type InterpolationMode } from '../animation/KeyframeTrack';
 import {
@@ -43,6 +44,21 @@ const CHUNK_BIN = 0x004e4942; // "BIN\0"
  * (translation/rotation/scale/weights), and KHR_materials_emissive_strength.
  */
 export class GLTFLoader {
+  private meshoptDecoder: MeshoptDecoder | null = null;
+  private ktx2Loader: KTX2TextureLoader | null = null;
+
+  /** Provide a meshoptimizer decoder to enable `EXT_meshopt_compression`. */
+  setMeshoptDecoder(decoder: MeshoptDecoder): this {
+    this.meshoptDecoder = decoder;
+    return this;
+  }
+
+  /** Provide a KTX2 loader/transcoder to enable `KHR_texture_basisu`. */
+  setKTX2Loader(loader: KTX2TextureLoader): this {
+    this.ktx2Loader = loader;
+    return this;
+  }
+
   /** Load from a URL (resolves relative buffers/images against it). */
   async load(url: string): Promise<GLTFResult> {
     const response = await fetch(url);
@@ -95,12 +111,13 @@ export class GLTFLoader {
     glbBinary: Uint8Array | null,
   ): Promise<GLTFResult> {
     const buffers = await this.loadBuffers(json, baseUrl, glbBinary);
+    const meshopt = await this.decodeMeshopt(json, buffers);
     const images = await this.loadImages(json, baseUrl, buffers);
-    const textures = this.buildTextures(json, images);
+    const textures = await this.buildTextures(json, images, buffers);
     const materials = (json.materials ?? []).map((m) => this.buildMaterial(m, textures));
     if (materials.length === 0) materials.push(new StandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.8 }));
 
-    const ctx: BuildContext = { json, buffers, materials, geometryCache: new Map(), pendingSkins: [] };
+    const ctx: BuildContext = { json, buffers, materials, geometryCache: new Map(), pendingSkins: [], meshopt };
 
     // Build nodes
     const nodes: Object3D[] = (json.nodes ?? []).map((n) => this.buildNode(n, ctx));
@@ -310,13 +327,51 @@ export class GLTFLoader {
     return geometry;
   }
 
+  /**
+   * Decode every `EXT_meshopt_compression` buffer view into a tightly-packed
+   * Uint8Array via the supplied meshopt decoder. Throws if the extension is used
+   * without a decoder.
+   */
+  private async decodeMeshopt(
+    json: GLTFRoot,
+    buffers: Uint8Array[],
+  ): Promise<Map<number, { data: Uint8Array; byteStride: number }>> {
+    const out = new Map<number, { data: Uint8Array; byteStride: number }>();
+    const views = json.bufferViews ?? [];
+    if (!views.some((v) => v.extensions?.EXT_meshopt_compression)) return out;
+
+    const decoder = this.meshoptDecoder;
+    if (!decoder) {
+      throw new Error('[vela] EXT_meshopt_compression requires a decoder — call setMeshoptDecoder(MeshoptDecoder)');
+    }
+    await decoder.ready;
+
+    for (let i = 0; i < views.length; i++) {
+      const ext = views[i].extensions?.EXT_meshopt_compression;
+      if (!ext) continue;
+      const src = buffers[ext.buffer].subarray(ext.byteOffset ?? 0, (ext.byteOffset ?? 0) + ext.byteLength);
+      const target = new Uint8Array(ext.count * ext.byteStride);
+      decoder.decodeGltfBuffer(target, ext.count, ext.byteStride, src, ext.mode, ext.filter ?? 'NONE');
+      out.set(i, { data: target, byteStride: ext.byteStride });
+    }
+    return out;
+  }
+
+  /** Resolve a buffer view to its bytes, honoring meshopt-decoded views. */
+  private resolveView(ctx: BuildContext, bufferViewIndex: number): { array: Uint8Array; byteOffset: number; byteStride?: number } {
+    const decoded = ctx.meshopt.get(bufferViewIndex);
+    if (decoded) return { array: decoded.data, byteOffset: 0, byteStride: decoded.byteStride };
+    const bv = ctx.json.bufferViews![bufferViewIndex];
+    return { array: ctx.buffers[bv.buffer], byteOffset: bv.byteOffset ?? 0, byteStride: bv.byteStride };
+  }
+
   private readIndices(ctx: BuildContext, accessorIndex: number): Uint16Array | Uint32Array {
     const accessor = ctx.json.accessors![accessorIndex];
-    const bufferView = ctx.json.bufferViews![accessor.bufferView!];
-    const buffer = ctx.buffers[bufferView.buffer];
+    const view = this.resolveView(ctx, accessor.bufferView!);
+    const buffer = view.array;
     const dv = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     const compSize = COMPONENT_SIZE[accessor.componentType];
-    const base = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const base = view.byteOffset + (accessor.byteOffset ?? 0);
     const count = accessor.count;
 
     if (accessor.componentType === 5125) {
@@ -339,13 +394,12 @@ export class GLTFLoader {
     const numComponents = TYPE_COMPONENTS[accessor.type];
     const out = new Float32Array(accessor.count * numComponents);
 
-    const bufferView = accessor.bufferView !== undefined ? ctx.json.bufferViews![accessor.bufferView] : undefined;
-    if (!bufferView) return out; // sparse-only / empty
-
-    const buffer = ctx.buffers[bufferView.buffer];
+    if (accessor.bufferView === undefined) return out; // sparse-only / empty
+    const view = this.resolveView(ctx, accessor.bufferView);
+    const buffer = view.array;
     const compSize = COMPONENT_SIZE[accessor.componentType];
-    const byteStride = bufferView.byteStride ?? numComponents * compSize;
-    const baseOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const byteStride = view.byteStride ?? numComponents * compSize;
+    const baseOffset = view.byteOffset + (accessor.byteOffset ?? 0);
     const dv = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     const normalize = accessor.normalized ?? false;
@@ -364,13 +418,12 @@ export class GLTFLoader {
     const accessor = ctx.json.accessors![accessorIndex];
     const numComponents = TYPE_COMPONENTS[accessor.type];
     const out = new Uint32Array(accessor.count * numComponents);
-    const bufferView = accessor.bufferView !== undefined ? ctx.json.bufferViews![accessor.bufferView] : undefined;
-    if (!bufferView) return out;
-
-    const buffer = ctx.buffers[bufferView.buffer];
+    if (accessor.bufferView === undefined) return out;
+    const view = this.resolveView(ctx, accessor.bufferView);
+    const buffer = view.array;
     const compSize = COMPONENT_SIZE[accessor.componentType];
-    const byteStride = bufferView.byteStride ?? numComponents * compSize;
-    const baseOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const byteStride = view.byteStride ?? numComponents * compSize;
+    const baseOffset = view.byteOffset + (accessor.byteOffset ?? 0);
     const dv = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     for (let i = 0; i < accessor.count; i++) {
@@ -440,11 +493,27 @@ export class GLTFLoader {
     return out;
   }
 
-  private buildTextures(json: GLTFRoot, images: (ImageBitmap | null)[]): Texture[] {
+  private async buildTextures(
+    json: GLTFRoot,
+    images: (ImageBitmap | null)[],
+    buffers: Uint8Array[],
+  ): Promise<Texture[]> {
     const samplers = json.samplers ?? [];
-    return (json.textures ?? []).map((tex) => {
-      const image = tex.source !== undefined ? images[tex.source] : null;
-      const texture = new Texture(image);
+    const out: Texture[] = [];
+    for (const tex of json.textures ?? []) {
+      // KHR_texture_basisu: the source is a KTX2 image to transcode.
+      const basisuSource = tex.extensions?.KHR_texture_basisu?.source;
+      let texture: Texture;
+      if (basisuSource !== undefined) {
+        if (!this.ktx2Loader) {
+          throw new Error('[vela] KHR_texture_basisu requires a KTX2 loader — call setKTX2Loader(new KTX2Loader())');
+        }
+        const bytes = this.imageBytes(json, basisuSource, buffers);
+        texture = await this.ktx2Loader.parse(bytes, false);
+      } else {
+        const image = tex.source !== undefined ? images[tex.source] : null;
+        texture = new Texture(image);
+      }
       const sampler = tex.sampler !== undefined ? samplers[tex.sampler] : undefined;
       if (sampler) {
         texture.wrapS = wrapMode(sampler.wrapS);
@@ -452,8 +521,21 @@ export class GLTFLoader {
         if (sampler.magFilter === 9728) texture.magFilter = 'nearest';
         if (sampler.minFilter === 9728 || sampler.minFilter === 9984 || sampler.minFilter === 9986) texture.minFilter = 'nearest';
       }
-      return texture;
-    });
+      out.push(texture);
+    }
+    return out;
+  }
+
+  /** Raw bytes for an image (data URI, external URI, or buffer view). */
+  private imageBytes(json: GLTFRoot, imageIndex: number, buffers: Uint8Array[]): Uint8Array {
+    const image = json.images![imageIndex];
+    if (image.uri && image.uri.startsWith('data:')) return decodeDataURI(image.uri);
+    if (image.bufferView !== undefined) {
+      const bv = json.bufferViews![image.bufferView];
+      const buf = buffers[bv.buffer];
+      return buf.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength);
+    }
+    throw new Error('[vela] KTX2 image must use a data URI or bufferView (external URI not supported here)');
   }
 
   private buildMaterial(def: GLTFMaterial, textures: Texture[]): StandardMaterial {
@@ -570,6 +652,8 @@ interface BuildContext {
   geometryCache: Map<string, BufferGeometry>;
   /** Skinned meshes awaiting skeleton resolution (joints built after nodes). */
   pendingSkins: { mesh: SkinnedMesh; skinIndex: number }[];
+  /** Decoded EXT_meshopt_compression buffer views, by bufferView index. */
+  meshopt: Map<number, { data: Uint8Array; byteStride: number }>;
 }
 
 function configure(texture: Texture | undefined, colorSpace: 'srgb' | 'linear'): Texture | null {

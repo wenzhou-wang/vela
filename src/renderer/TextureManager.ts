@@ -65,10 +65,13 @@ export class TextureManager {
     this.defaultNormalView = this.createSolid([128, 128, 255, 255], 'rgba8unorm');
   }
 
-  /** Upload a float DataTexture as rgba16float (filterable), with a mip chain. */
+  /** Upload a DataTexture: float → rgba16float, uint8 → rgba8unorm(/-srgb). */
   private createData(texture: DataTexture): GPUTextureEntry {
     const { width, height, data } = texture;
-    const format: GPUTextureFormat = 'rgba16float';
+    const isFloat = data instanceof Float32Array;
+    const format: GPUTextureFormat = isFloat
+      ? 'rgba16float'
+      : texture.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
     const mipLevelCount = texture.generateMipmaps ? MipmapGenerator.mipLevelCount(width, height) : 1;
 
     const gpuTexture = this.device.createTexture({
@@ -78,11 +81,12 @@ export class TextureManager {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
-    const half = floatToHalfArray(data);
+    const bytes: ArrayBufferView = isFloat ? floatToHalfArray(data as Float32Array) : (data as Uint8Array);
+    const bytesPerRow = width * (isFloat ? 8 : 4); // rgba16 = 8, rgba8 = 4
     this.device.queue.writeTexture(
       { texture: gpuTexture },
-      half,
-      { bytesPerRow: width * 8, rowsPerImage: height }, // rgba16 = 8 bytes/texel
+      bytes as ArrayBuffer & ArrayBufferView,
+      { bytesPerRow, rowsPerImage: height },
       { width, height },
     );
     if (mipLevelCount > 1) this.mipmaps.generate(gpuTexture, format);

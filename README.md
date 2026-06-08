@@ -101,6 +101,8 @@ Forward renderer, one pass:
 - **Morph targets** — `primitives[].targets` (POSITION/NORMAL deltas), default `mesh.weights`,
   `targetNames`, and `weights` animation channels; deltas blended in a morph vertex variant
 - Accessor decoding with byte-stride and normalized-integer support; tangent generation
+- **`EXT_meshopt_compression`** via a pluggable `MeshoptDecoder`; **`KHR_texture_basisu`/KTX2**
+  via `KTX2Loader` (uncompressed RGBA8 directly; Basis through a pluggable transcoder)
 - **glTF export** — `GLTFExporter` writes the scene (hierarchy, geometry, morph targets,
   skinning, PBR materials + extensions, and keyframe animation clips) back out to a binary `.glb`
 - **Native scene format** — `SceneSerializer` round-trips the scene graph to/from compact
@@ -133,6 +135,9 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   clearcoat/ior/specular/sheen, and animation clips) survives an export→`GLTFLoader` round-trip.
 - **Scene format** — `SceneSerializer` round-trips hierarchy, transforms, geometry,
   lights, and materials through JSON, with shared geometry/material instances preserved.
+- **Compressed assets** — meshopt buffer-view decode dispatches through a stub decoder and
+  feeds accessors; KTX2 container parsing yields the right dims/format, uncompressed RGBA8
+  uploads directly, and Basis routes through a transcoder hook.
 - **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, and the
   light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping

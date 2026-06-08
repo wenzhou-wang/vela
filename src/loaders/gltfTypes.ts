@@ -117,6 +117,20 @@ export interface GLTFBufferView {
   byteOffset?: number;
   byteLength: number;
   byteStride?: number;
+  extensions?: {
+    EXT_meshopt_compression?: GLTFMeshoptExtension;
+  };
+}
+
+/** EXT_meshopt_compression: a compressed source range to decode into this view. */
+export interface GLTFMeshoptExtension {
+  buffer: number;
+  byteOffset?: number;
+  byteLength: number;
+  byteStride: number;
+  count: number;
+  mode: 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES';
+  filter?: 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL';
 }
 
 export interface GLTFBuffer {
@@ -127,6 +141,10 @@ export interface GLTFBuffer {
 export interface GLTFTextureDef {
   source?: number;
   sampler?: number;
+  extensions?: {
+    /** KHR_texture_basisu: `source` is a KTX2 image to transcode. */
+    KHR_texture_basisu?: { source: number };
+  };
 }
 
 export interface GLTFImage {

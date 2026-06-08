@@ -122,10 +122,13 @@ A post-processing stack and richer materials.
 
 Faster loads, broader inputs, and ergonomics.
 
-- ⬜ **Compressed geometry** — `KHR_draco_mesh_compression` and `EXT_meshopt_compression`
-      (WASM decoders in a Worker).
-- ⬜ **Compressed textures** — `KTX2`/Basis Universal transcoding to the platform's
-      preferred GPU format.
+- 🚧 **Compressed geometry** — ✅ **`EXT_meshopt_compression`**: the loader decodes
+      meshopt buffer views through a pluggable `MeshoptDecoder` (`loader.setMeshoptDecoder(MeshoptDecoder)`,
+      the standard meshoptimizer module), then accessors read the decoded data. ⬜ `KHR_draco_mesh_compression`.
+- 🚧 **Compressed textures** — ✅ **`KHR_texture_basisu` / KTX2**: `KTX2Loader` parses the
+      container, uploads uncompressed RGBA8 directly, and transcodes Basis (ETC1S/UASTC) via
+      a pluggable transcoder that yields RGBA8 (`loader.setKTX2Loader(new KTX2Loader().setTranscoder(...))`).
+      ⬜ transcode straight to the platform's preferred GPU-compressed format (BC7/ASTC/ETC2).
 - ⬜ **Worker-based loading** — parse glTF and decode images off the main thread;
       transfer typed arrays / `ImageBitmap`s.
 - ✅ **More cameras/controls** — `OrthographicCamera`; `FlyControls` (WASD + Q/E,
