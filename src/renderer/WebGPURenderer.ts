@@ -26,6 +26,9 @@ import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
 
+/** Either encoder accepts the same draw commands (pass or render bundle). */
+type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
+
 const MAX_LIGHTS = 32;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
@@ -128,6 +131,11 @@ export class WebGPURenderer {
   bloom = false;
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
+  /** Record the opaque draws into a render bundle to amortize encoding cost. */
+  renderBundles = false;
+  private opaqueBundle: GPURenderBundle | null = null;
+  private bundleKey = '';
+  private frameBindGroupVersion = 0;
   private post!: PostProcessing;
   private _lightView = new Matrix4();
   private _lightProj = new Matrix4();
@@ -219,6 +227,7 @@ export class WebGPURenderer {
   }
 
   private buildFrameBindGroup(): void {
+    this.frameBindGroupVersion++; // invalidates any recorded render bundle
     this.frameBindGroup = this.device.createBindGroup({
       layout: this.pipelines.frameLayout,
       entries: [
@@ -361,7 +370,12 @@ export class WebGPURenderer {
 
     pass.setBindGroup(0, this.frameBindGroup);
 
-    for (const mesh of this.opaque) this.drawMesh(pass, mesh);
+    if (this.renderBundles && this.opaque.length) {
+      this.refreshOpaqueUniforms(); // keep per-object buffers fresh for the replay
+      pass.executeBundles([this.getOpaqueBundle()]);
+    } else {
+      for (const mesh of this.opaque) this.drawMesh(pass, mesh);
+    }
     for (const mesh of this.transparent) this.drawMesh(pass, mesh);
 
     pass.end();
@@ -645,7 +659,7 @@ export class WebGPURenderer {
 
   exposure = 1.0;
 
-  private drawMesh(pass: GPURenderPassEncoder, mesh: Mesh): void {
+  private drawMesh(pass: DrawEncoder, mesh: Mesh): void {
     const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (material instanceof LineBasicMaterial) {
       this.drawLine(pass, mesh, material);
@@ -696,7 +710,7 @@ export class WebGPURenderer {
     }
   }
 
-  private drawLine(pass: GPURenderPassEncoder, mesh: Mesh, material: LineBasicMaterial): void {
+  private drawLine(pass: DrawEncoder, mesh: Mesh, material: LineBasicMaterial): void {
     // The color stream is always present (white default), so lines need no setup.
     const geometry = this.geometries.get(mesh.geometry);
 
@@ -711,6 +725,52 @@ export class WebGPURenderer {
       pass.drawIndexed(geometry.drawCount);
     } else {
       pass.draw(geometry.drawCount);
+    }
+  }
+
+  /** Get (or re-record) the opaque render bundle when its draw set changes. */
+  private getOpaqueBundle(): GPURenderBundle {
+    const colorFormat = this.postProcessing ? 'rgba16float' : this.format;
+    let key = `${colorFormat}|${this.frameBindGroupVersion}|`;
+    for (const mesh of this.opaque) {
+      const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      key += `${mesh.id},${mesh.geometry.id},${(m as Material).id};`;
+    }
+    if (this.opaqueBundle && key === this.bundleKey) return this.opaqueBundle;
+
+    const encoder = this.device.createRenderBundleEncoder({
+      colorFormats: [colorFormat],
+      depthStencilFormat: DEPTH_FORMAT,
+      sampleCount: this.sampleCount,
+    });
+    encoder.setBindGroup(0, this.frameBindGroup); // bundles don't inherit pass state
+    for (const mesh of this.opaque) this.drawMesh(encoder, mesh);
+    this.opaqueBundle = encoder.finish();
+    this.bundleKey = key;
+    return this.opaqueBundle;
+  }
+
+  /** Refresh per-object GPU buffers each frame so a replayed bundle stays correct. */
+  private refreshOpaqueUniforms(): void {
+    for (const mesh of this.opaque) {
+      const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      if (material instanceof LineBasicMaterial) {
+        this.getMeshResources(mesh);
+        this.getLineResources(material);
+        continue;
+      }
+      if (!(material instanceof StandardMaterial)) continue;
+      if (mesh instanceof InstancedMesh) this.getInstancedResources(mesh);
+      else this.getMeshResources(mesh);
+      this.getMaterialResources(material);
+      const geometry = this.geometries.get(mesh.geometry);
+      if (!(mesh instanceof InstancedMesh) && mesh instanceof SkinnedMesh &&
+          geometry.joints !== null && geometry.weights !== null) {
+        this.getSkinnedResources(mesh);
+      } else if (!(mesh instanceof InstancedMesh) && mesh.morphTargetInfluences.length > 0 &&
+                 mesh.geometry.morphAttributes.position?.length) {
+        this.getMorphResources(mesh);
+      }
     }
   }
 

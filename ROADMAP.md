@@ -79,8 +79,10 @@ Push toward "thousands of objects at 120 fps."
       `renderer.culledCount` reports the last frame's skipped meshes.
 - ⬜ **GPU-driven culling** — compute-shader frustum/occlusion cull writing an indirect
       draw buffer (`drawIndexedIndirect`).
-- ⬜ **Render bundles** — record static opaque draws into `GPURenderBundle`s to amortize
-      encoding cost.
+- ✅ **Render bundles** — opt-in `renderer.renderBundles` records the opaque draws into a
+      `GPURenderBundle` and replays it, re-recording only when the draw set (or frame bind
+      group) changes; per-object uniform buffers are still refreshed each frame so dynamic
+      transforms stay correct.
 
 ---
 
