@@ -308,8 +308,8 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   return mix(lo, hi, cutoff);
 }
 
-@fragment
-fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
+// Shared shading: returns linear HDR color (before exposure/tonemap) + alpha.
+fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   let flags = u32(material.misc.y);
   let hasNormalMap = (flags & 2u) != 0u;
 
@@ -462,14 +462,39 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
     color = mix(color, transmitted, transmissionFactor);
   }
 
-  color = color * frame.ambient.w;
+  return vec4<f32>(color, alpha);
+}
+
+@fragment
+fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
+  let s = shadeSurface(in, frontFacing);
+  var color = s.rgb * frame.ambient.w; // exposure
   // envParams.w flags "linear output": the post pipeline tonemaps in a later pass.
   if (frame.envParams.w < 0.5) {
     color = acesFilmic(color);
     color = linearToSRGB(color);
   }
+  return vec4<f32>(color, s.a);
+}
 
-  return vec4<f32>(color, alpha);
+// Weighted-blended OIT (McGuire/Bavoil). Accumulates premultiplied linear color
+// weighted by depth+alpha into target 0, and product of (1-a) into target 1.
+struct OITOut {
+  @location(0) accum : vec4<f32>,
+  @location(1) reveal : f32,
+};
+
+@fragment
+fn fs_oit(in : VSOut, @builtin(front_facing) frontFacing : bool) -> OITOut {
+  let s = shadeSurface(in, frontFacing);
+  let color = s.rgb * frame.ambient.w; // exposure (stays linear; tonemapped after composite)
+  let a = clamp(s.a, 0.0, 1.0);
+  let viewZ = abs((frame.view * vec4<f32>(in.worldPos, 1.0)).z);
+  let weight = a * clamp(0.03 / (1e-5 + pow(viewZ / 200.0, 4.0)), 1e-2, 3e3);
+  var out : OITOut;
+  out.accum = vec4<f32>(color * a, a) * weight;
+  out.reveal = a;
+  return out;
 }
 `;
 

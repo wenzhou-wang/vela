@@ -65,6 +65,17 @@ fn fs_copy(in : VSOut) -> @location(0) vec4<f32> {
   return textureSample(src, samp, in.uv);
 }
 
+// Weighted-blended OIT resolve: src = accum (rgb*aw, aw), bloomTex.r = revealage.
+// Returned with alpha = revealage; the caller blends (1-srcAlpha, srcAlpha) so the
+// result is avgColor*(1-reveal) + dst*reveal.
+@fragment
+fn fs_oitComposite(in : VSOut) -> @location(0) vec4<f32> {
+  let accum = textureSample(src, samp, in.uv);
+  let reveal = textureSample(bloomTex, samp, in.uv).r;
+  let avg = accum.rgb / max(accum.a, 1e-5);
+  return vec4<f32>(avg, reveal);
+}
+
 // Bright-pass: keep energy above the threshold (soft knee via the excess ratio).
 @fragment
 fn fs_threshold(in : VSOut) -> @location(0) vec4<f32> {

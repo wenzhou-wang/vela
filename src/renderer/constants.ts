@@ -1,6 +1,9 @@
 export const DEPTH_FORMAT: GPUTextureFormat = 'depth24plus';
 /** Depth format for the (sampleable) shadow map. */
 export const SHADOW_DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
+/** Weighted-blended OIT accumulation / revealage target formats. */
+export const OIT_ACCUM_FORMAT: GPUTextureFormat = 'rgba16float';
+export const OIT_REVEAL_FORMAT: GPUTextureFormat = 'r16float';
 
 /** Vertex attribute shader locations (must match pbr.wgsl). */
 export const ATTRIB_LOCATION = {

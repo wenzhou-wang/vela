@@ -64,6 +64,8 @@ Forward renderer, one pass:
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **Post-processing** (opt-in) — render to an HDR offscreen target, then fullscreen passes
   (bloom, ACES tonemap, optional FXAA) resolve to the swap chain.
+- **Order-independent transparency** (opt-in, weighted-blended) — accumulate + composite
+  transparent fragments in the HDR pass to reduce sort artifacts.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
 - **Directional shadow maps** — opt-in depth pass + 3×3 PCF; light frustum auto-fits the scene.
 - **Instanced rendering** — `InstancedMesh` draws a whole batch in one call via a

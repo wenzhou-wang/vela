@@ -1,4 +1,5 @@
 import { POST_SHADER } from './shaders/post.wgsl';
+import { OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
 
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 const LDR_FORMAT: GPUTextureFormat = 'rgba8unorm';
@@ -35,6 +36,10 @@ export class PostProcessing {
   private bloomAView!: GPUTextureView;
   private bloomB!: GPUTexture;
   private bloomBView!: GPUTextureView;
+  private oitAccum: GPUTexture | null = null;
+  private oitAccumView!: GPUTextureView;
+  private oitReveal: GPUTexture | null = null;
+  private oitRevealView!: GPUTextureView;
 
   constructor(
     private device: GPUDevice,
@@ -90,6 +95,70 @@ export class PostProcessing {
     this.bloomAView = this.bloomA.createView();
     this.bloomB = attach(HDR_FORMAT, [bw, bh]);
     this.bloomBView = this.bloomB.createView();
+    // OIT accumulation/revealage (full-res, sample count 1).
+    this.oitAccum?.destroy();
+    this.oitReveal?.destroy();
+    this.oitAccum = attach(OIT_ACCUM_FORMAT, [w, h]);
+    this.oitAccumView = this.oitAccum.createView();
+    this.oitReveal = attach(OIT_REVEAL_FORMAT, [w, h]);
+    this.oitRevealView = this.oitReveal.createView();
+  }
+
+  /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
+  get hdrTargetView(): GPUTextureView { return this.hdrView; }
+
+  /** Color attachments for the OIT transparent pass (accum cleared to 0, reveal to 1). */
+  oitColorAttachments(): GPURenderPassColorAttachment[] {
+    return [
+      { view: this.oitAccumView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } },
+      { view: this.oitRevealView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1, g: 1, b: 1, a: 1 } },
+    ];
+  }
+
+  /** Composite the OIT accum/reveal targets onto the HDR scene target. */
+  compositeOIT(encoder: GPUCommandEncoder): void {
+    const pipeline = this.blendPipeline('fs_oitComposite', HDR_FORMAT);
+    const bindGroup = this.device.createBindGroup({
+      layout: this.bindLayout,
+      entries: [
+        { binding: 0, resource: this.oitAccumView },
+        { binding: 1, resource: this.sampler },
+        { binding: 2, resource: { buffer: this.paramsBuffer } },
+        { binding: 3, resource: this.oitRevealView },
+      ],
+    });
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: this.hdrView, loadOp: 'load', storeOp: 'store' }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3);
+    pass.end();
+  }
+
+  private blendPipeline(entry: string, targetFormat: GPUTextureFormat): GPURenderPipeline {
+    const key = `${entry}|${targetFormat}|blend`;
+    let p = this.pipelines.get(key);
+    if (p) return p;
+    p = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.bindLayout] }),
+      vertex: { module: this.module, entryPoint: 'vs_main' },
+      fragment: {
+        module: this.module,
+        entryPoint: entry,
+        targets: [{
+          format: targetFormat,
+          blend: {
+            color: { srcFactor: 'one-minus-src-alpha', dstFactor: 'src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one-minus-src-alpha', dstFactor: 'src-alpha', operation: 'add' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.pipelines.set(key, p);
+    return p;
   }
 
   /** Color attachment for the scene pass: renders into the HDR target. */

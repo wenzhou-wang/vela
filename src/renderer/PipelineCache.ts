@@ -1,6 +1,6 @@
 import type { StandardMaterial } from '../materials/StandardMaterial';
 import type { LineBasicMaterial } from '../materials/LineBasicMaterial';
-import { DEPTH_FORMAT, SHADOW_DEPTH_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
+import { DEPTH_FORMAT, SHADOW_DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
 import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
 import { SHADOW_VERTEX_BUFFER_LAYOUT } from './shaders/shadow.wgsl';
 
@@ -179,6 +179,50 @@ export class PipelineCache {
         depthCompare: depthTest === 'dt1' ? 'less' : 'always',
       },
       multisample: { count: this.sampleCount },
+    });
+    this.cache.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * Weighted-blended OIT pipeline for a transparent material: two targets (accum
+   * additive, revealage multiplicative), depth-tested but not depth-written, at
+   * sample count 1 (OIT runs in the non-MSAA HDR post path).
+   */
+  getOIT(material: StandardMaterial, variant: PipelineVariant = 'static'): GPURenderPipeline {
+    const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
+    const key = `oit|${variant}|${cull}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    const accum: GPUColorTargetState = {
+      format: OIT_ACCUM_FORMAT,
+      blend: {
+        color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+      },
+    };
+    const reveal: GPUColorTargetState = {
+      format: OIT_REVEAL_FORMAT,
+      blend: {
+        color: { srcFactor: 'zero', dstFactor: 'one-minus-src', operation: 'add' },
+        alpha: { srcFactor: 'zero', dstFactor: 'one-minus-src', operation: 'add' },
+      },
+    };
+
+    const module = this.modules[variant];
+    pipeline = this.device.createRenderPipeline({
+      label: `pbr-${key}`,
+      layout: this.layouts[variant],
+      vertex: {
+        module,
+        entryPoint: 'vs_main',
+        buffers: variant === 'skinned' ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
+      },
+      fragment: { module, entryPoint: 'fs_oit', targets: [accum, reveal] },
+      primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
+      multisample: { count: 1 },
     });
     this.cache.set(key, pipeline);
     return pipeline;

@@ -131,6 +131,11 @@ export class WebGPURenderer {
   bloom = false;
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
+  /**
+   * Order-independent transparency (weighted-blended). Requires `postProcessing`
+   * and sampleCount 1; otherwise transparent meshes fall back to sorted blending.
+   */
+  oit = false;
   /** Record the opaque draws into a render bundle to amortize encoding cost. */
   renderBundles = false;
   private opaqueBundle: GPURenderBundle | null = null;
@@ -376,9 +381,25 @@ export class WebGPURenderer {
     } else {
       for (const mesh of this.opaque) this.drawMesh(pass, mesh);
     }
-    for (const mesh of this.transparent) this.drawMesh(pass, mesh);
+
+    const useOIT = this.oit && this.postProcessing && this.sampleCount === 1 && this.transparent.length > 0;
+    if (!useOIT) {
+      for (const mesh of this.transparent) this.drawMesh(pass, mesh);
+    }
 
     pass.end();
+
+    // Order-independent transparency: accumulate into HDR-side targets, then composite.
+    if (useOIT) {
+      const oitPass = encoder.beginRenderPass({
+        colorAttachments: this.post.oitColorAttachments(),
+        depthStencilAttachment: { view: this.depthTexture.createView(), depthReadOnly: true },
+      });
+      oitPass.setBindGroup(0, this.frameBindGroup);
+      for (const mesh of this.transparent) this.drawMesh(oitPass, mesh, true);
+      oitPass.end();
+      this.post.compositeOIT(encoder);
+    }
 
     // Resolve the HDR target through the post chain into the swap chain.
     if (this.postProcessing) {
@@ -659,10 +680,10 @@ export class WebGPURenderer {
 
   exposure = 1.0;
 
-  private drawMesh(pass: DrawEncoder, mesh: Mesh): void {
+  private drawMesh(pass: DrawEncoder, mesh: Mesh, oit = false): void {
     const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (material instanceof LineBasicMaterial) {
-      this.drawLine(pass, mesh, material);
+      if (!oit) this.drawLine(pass, mesh, material); // lines aren't part of the OIT pass
       return;
     }
     if (!(material instanceof StandardMaterial)) return;
@@ -676,7 +697,7 @@ export class WebGPURenderer {
       !!mesh.geometry.morphAttributes.position?.length;
     const variant = instanced ? 'instanced' : skinned ? 'skinned' : morphed ? 'morph' : 'static';
 
-    pass.setPipeline(this.pipelines.get(material, variant));
+    pass.setPipeline(oit ? this.pipelines.getOIT(material, variant) : this.pipelines.get(material, variant));
 
     // Group 1: model uniform (static/skinned/morph) or instance storage (instanced)
     if (instanced) {
