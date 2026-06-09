@@ -63,6 +63,10 @@ struct MaterialU {
 @group(2) @binding(8) var emissiveSmp : sampler;
 @group(2) @binding(9) var occlusionTex : texture_2d<f32>;
 @group(2) @binding(10) var occlusionSmp : sampler;
+@group(2) @binding(11) var clearcoatTex : texture_2d<f32>;
+@group(2) @binding(12) var clearcoatSmp : sampler;
+@group(2) @binding(13) var clearcoatRoughnessTex : texture_2d<f32>;
+@group(2) @binding(14) var clearcoatRoughnessSmp : sampler;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -327,8 +331,9 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   var roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
 
   // Clear-coat: a thin dielectric specular layer over the base (KHR_materials_clearcoat).
-  let clearcoat = clamp(material.misc.z, 0.0, 1.0);
-  let clearcoatRoughness = clamp(material.misc.w, 0.04, 1.0);
+  // White default textures → factor * 1.0 = factor (backward-compatible).
+  let clearcoat = clamp(material.misc.z * textureSample(clearcoatTex, clearcoatSmp, in.uv).r, 0.0, 1.0);
+  let clearcoatRoughness = clamp(material.misc.w * textureSample(clearcoatRoughnessTex, clearcoatRoughnessSmp, in.uv).g, 0.04, 1.0);
 
   // Sheen: a soft retroreflective lobe for cloth (KHR_materials_sheen).
   let sheenColor = material.sheen.rgb;

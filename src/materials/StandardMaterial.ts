@@ -23,6 +23,10 @@ export interface StandardMaterialParams {
   clearcoat?: number;
   /** Clear-coat layer roughness [0,1]. */
   clearcoatRoughness?: number;
+  /** Per-texel clearcoat factor (R channel, multiplied by clearcoat factor). */
+  clearcoatMap?: Texture | null;
+  /** Per-texel clearcoat roughness (G channel, multiplied by clearcoatRoughness). */
+  clearcoatRoughnessMap?: Texture | null;
   /** Index of refraction (KHR_materials_ior); default 1.5. */
   ior?: number;
   /** Dielectric specular strength [0,1] (KHR_materials_specular). */
@@ -83,6 +87,10 @@ export class StandardMaterial extends Material {
   metalnessRoughnessMap: Texture | null = null;
   emissiveMap: Texture | null = null;
   occlusionMap: Texture | null = null;
+  /** Per-texel clearcoat factor (R channel). */
+  clearcoatMap: Texture | null = null;
+  /** Per-texel clearcoat roughness (G channel). */
+  clearcoatRoughnessMap: Texture | null = null;
 
   constructor(params: StandardMaterialParams = {}) {
     super();
@@ -104,6 +112,8 @@ export class StandardMaterial extends Material {
     if (params.alphaTest !== undefined) this.alphaTest = params.alphaTest;
     if (params.clearcoat !== undefined) this.clearcoat = params.clearcoat;
     if (params.clearcoatRoughness !== undefined) this.clearcoatRoughness = params.clearcoatRoughness;
+    if (params.clearcoatMap !== undefined) this.clearcoatMap = params.clearcoatMap ?? null;
+    if (params.clearcoatRoughnessMap !== undefined) this.clearcoatRoughnessMap = params.clearcoatRoughnessMap ?? null;
     if (params.ior !== undefined) this.ior = params.ior;
     if (params.specularIntensity !== undefined) this.specularIntensity = params.specularIntensity;
     if (params.specularColor !== undefined) this.setColor(this.specularColor, params.specularColor);

@@ -290,10 +290,15 @@ export class GLTFExporter {
       extensions.KHR_materials_emissive_strength = { emissiveStrength: material.emissiveIntensity };
     }
     if (material.clearcoat > 0) {
-      extensions.KHR_materials_clearcoat = {
+      const ccTi = await ti(material.clearcoatMap);
+      const ccrTi = await ti(material.clearcoatRoughnessMap);
+      const ccExt: Record<string, unknown> = {
         clearcoatFactor: material.clearcoat,
         clearcoatRoughnessFactor: material.clearcoatRoughness,
       };
+      if (ccTi >= 0) ccExt.clearcoatTexture = { index: ccTi };
+      if (ccrTi >= 0) ccExt.clearcoatRoughnessTexture = { index: ccrTi };
+      extensions.KHR_materials_clearcoat = ccExt;
     }
     if (material.ior !== 1.5) extensions.KHR_materials_ior = { ior: material.ior };
     if (material.specularIntensity !== 1 || material.specularColor.r !== 1 ||

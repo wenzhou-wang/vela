@@ -102,8 +102,10 @@ A post-processing stack and richer materials.
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):
       a second GGX specular lobe over the base, attenuating it by the coat's Fresnel; the
-      `clearcoat`/`clearcoatRoughness` factors reuse spare material-uniform slots (no size
-      change). ✅ **`KHR_materials_ior`** + **`KHR_materials_specular`** shape the dielectric
+      `clearcoat`/`clearcoatRoughness` factors reuse spare material-uniform slots; ✅ **clearcoat
+      textures** (`clearcoatMap` R-channel, `clearcoatRoughnessMap` G-channel) parsed from
+      `KHR_materials_clearcoat.clearcoatTexture` / `clearcoatRoughnessTexture`, exported and
+      sampled in the PBR shader (adds bindings 11–14 to the material bind group). ✅ **`KHR_materials_ior`** + **`KHR_materials_specular`** shape the dielectric
       F0 (IOR → F0, scaled/tinted by the specular factor & color); defaults (ior 1.5, white,
       1) reproduce the old flat 0.04. ✅ **`KHR_materials_sheen`** adds a Charlie-NDF
       retroreflective lobe for cloth (black sheen color = disabled). ✅ **`KHR_materials_transmission`**

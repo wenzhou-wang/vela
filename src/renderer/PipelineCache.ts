@@ -64,11 +64,12 @@ export class PipelineCache {
       ],
     });
 
-    // material uniform + 5 (texture, sampler) pairs
+    // material uniform + 7 (texture, sampler) pairs
+    // 0: uniform, 1-10: base/normal/mr/emissive/occlusion, 11-14: clearcoatMap/clearcoatRoughnessMap
     const materialEntries: GPUBindGroupLayoutEntry[] = [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
     ];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 7; i++) {
       materialEntries.push({
         binding: 1 + i * 2,
         visibility: GPUShaderStage.FRAGMENT,

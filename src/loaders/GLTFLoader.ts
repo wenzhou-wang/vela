@@ -585,6 +585,12 @@ export class GLTFLoader {
     if (clearcoat) {
       material.clearcoat = clearcoat.clearcoatFactor ?? 0;
       material.clearcoatRoughness = clearcoat.clearcoatRoughnessFactor ?? 0;
+      if (clearcoat.clearcoatTexture) {
+        material.clearcoatMap = configure(textures[clearcoat.clearcoatTexture.index], 'linear');
+      }
+      if (clearcoat.clearcoatRoughnessTexture) {
+        material.clearcoatRoughnessMap = configure(textures[clearcoat.clearcoatRoughnessTexture.index], 'linear');
+      }
     }
 
     const iorExt = def.extensions?.KHR_materials_ior;

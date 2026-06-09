@@ -984,6 +984,10 @@ export class WebGPURenderer {
           { binding: 8, resource: s(material.emissiveMap) },
           { binding: 9, resource: t(material.occlusionMap, white) },
           { binding: 10, resource: s(material.occlusionMap) },
+          { binding: 11, resource: t(material.clearcoatMap, white) },
+          { binding: 12, resource: s(material.clearcoatMap) },
+          { binding: 13, resource: t(material.clearcoatRoughnessMap, white) },
+          { binding: 14, resource: s(material.clearcoatRoughnessMap) },
         ],
       });
       res = { uniformBuffer, bindGroup, textureSignature: signature };
@@ -1031,7 +1035,8 @@ export class WebGPURenderer {
 
   private textureSignature(m: StandardMaterial): string {
     const id = (t: StandardMaterial['map']) => (t ? `${t.id}:${t.version}` : '_');
-    return [m.map, m.normalMap, m.metalnessRoughnessMap, m.emissiveMap, m.occlusionMap]
+    return [m.map, m.normalMap, m.metalnessRoughnessMap, m.emissiveMap, m.occlusionMap,
+            m.clearcoatMap, m.clearcoatRoughnessMap]
       .map(id)
       .join('|');
   }
