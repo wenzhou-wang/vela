@@ -2,6 +2,7 @@ import { Object3D } from '../core/Object3D';
 import { Mesh } from '../core/Mesh';
 import { SkinnedMesh } from '../core/SkinnedMesh';
 import { StandardMaterial } from '../materials/StandardMaterial';
+import type { Texture, WrapMode, FilterMode } from '../textures/Texture';
 import type { AnimationClip } from '../animation/AnimationClip';
 
 /** Result of an export: the glTF JSON plus the packed binary (a `.glb`). */
@@ -23,10 +24,9 @@ const CHUNK_BIN = 0x004e4942;
 /**
  * Exports a scene-graph subtree to glTF 2.0 (binary `.glb`). Covers the
  * round-trippable core: node hierarchy + TRS, mesh geometry (position / normal /
- * uv / color / indices), and `StandardMaterial` PBR factors with the clearcoat /
- * ior / specular / sheen extensions. Textures, skinning, morphs, and animation
- * are not yet emitted. Output as `.glb` ({@link parseGLB}) or a self-contained
- * `.gltf` JSON with an embedded base64 buffer ({@link parseGLTF}).
+ * uv / color / indices), `StandardMaterial` PBR factors + textures, clearcoat /
+ * ior / specular / sheen extensions, morph targets, skinning, and animations.
+ * All public methods are async to support texture encoding.
  */
 export class GLTFExporter {
   private json!: {
@@ -40,6 +40,9 @@ export class GLTFExporter {
     bufferViews: Record<string, unknown>[];
     buffers: { byteLength: number }[];
     animations?: Record<string, unknown>[];
+    images?: Record<string, unknown>[];
+    samplers?: Record<string, unknown>[];
+    textures?: Record<string, unknown>[];
   };
   private chunks!: Uint8Array[];
   private byteLength!: number;
@@ -47,24 +50,26 @@ export class GLTFExporter {
   private meshIndex!: Map<string, number>;
   private nodeMap!: Map<Object3D, number>;
   private skinnedMeshes!: SkinnedMesh[];
+  private textureIndex!: Map<string, number>;
+  private samplerIndex!: Map<string, number>;
 
-  parse(root: Object3D, animations: AnimationClip[] = []): GLTFExportResult {
-    const binary = this.assemble(root, animations);
+  async parse(root: Object3D, animations: AnimationClip[] = []): Promise<GLTFExportResult> {
+    const binary = await this.assemble(root, animations);
     this.json.buffers.push({ byteLength: binary.byteLength });
     return { json: this.json, glb: this.buildGLB(this.json, binary) };
   }
 
   /** Convenience: export just the `.glb` ArrayBuffer. */
-  parseGLB(root: Object3D, animations: AnimationClip[] = []): ArrayBuffer {
-    return this.parse(root, animations).glb;
+  async parseGLB(root: Object3D, animations: AnimationClip[] = []): Promise<ArrayBuffer> {
+    return (await this.parse(root, animations)).glb;
   }
 
   /**
    * Export to a standalone `.gltf` JSON object with the binary embedded as a
    * base64 data-URI buffer (re-loadable directly by `GLTFLoader`).
    */
-  parseGLTF(root: Object3D, animations: AnimationClip[] = []): Record<string, unknown> {
-    const binary = this.assemble(root, animations);
+  async parseGLTF(root: Object3D, animations: AnimationClip[] = []): Promise<Record<string, unknown>> {
+    const binary = await this.assemble(root, animations);
     this.json.buffers.push({
       byteLength: binary.byteLength,
       uri: 'data:application/octet-stream;base64,' + base64Encode(binary),
@@ -73,7 +78,7 @@ export class GLTFExporter {
   }
 
   /** Build the glTF JSON + packed binary; shared by every output format. */
-  private assemble(root: Object3D, animations: AnimationClip[]): Uint8Array {
+  private async assemble(root: Object3D, animations: AnimationClip[]): Promise<Uint8Array> {
     this.json = {
       asset: { version: '2.0', generator: 'vela GLTFExporter' },
       scene: 0,
@@ -91,11 +96,14 @@ export class GLTFExporter {
     this.meshIndex = new Map();
     this.nodeMap = new Map();
     this.skinnedMeshes = [];
+    this.textureIndex = new Map();
+    this.samplerIndex = new Map();
 
     root.updateMatrixWorld(true);
-    // A Mesh root is exported directly; a container's children become the scene.
     const topLevel = root instanceof Mesh ? [root] : root.children;
-    this.json.scenes[0].nodes = topLevel.map((child) => this.addNode(child));
+    const nodeIndices: number[] = [];
+    for (const child of topLevel) nodeIndices.push(await this.addNode(child));
+    this.json.scenes[0].nodes = nodeIndices;
 
     this.addSkins();
     if (animations.length) this.addAnimations(animations);
@@ -104,7 +112,7 @@ export class GLTFExporter {
     return this.concatChunks();
   }
 
-  private addNode(object: Object3D): number {
+  private async addNode(object: Object3D): Promise<number> {
     const node: Record<string, unknown> = {};
     if (object.name) node.name = object.name;
 
@@ -117,13 +125,14 @@ export class GLTFExporter {
 
     if (object instanceof Mesh) {
       const material = Array.isArray(object.material) ? object.material[0] : object.material;
-      node.mesh = this.addMesh(object, material instanceof StandardMaterial ? material : null);
+      node.mesh = await this.addMesh(object, material instanceof StandardMaterial ? material : null);
       if (object instanceof SkinnedMesh) this.skinnedMeshes.push(object);
     }
 
     const index = this.json.nodes.push(node) - 1; // reserve index before recursing
     this.nodeMap.set(object, index);
-    const children = object.children.map((c) => this.addNode(c));
+    const children: number[] = [];
+    for (const child of object.children) children.push(await this.addNode(child));
     if (children.length) node.children = children;
     return index;
   }
@@ -143,7 +152,7 @@ export class GLTFExporter {
         if (ji === undefined) { allMapped = false; break; }
         jointIndices.push(ji);
       }
-      if (!allMapped) continue; // joints must live in the exported subtree
+      if (!allMapped) continue;
 
       const ibm = new Float32Array(skeleton.jointCount * 16);
       for (let i = 0; i < skeleton.boneInverses.length; i++) ibm.set(skeleton.boneInverses[i].elements, i * 16);
@@ -162,9 +171,8 @@ export class GLTFExporter {
       const channels: Record<string, unknown>[] = [];
       for (const track of clip.tracks) {
         const nodeIndex = this.nodeMap.get(track.target);
-        if (nodeIndex === undefined) continue; // target outside the exported subtree
+        if (nodeIndex === undefined) continue;
         const input = this.addAccessor(track.times as Float32Array, 1, FLOAT, undefined, true);
-        // Weights are a stream of SCALARs (count = keyframes × targets × [3 if cubic]).
         const comps = track.path === 'rotation' ? 4 : track.path === 'weights' ? 1 : 3;
         const output = this.addAccessor(track.values as Float32Array, comps, FLOAT, undefined);
         const sampler = samplers.push({ input, output, interpolation: track.interpolation }) - 1;
@@ -179,10 +187,9 @@ export class GLTFExporter {
     if (animations.length) this.json.animations = animations;
   }
 
-  private addMesh(mesh: Mesh, material: StandardMaterial | null): number {
+  private async addMesh(mesh: Mesh, material: StandardMaterial | null): Promise<number> {
     const geometry = mesh.geometry;
-    const matIndex = material ? this.addMaterial(material) : -1;
-    // Influences are per-mesh, so include them in the dedup key.
+    const matIndex = material ? await this.addMaterial(material) : -1;
     const key = `${geometry.id}|${matIndex}|${mesh.morphTargetInfluences.join(',')}`;
     const cached = this.meshIndex.get(key);
     if (cached !== undefined) return cached;
@@ -199,7 +206,7 @@ export class GLTFExporter {
     const joints = geometry.attributes.joints;
     const weights = geometry.attributes.weights;
     if (joints && weights) {
-      const u16 = Uint16Array.from(joints.array as ArrayLike<number>); // glTF JOINTS_0 = unsigned short
+      const u16 = Uint16Array.from(joints.array as ArrayLike<number>);
       attributes.JOINTS_0 = this.addAccessor(u16, 4, UNSIGNED_SHORT, ARRAY_BUFFER);
       attributes.WEIGHTS_0 = this.addAccessor(weights.array as Float32Array, 4, FLOAT, ARRAY_BUFFER);
     }
@@ -213,7 +220,6 @@ export class GLTFExporter {
     }
     if (matIndex >= 0) primitive.material = matIndex;
 
-    // Morph targets: per-target POSITION (and NORMAL) delta accessors.
     const morphPos = geometry.morphAttributes.position;
     if (morphPos?.length) {
       const morphNrm = geometry.morphAttributes.normal;
@@ -241,19 +247,36 @@ export class GLTFExporter {
     return index;
   }
 
-  private addMaterial(material: StandardMaterial): number {
+  private async addMaterial(material: StandardMaterial): Promise<number> {
     const cached = this.materialIndex.get(material);
     if (cached !== undefined) return cached;
 
     const c = material.color;
-    const def: Record<string, unknown> = {
-      pbrMetallicRoughness: {
-        baseColorFactor: [c.r, c.g, c.b, material.opacity],
-        metallicFactor: material.metalness,
-        roughnessFactor: material.roughness,
-      },
+    const pbr: Record<string, unknown> = {
+      baseColorFactor: [c.r, c.g, c.b, material.opacity],
+      metallicFactor: material.metalness,
+      roughnessFactor: material.roughness,
     };
+
+    const ti = async (tex: Texture | null) => await this.addTextureRef(tex);
+
+    const baseColorTi = await ti(material.map);
+    if (baseColorTi >= 0) pbr.baseColorTexture = { index: baseColorTi };
+
+    const mrTi = await ti(material.metalnessRoughnessMap);
+    if (mrTi >= 0) pbr.metallicRoughnessTexture = { index: mrTi };
+
+    const def: Record<string, unknown> = { pbrMetallicRoughness: pbr };
     if (material.name) def.name = material.name;
+
+    const normalTi = await ti(material.normalMap);
+    if (normalTi >= 0) def.normalTexture = { index: normalTi, scale: material.normalScale };
+
+    const occTi = await ti(material.occlusionMap);
+    if (occTi >= 0) def.occlusionTexture = { index: occTi, strength: material.occlusionStrength };
+
+    const emiTi = await ti(material.emissiveMap);
+    if (emiTi >= 0) def.emissiveTexture = { index: emiTi };
 
     const e = material.emissive;
     if (e.r !== 0 || e.g !== 0 || e.b !== 0) def.emissiveFactor = [e.r, e.g, e.b];
@@ -301,6 +324,50 @@ export class GLTFExporter {
     const index = this.json.materials.push(def) - 1;
     this.materialIndex.set(material, index);
     return index;
+  }
+
+  /**
+   * Encode a Texture's source as PNG and append it to the binary buffer.
+   * Returns the glTF texture index, or -1 if the source is absent or
+   * OffscreenCanvas is unavailable.
+   */
+  private async addTextureRef(texture: Texture | null): Promise<number> {
+    if (!texture?.source) return -1;
+    const cached = this.textureIndex.get(texture.id);
+    if (cached !== undefined) return cached;
+
+    const pngBytes = await encodeSource(texture.source);
+    if (!pngBytes.length) return -1;
+
+    this.align4();
+    const byteOffset = this.byteLength;
+    this.chunks.push(pngBytes);
+    this.byteLength += pngBytes.byteLength;
+
+    const bvIndex = this.json.bufferViews.push({
+      buffer: 0, byteOffset, byteLength: pngBytes.byteLength,
+    }) - 1;
+
+    const images = (this.json.images ??= []);
+    const imageIndex = images.push({ mimeType: 'image/png', bufferView: bvIndex }) - 1;
+
+    const samplerKey = `${texture.wrapS}|${texture.wrapT}|${texture.magFilter}|${texture.minFilter}`;
+    let si = this.samplerIndex.get(samplerKey);
+    if (si === undefined) {
+      const samplers = (this.json.samplers ??= []);
+      si = samplers.push({
+        wrapS: glWrap(texture.wrapS),
+        wrapT: glWrap(texture.wrapT),
+        magFilter: glFilter(texture.magFilter),
+        minFilter: glFilter(texture.minFilter),
+      }) - 1;
+      this.samplerIndex.set(samplerKey, si);
+    }
+
+    const textures = (this.json.textures ??= []);
+    const textureIndex = textures.push({ source: imageIndex, sampler: si }) - 1;
+    this.textureIndex.set(texture.id, textureIndex);
+    return textureIndex;
   }
 
   /** Append a typed array as a bufferView + accessor; returns the accessor index. */
@@ -369,31 +436,70 @@ export class GLTFExporter {
     const bytes = new Uint8Array(buffer);
     let o = 0;
     view.setUint32(o, GLB_MAGIC, true); o += 4;
-    view.setUint32(o, 2, true); o += 4; // version
+    view.setUint32(o, 2, true); o += 4;
     view.setUint32(o, total, true); o += 4;
 
-    // JSON chunk (pad with spaces)
     view.setUint32(o, jsonLen, true); o += 4;
     view.setUint32(o, CHUNK_JSON, true); o += 4;
     bytes.set(jsonBytes, o); o += jsonBytes.byteLength;
     for (let i = 0; i < jsonPad; i++) bytes[o++] = 0x20;
 
-    // BIN chunk (pad with zeros)
     if (binLen > 0) {
       view.setUint32(o, binLen, true); o += 4;
       view.setUint32(o, CHUNK_BIN, true); o += 4;
       bytes.set(binary, o); o += binary.byteLength;
-      o += binPad; // already zero
+      o += binPad;
     }
     return buffer;
   }
+}
+
+/** Encode an ImageBitmap/Canvas/OffscreenCanvas to PNG bytes. Returns empty on failure. */
+async function encodeSource(source: NonNullable<Texture['source']>): Promise<Uint8Array> {
+  try {
+    if (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement) {
+      return await new Promise<Uint8Array>((resolve) => {
+        source.toBlob((blob) => {
+          if (!blob) { resolve(new Uint8Array(0)); return; }
+          blob.arrayBuffer().then((ab) => resolve(new Uint8Array(ab)));
+        }, 'image/png');
+      });
+    }
+    if (typeof OffscreenCanvas !== 'undefined' && source instanceof OffscreenCanvas) {
+      const blob = await source.convertToBlob({ type: 'image/png' });
+      return new Uint8Array(await blob.arrayBuffer());
+    }
+    // ImageBitmap: draw onto a temporary OffscreenCanvas
+    if (typeof OffscreenCanvas !== 'undefined') {
+      const bmp = source as ImageBitmap;
+      const canvas = new OffscreenCanvas(bmp.width, bmp.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return new Uint8Array(0);
+      ctx.drawImage(bmp, 0, 0);
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      return new Uint8Array(await blob.arrayBuffer());
+    }
+  } catch {
+    // silently skip unserializable sources
+  }
+  return new Uint8Array(0);
+}
+
+function glWrap(mode: WrapMode): number {
+  if (mode === 'clamp') return 33071;
+  if (mode === 'mirror') return 33648;
+  return 10497; // repeat
+}
+
+function glFilter(mode: FilterMode): number {
+  return mode === 'nearest' ? 9728 : 9729;
 }
 
 /** Base64-encode bytes via the platform's `btoa` (or Node's `Buffer` as a fallback). */
 function base64Encode(bytes: Uint8Array): string {
   if (typeof btoa === 'function') {
     let binary = '';
-    const chunk = 0x8000; // avoid arg-count limits on String.fromCharCode
+    const chunk = 0x8000;
     for (let i = 0; i < bytes.length; i += chunk) {
       binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
     }

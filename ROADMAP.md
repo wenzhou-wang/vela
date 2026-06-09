@@ -153,11 +153,13 @@ Faster loads, broader inputs, and ergonomics.
   the cost — it cuts against the project's modern-first thesis).
 - **Clustered forward+** lighting for hundreds of dynamic lights.
 - ✅ **glTF export** (`GLTFExporter`) — writes node hierarchy + TRS, mesh geometry
-  (position/normal/uv/color/indices), and `StandardMaterial` PBR factors with the
-  clearcoat/ior/specular/sheen extensions, **morph targets** (deltas + default weights +
-  `targetNames`), and keyframe **animation** clips (translation/rotation/scale/weights, all
-  interpolations) and **skinning** (JOINTS/WEIGHTS, skins + inverse bind matrices) to a
-  binary `.glb`; verified by round-tripping back through `GLTFLoader`. ⬜ textures.
+  (position/normal/uv/color/indices), `StandardMaterial` PBR factors + **textures**
+  (map/normalMap/metalnessRoughnessMap/emissiveMap/occlusionMap encoded as PNG into the
+  binary buffer with samplers), clearcoat/ior/specular/sheen extensions, **morph targets**
+  (deltas + default weights + `targetNames`), keyframe **animation** clips
+  (translation/rotation/scale/weights, all interpolations), and **skinning** (JOINTS/WEIGHTS,
+  skins + inverse bind matrices) to a binary `.glb`. All export methods are async to support
+  texture encoding via `OffscreenCanvas`.
 - ✅ **Lightweight scene format** (`SceneSerializer`) — lossless JSON round-trip of the scene
   graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
   `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved
