@@ -38,11 +38,6 @@ const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 48; // bytes per light
 
-interface MeshResources {
-  modelBuffer: GPUBuffer;
-  bindGroup: GPUBindGroup;
-}
-
 interface SkinnedResources {
   boneBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
@@ -152,7 +147,13 @@ export class WebGPURenderer {
   private _corner = new Vector3();
   private shadowCasterIndex = -1;
 
-  private meshResources = new WeakMap<Mesh, MeshResources>();
+  // Single pool buffer for all mesh model matrices (dynamic-offset uniform).
+  private modelPoolBuffer: GPUBuffer | null = null;
+  private modelPoolBindGroup: GPUBindGroup | null = null;
+  private modelPoolCapacity = 0;
+  private meshSlots = new WeakMap<Mesh, number>();
+  private nextMeshSlot = 0;
+
   private materialResources = new WeakMap<Material, MaterialResources>();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
@@ -553,7 +554,7 @@ export class WebGPURenderer {
     for (const mesh of this.opaque) {
       if (mesh instanceof InstancedMesh) continue; // instanced casters unsupported in v1
       const geometry = this.geometries.get(mesh.geometry);
-      pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+      pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
       pass.setVertexBuffer(0, geometry.position);
       if (geometry.index) {
         pass.setIndexBuffer(geometry.index, geometry.indexFormat);
@@ -716,7 +717,7 @@ export class WebGPURenderer {
     if (instanced) {
       pass.setBindGroup(1, this.getInstancedResources(mesh as InstancedMesh).bindGroup);
     } else {
-      pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+      pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
     }
     pass.setBindGroup(2, this.getMaterialResources(material).bindGroup);
 
@@ -749,7 +750,7 @@ export class WebGPURenderer {
     const geometry = this.geometries.get(mesh.geometry);
 
     pass.setPipeline(this.pipelines.getLine(material));
-    pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
     pass.setBindGroup(2, this.getLineResources(material).bindGroup);
     pass.setVertexBuffer(0, geometry.position);
     pass.setVertexBuffer(1, geometry.color);
@@ -789,13 +790,13 @@ export class WebGPURenderer {
     for (const mesh of this.opaque) {
       const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
       if (material instanceof LineBasicMaterial) {
-        this.getMeshResources(mesh);
+        this.getMeshSlot(mesh);
         this.getLineResources(material);
         continue;
       }
       if (!(material instanceof StandardMaterial)) continue;
       if (mesh instanceof InstancedMesh) this.getInstancedResources(mesh);
-      else this.getMeshResources(mesh);
+      else this.getMeshSlot(mesh);
       this.getMaterialResources(material);
       const geometry = this.geometries.get(mesh.geometry);
       if (!(mesh instanceof InstancedMesh) && mesh instanceof SkinnedMesh &&
@@ -936,33 +937,43 @@ export class WebGPURenderer {
     return res;
   }
 
-  private getMeshResources(mesh: Mesh): MeshResources {
-    let res = this.meshResources.get(mesh);
-    if (!res) {
-      const modelBuffer = this.device.createBuffer({
-        size: MODEL_SIZE,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      const bindGroup = this.device.createBindGroup({
-        layout: this.pipelines.modelLayout,
-        entries: [{ binding: 0, resource: { buffer: modelBuffer } }],
-      });
-      res = { modelBuffer, bindGroup };
-      this.meshResources.set(mesh, res);
-    }
+  private ensureModelPool(minSlots: number): void {
+    if (this.modelPoolCapacity >= minSlots) return;
+    const capacity = Math.max(minSlots, this.modelPoolCapacity * 2, 64);
+    this.modelPoolBuffer?.destroy();
+    this.modelPoolBuffer = this.device.createBuffer({
+      size: capacity * 256, // 256-byte aligned slots, MODEL_SIZE (128) per slot
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.modelPoolBindGroup = this.device.createBindGroup({
+      layout: this.pipelines.modelLayout,
+      entries: [{ binding: 0, resource: { buffer: this.modelPoolBuffer, size: MODEL_SIZE } }],
+    });
+    this.modelPoolCapacity = capacity;
+    // Invalidate any recorded render bundle (pool bind group changed).
+    this.opaqueBundle = null;
+    this.bundleKey = '';
+  }
 
-    // update model + normal matrix every frame
+  /** Assign a stable pool slot and upload the current model/normal matrix. Returns slot index. */
+  private getMeshSlot(mesh: Mesh): number {
+    let slot = this.meshSlots.get(mesh);
+    if (slot === undefined) {
+      slot = this.nextMeshSlot++;
+      this.meshSlots.set(mesh, slot);
+    }
+    this.ensureModelPool(slot + 1);
+
     const data = new Float32Array(MODEL_SIZE / 4);
     data.set(mesh.matrixWorld.elements, 0);
     this._normalMatrix.getNormalMatrix(mesh.matrixWorld);
     const nm = this._normalMatrix.elements;
-    // place 3x3 into mat4 columns
     data[16] = nm[0]; data[17] = nm[1]; data[18] = nm[2]; data[19] = 0;
     data[20] = nm[3]; data[21] = nm[4]; data[22] = nm[5]; data[23] = 0;
     data[24] = nm[6]; data[25] = nm[7]; data[26] = nm[8]; data[27] = 0;
     data[28] = 0; data[29] = 0; data[30] = 0; data[31] = 1;
-    this.device.queue.writeBuffer(res.modelBuffer, 0, data);
-    return res;
+    this.device.queue.writeBuffer(this.modelPoolBuffer!, slot * 256, data);
+    return slot;
   }
 
   private getMaterialResources(material: StandardMaterial): MaterialResources {
@@ -1202,7 +1213,7 @@ export class WebGPURenderer {
 
   private drawMeshId(pass: GPURenderPassEncoder, mesh: Mesh, index: number): void {
     const geometry = this.geometries.get(mesh.geometry);
-    pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
     pass.setBindGroup(2, this.idBindGroup!, [index * 256]);
     pass.setVertexBuffer(0, geometry.position);
     if (geometry.index) {

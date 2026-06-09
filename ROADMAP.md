@@ -66,9 +66,12 @@ Make loaded models move and sit in believable lighting.
 
 Push toward "thousands of objects at 120 fps."
 
-- ⬜ **Per-object uniform consolidation** — replace per-mesh uniform buffers with a
-      single large buffer addressed by dynamic offsets (or a storage array indexed by
-      `@builtin(instance_index)`), cutting bind-group churn.
+- ✅ **Per-object uniform consolidation** — a single `GPUBuffer` pool (256-byte-aligned
+      slots, one per mesh, lazily grown × 2) replaces per-mesh `GPUBuffer` allocations;
+      the model bind group layout uses `hasDynamicOffset: true`, so all opaque/transparent/
+      shadow/line/id draw calls share one `modelPoolBindGroup` and switch models via
+      `setBindGroup(1, pool, [slot * 256])` — cutting GC pressure and GPU-side bind-group
+      object count proportional to scene size.
 - ✅ **Instanced rendering** — `InstancedMesh` stores per-instance model matrices in a
       storage buffer read by an instanced vertex variant (indexed by `instance_index`);
       the whole batch draws in one `drawIndexed(..., count)` call. The viewer's

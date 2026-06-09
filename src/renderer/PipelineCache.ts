@@ -60,7 +60,7 @@ export class PipelineCache {
     this.modelLayout = device.createBindGroupLayout({
       label: 'model',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
       ],
     });
 
