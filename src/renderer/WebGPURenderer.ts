@@ -513,7 +513,7 @@ export class WebGPURenderer {
       for (const mesh of this.opaque) this.drawMesh(pass, mesh);
     }
 
-    const useOIT = this.oit && this.postProcessing && this.sampleCount === 1 && this.transparent.length > 0;
+    const useOIT = this.oit && this.postProcessing && this.transparent.length > 0;
     if (!useOIT) {
       for (const mesh of this.transparent) this.drawMesh(pass, mesh);
     }
@@ -1057,7 +1057,8 @@ export class WebGPURenderer {
       !!mesh.geometry.morphAttributes.position?.length;
     const variant = instanced ? 'instanced' : skinned ? 'skinned' : morphed ? 'morph' : 'static';
 
-    pass.setPipeline(oit ? this.pipelines.getOIT(material, variant) : this.pipelines.get(material, variant));
+    const oitSampleCount = oit ? this.sampleCount : 1;
+    pass.setPipeline(oit ? this.pipelines.getOIT(material, variant, oitSampleCount) : this.pipelines.get(material, variant));
 
     // Group 1: model uniform (static/skinned/morph) or instance storage (instanced)
     if (instanced) {

@@ -53,6 +53,9 @@ export class PostProcessing {
   private oitAccumView!: GPUTextureView;
   private oitReveal: GPUTexture | null = null;
   private oitRevealView!: GPUTextureView;
+  // MSAA OIT targets (when sampleCount > 1): resolve into the non-MSAA views above.
+  private oitAccumMSAA: GPUTexture | null = null;
+  private oitRevealMSAA: GPUTexture | null = null;
 
   constructor(
     private device: GPUDevice,
@@ -132,13 +135,18 @@ export class PostProcessing {
     this.bloomAView = this.bloomA.createView();
     this.bloomB = attach(HDR_FORMAT, [bw, bh]);
     this.bloomBView = this.bloomB.createView();
-    // OIT accumulation/revealage (full-res, sample count 1).
+    // OIT accumulation/revealage (full-res).  When MSAA is on, create MSAA render
+    // targets that resolve into the non-MSAA TEXTURE_BINDING views used by compositeOIT.
     this.oitAccum?.destroy();
     this.oitReveal?.destroy();
+    this.oitAccumMSAA?.destroy();
+    this.oitRevealMSAA?.destroy();
     this.oitAccum = attach(OIT_ACCUM_FORMAT, [w, h]);
     this.oitAccumView = this.oitAccum.createView();
     this.oitReveal = attach(OIT_REVEAL_FORMAT, [w, h]);
     this.oitRevealView = this.oitReveal.createView();
+    this.oitAccumMSAA  = this.sampleCount > 1 ? attach(OIT_ACCUM_FORMAT,  [w, h], this.sampleCount) : null;
+    this.oitRevealMSAA = this.sampleCount > 1 ? attach(OIT_REVEAL_FORMAT, [w, h], this.sampleCount) : null;
 
     // SSAO ping-pong targets (full-res HDR, using r channel for occlusion).
     this.ssaoA?.destroy();
@@ -154,6 +162,24 @@ export class PostProcessing {
 
   /** Color attachments for the OIT transparent pass (accum cleared to 0, reveal to 1). */
   oitColorAttachments(): GPURenderPassColorAttachment[] {
+    if (this.sampleCount > 1 && this.oitAccumMSAA && this.oitRevealMSAA) {
+      // MSAA path: render into MSAA targets, resolve immediately into the non-MSAA
+      // views that compositeOIT() will sample from.
+      return [
+        {
+          view: this.oitAccumMSAA.createView(),
+          resolveTarget: this.oitAccumView,
+          loadOp: 'clear', storeOp: 'discard',
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        },
+        {
+          view: this.oitRevealMSAA.createView(),
+          resolveTarget: this.oitRevealView,
+          loadOp: 'clear', storeOp: 'discard',
+          clearValue: { r: 1, g: 1, b: 1, a: 1 },
+        },
+      ];
+    }
     return [
       { view: this.oitAccumView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } },
       { view: this.oitRevealView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 1, g: 1, b: 1, a: 1 } },

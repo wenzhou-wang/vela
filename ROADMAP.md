@@ -140,10 +140,13 @@ A post-processing stack and richer materials.
       volume attenuation (an approximation avoiding a screen-space capture). ⬜ clearcoat
       textures, true screen-space refraction.
 - ✅ **Transparency (weighted-blended OIT)** — opt-in `renderer.oit` (requires the HDR post
-      path + sampleCount 1): transparent meshes accumulate weighted premultiplied color into
-      an `accum` target and product-of-(1−α) into a `reveal` target (depth-tested, no write),
-      then a fullscreen pass composites them onto the HDR scene before tonemapping. A shared
-      `shadeSurface()` feeds both the opaque `fs_main` and the OIT `fs_oit`. ⬜ MSAA support.
+      path): transparent meshes accumulate weighted premultiplied color into an `accum`
+      target and product-of-(1−α) into a `reveal` target (depth-tested, no write), then a
+      fullscreen pass composites them onto the HDR scene before tonemapping. A shared
+      `shadeSurface()` feeds both the opaque `fs_main` and the OIT `fs_oit`. ✅ **MSAA
+      support**: when `sampleCount > 1`, MSAA `accum`/`reveal` targets are created alongside
+      the non-MSAA resolve targets; the OIT render pass uses them with `resolveTarget` so
+      compositing always reads non-MSAA data; OIT pipeline keys include sampleCount.
 
 ---
 

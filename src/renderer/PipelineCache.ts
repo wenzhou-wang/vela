@@ -196,12 +196,12 @@ export class PipelineCache {
 
   /**
    * Weighted-blended OIT pipeline for a transparent material: two targets (accum
-   * additive, revealage multiplicative), depth-tested but not depth-written, at
-   * sample count 1 (OIT runs in the non-MSAA HDR post path).
+   * additive, revealage multiplicative), depth-tested but not depth-written.
+   * `sc` is the multisample count (1 for non-MSAA, or the renderer's sampleCount).
    */
-  getOIT(material: StandardMaterial, variant: PipelineVariant = 'static'): GPURenderPipeline {
+  getOIT(material: StandardMaterial, variant: PipelineVariant = 'static', sc = 1): GPURenderPipeline {
     const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
-    const key = `oit|${variant}|${cull}`;
+    const key = `oit|${variant}|${cull}|sc${sc}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -232,7 +232,7 @@ export class PipelineCache {
       fragment: { module, entryPoint: 'fs_oit', targets: [accum, reveal] },
       primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
-      multisample: { count: 1 },
+      multisample: { count: sc },
     });
     this.cache.set(key, pipeline);
     return pipeline;
