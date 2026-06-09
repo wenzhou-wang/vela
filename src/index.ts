@@ -46,7 +46,7 @@ export { Stats } from './helpers/Stats';
 // textures
 export { Texture } from './textures/Texture';
 export type { TextureOptions } from './textures/Texture';
-export { DataTexture } from './textures/DataTexture';
+export { DataTexture, CompressedDataTexture } from './textures/DataTexture';
 
 // lights
 export { Light } from './lights/Light';

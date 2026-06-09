@@ -131,10 +131,12 @@ Faster loads, broader inputs, and ergonomics.
       receives the compressed buffer view bytes + Draco attribute ID map, returns indices +
       per-attribute typed arrays (Float32/Uint32); geometry is built from decoded data
       bypassing the stub accessors.
-- 🚧 **Compressed textures** — ✅ **`KHR_texture_basisu` / KTX2**: `KTX2Loader` parses the
+- ✅ **Compressed textures** — **`KHR_texture_basisu` / KTX2**: `KTX2Loader` parses the
       container, uploads uncompressed RGBA8 directly, and transcodes Basis (ETC1S/UASTC) via
-      a pluggable transcoder that yields RGBA8 (`loader.setKTX2Loader(new KTX2Loader().setTranscoder(...))`).
-      ⬜ transcode straight to the platform's preferred GPU-compressed format (BC7/ASTC/ETC2).
+      a pluggable transcoder. When `loader.setDevice(device)` is called and the transcoder
+      implements `transcodeToCompressed`, the loader transcodes to BC7/ASTC 4×4/ETC2 (in
+      that priority order, based on `device.features`) producing a `CompressedDataTexture`
+      that `TextureManager` uploads directly without any RGBA8 intermediate.
 - ⬜ **Worker-based loading** — parse glTF and decode images off the main thread;
       transfer typed arrays / `ImageBitmap`s.
 - ✅ **More cameras/controls** — `OrthographicCamera`; `FlyControls` (WASD + Q/E,

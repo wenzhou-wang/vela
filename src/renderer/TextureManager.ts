@@ -1,5 +1,5 @@
 import { Texture, type WrapMode, type FilterMode } from '../textures/Texture';
-import { DataTexture } from '../textures/DataTexture';
+import { DataTexture, CompressedDataTexture } from '../textures/DataTexture';
 import { MipmapGenerator } from './MipmapGenerator';
 
 interface GPUTextureEntry {
@@ -65,8 +65,40 @@ export class TextureManager {
     this.defaultNormalView = this.createSolid([128, 128, 255, 255], 'rgba8unorm');
   }
 
+  /** Upload a block-compressed DataTexture (BC7 / ASTC 4×4 / ETC2). */
+  private createCompressed(texture: CompressedDataTexture): GPUTextureEntry {
+    const { width, height, data: blocks, gpuFormat } = texture;
+    // All supported formats (BC7/ASTC-4x4/ETC2) use 4×4 blocks of 16 bytes each.
+    const blocksW = Math.max(1, Math.ceil(width / 4));
+    const blocksH = Math.max(1, Math.ceil(height / 4));
+    const bytesPerRow = blocksW * 16;
+
+    const gpuTexture = this.device.createTexture({
+      size: [width, height],
+      format: gpuFormat as GPUTextureFormat,
+      mipLevelCount: 1,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    this.device.queue.writeTexture(
+      { texture: gpuTexture },
+      blocks as unknown as ArrayBuffer,
+      { bytesPerRow, rowsPerImage: blocksH },
+      [width, height],
+    );
+
+    const sampler = this.device.createSampler({
+      addressModeU: wrapToGPU(texture.wrapS),
+      addressModeV: wrapToGPU(texture.wrapT),
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    return { texture: gpuTexture, view: gpuTexture.createView(), sampler, version: texture.version };
+  }
+
   /** Upload a DataTexture: float → rgba16float, uint8 → rgba8unorm(/-srgb). */
   private createData(texture: DataTexture): GPUTextureEntry {
+    if (texture instanceof CompressedDataTexture) return this.createCompressed(texture);
     const { width, height, data } = texture;
     const isFloat = data instanceof Float32Array;
     const format: GPUTextureFormat = isFloat
