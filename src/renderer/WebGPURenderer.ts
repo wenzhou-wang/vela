@@ -26,6 +26,7 @@ import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
+import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
 type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
@@ -118,6 +119,9 @@ export class WebGPURenderer {
   private envIntensity = 1;
   private envMaxMip = 0;
   private envKey = '';
+  private ibl!: IBLPrefilter;
+  private iblActive = false; // true once convolve() has run for the current env
+  private iblEnvKey = '';   // tracks which env was last convolved
 
   // Post-processing (opt-in): render to an HDR target, then tonemap (+ FXAA).
   /** Route rendering through the HDR post pipeline (tonemap moves to a final pass). */
@@ -238,6 +242,11 @@ export class WebGPURenderer {
     this.envView = this.textures.defaultWhiteView;
     this.envSampler = this.textures.defaultSampler;
     this.post = new PostProcessing(this.device, this.format, this.sampleCount);
+    this.ibl = new IBLPrefilter(this.device);
+    // Compute the BRDF LUT once at startup.
+    const brdfEncoder = this.device.createCommandEncoder();
+    this.ibl.computeBRDFLUT(brdfEncoder);
+    this.device.queue.submit([brdfEncoder.finish()]);
     this.createFrameResources();
     this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
   }
@@ -256,6 +265,8 @@ export class WebGPURenderer {
 
   private buildFrameBindGroup(): void {
     this.frameBindGroupVersion++; // invalidates any recorded render bundle
+    const iblEnvView = this.iblActive ? this.ibl.prefilteredView : this.textures.defaultWhiteView;
+    const iblSampler = this.iblActive ? this.ibl.sampler : this.textures.defaultSampler;
     this.frameBindGroup = this.device.createBindGroup({
       layout: this.pipelines.frameLayout,
       entries: [
@@ -263,8 +274,14 @@ export class WebGPURenderer {
         { binding: 1, resource: { buffer: this.lightBuffer } },
         { binding: 2, resource: this.shadowView },
         { binding: 3, resource: this.shadowSampler },
-        { binding: 4, resource: this.envView },
-        { binding: 5, resource: this.envSampler },
+        // binding 4: specular env (prefiltered when IBL active, raw env otherwise)
+        { binding: 4, resource: this.iblActive ? iblEnvView : this.envView },
+        { binding: 5, resource: this.iblActive ? iblSampler : this.envSampler },
+        // bindings 6-9: IBL irradiance + BRDF LUT (defaults when IBL not active)
+        { binding: 6, resource: this.iblActive ? this.ibl.irradianceView : this.textures.defaultWhiteView },
+        { binding: 7, resource: iblSampler },
+        { binding: 8, resource: this.iblActive ? this.ibl.brdfLUTView : this.textures.defaultWhiteView },
+        { binding: 9, resource: iblSampler },
       ],
     });
   }
@@ -356,7 +373,6 @@ export class WebGPURenderer {
 
     this.collect(scene);
     this.prepareShadow();
-    this.prepareEnvironment(scene);
     this.uploadFrame(scene, camera);
 
     // Sort transparent back-to-front
@@ -369,6 +385,9 @@ export class WebGPURenderer {
     });
 
     const encoder = this.device.createCommandEncoder();
+
+    // IBL prefilter compute passes run first (before any render pass).
+    this.prepareEnvironment(scene, encoder);
 
     // Shadow depth pass (before the main pass) when a caster is active.
     if (this.shadowCasterIndex >= 0) this.renderShadowPass(encoder);
@@ -542,7 +561,7 @@ export class WebGPURenderer {
   }
 
   /** Resolve `scene.environment` into the env bindings, rebuilding on change. */
-  private prepareEnvironment(scene: Scene): void {
+  private prepareEnvironment(scene: Scene, encoder: GPUCommandEncoder): void {
     const env = scene.environment;
     if (env && env.source) {
       const entry = this.textures.get(env);
@@ -551,16 +570,24 @@ export class WebGPURenderer {
         this.envView = entry.view;
         this.envSampler = entry.sampler;
         this.envKey = key;
+        // Trigger IBL prefilter whenever the environment texture changes.
+        if (key !== this.iblEnvKey) {
+          this.ibl.convolve(encoder, entry.view);
+          this.iblEnvKey = key;
+          this.iblActive = true;
+        }
         this.buildFrameBindGroup();
       }
       this.envEnabled = true;
       this.envIntensity = scene.environmentIntensity;
-      this.envMaxMip = Math.max(0, entry.texture.mipLevelCount - 1);
+      // When IBL is active the specular map has IBL_MIP_LEVELS mip levels.
+      this.envMaxMip = this.iblActive ? IBL_MIP_LEVELS - 1 : Math.max(0, entry.texture.mipLevelCount - 1);
     } else {
       if (this.envKey !== '') {
         this.envView = this.textures.defaultWhiteView;
         this.envSampler = this.textures.defaultSampler;
         this.envKey = '';
+        this.iblActive = false;
         this.buildFrameBindGroup();
       }
       this.envEnabled = false;
@@ -712,7 +739,8 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    f[63] = this.postProcessing ? 1 : 0;
+    // Bit 0: linear output (post pipeline tonemaps); bit 1: IBL prefilter active.
+    f[63] = (this.postProcessing ? 1 : 0) | (this.iblActive ? 2 : 0);
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

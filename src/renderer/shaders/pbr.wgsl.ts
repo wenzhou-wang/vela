@@ -24,7 +24,7 @@ struct Frame {
   ambient : vec4<f32>,     // rgb = ambient irradiance, w = exposure
   lightViewProj : mat4x4<f32>, // directional shadow caster's view-projection
   shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
-  envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = unused
+  envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = flags (bit0=linearOut,bit1=IBL)
 };
 
 struct Light {
@@ -49,8 +49,12 @@ struct MaterialU {
 @group(0) @binding(1) var<storage, read> lights : array<Light>;
 @group(0) @binding(2) var shadowMap : texture_depth_2d;
 @group(0) @binding(3) var shadowSampler : sampler_comparison;
-@group(0) @binding(4) var envMap : texture_2d<f32>;
+@group(0) @binding(4) var envMap     : texture_2d<f32>;  // raw env (or IBL prefiltered specular)
 @group(0) @binding(5) var envSampler : sampler;
+@group(0) @binding(6) var irrMap     : texture_2d<f32>;  // IBL irradiance
+@group(0) @binding(7) var irrSampler : sampler;
+@group(0) @binding(8) var brdfLUT    : texture_2d<f32>;  // IBL split-sum BRDF LUT
+@group(0) @binding(9) var brdfSampler : sampler;
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -434,13 +438,22 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   // Indirect light: image-based when an environment is bound, else flat ambient.
   if (frame.envParams.x > 0.5) {
     let maxMip = frame.envParams.z;
-    let irradiance = sampleEnv(N, maxMip); // crude diffuse: smallest mip
     let R = reflect(-V, N);
-    let prefiltered = sampleEnv(R, roughness * maxMip);
-    let ab = envBRDFApprox(roughness, NoV);
-    let diffuseIBL = irradiance * diffuseColor;
+    let prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
+    let useIBL = (u32(frame.envParams.w) & 2u) != 0u;
+    var diffuseIBL : vec3<f32>;
+    var ab          : vec2<f32>;
+    if (useIBL) {
+      // True GGX IBL: cosine-convolved irradiance map + split-sum BRDF LUT.
+      diffuseIBL = textureSampleLevel(irrMap, irrSampler, dirToEquirectUv(N), 0.0).rgb;
+      ab = textureSample(brdfLUT, brdfSampler, clamp(vec2<f32>(NoV, roughness), vec2<f32>(0.0), vec2<f32>(1.0))).rg;
+    } else {
+      // Fallback: mip-chain approximation + Karis analytic BRDF.
+      diffuseIBL = sampleEnv(N, maxMip);
+      ab = envBRDFApprox(roughness, NoV);
+    }
     let specularIBL = prefiltered * (f0 * ab.x + ab.y);
-    color = color + (diffuseIBL + specularIBL) * ao * frame.envParams.y;
+    color = color + (diffuseIBL * diffuseColor + specularIBL) * ao * frame.envParams.y;
   } else {
     color = color + frame.ambient.rgb * diffuseColor * ao;
   }
@@ -474,8 +487,8 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
 fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
   let s = shadeSurface(in, frontFacing);
   var color = s.rgb * frame.ambient.w; // exposure
-  // envParams.w flags "linear output": the post pipeline tonemaps in a later pass.
-  if (frame.envParams.w < 0.5) {
+  // envParams.w bit 0: linear output (post pipeline tonemaps later).
+  if ((u32(frame.envParams.w) & 1u) == 0u) {
     color = acesFilmic(color);
     color = linearToSRGB(color);
   }

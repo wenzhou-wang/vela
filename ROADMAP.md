@@ -52,13 +52,17 @@ Make loaded models move and sit in believable lighting.
       uniforms gained `lightViewProj` + shadow params; group 0 gained the shadow map +
       comparison sampler. Enable via `renderer.shadows` + `light.castShadow`. ⬜ spot/point
       shadows and a multi-light atlas.
-- 🚧 **Image-based lighting (IBL)** — ✅ an equirectangular `scene.environment` drives
-      indirect light: diffuse from the smallest mip, specular from a roughness-selected mip
-      (the mip chain as a cheap prefilter), combined via Karis' analytic env-BRDF fit;
-      replaces the flat ambient when set. Frame uniforms gained `envParams`; group 0 gained
-      the env map + sampler. ✅ **`.hdr` (RGBE) loading** (`RGBELoader` → a float
-      `DataTexture` uploaded as `rgba16float`). ⬜ a true GGX-prefiltered cube + irradiance
-      via compute, and a precomputed BRDF LUT for higher fidelity.
+- ✅ **Image-based lighting (IBL)** — an equirectangular `scene.environment` drives
+      indirect light. ✅ Initial path: diffuse from smallest mip, specular from
+      roughness-scaled LOD, Karis analytic env-BRDF fit. ✅ **`.hdr` (RGBE) loading**
+      (`RGBELoader` → a float `DataTexture` uploaded as `rgba16float`). ✅ **GGX-prefiltered
+      IBL + BRDF LUT**: `IBLPrefilter` runs three compute passes when `scene.environment`
+      changes — a 64-sample cosine-hemisphere irradiance convolution (64×32 RGBA16F), a
+      128-sample GGX importance-sampling specular prefilter with 6 roughness-mip levels
+      (256×128 RGBA16F), and a 512-sample split-sum BRDF LUT (128×128 RGBA16F, computed
+      once at startup via Hammersley + Smith GGX geometry).  Frame bindings 6–9 carry the
+      irradiance map and BRDF LUT; envParams.w bit 1 activates the high-fidelity path in
+      the PBR shader; envParams.w bit 0 retains the existing linear-output flag.
 
 ---
 
