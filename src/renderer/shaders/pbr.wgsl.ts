@@ -63,8 +63,9 @@ struct MaterialU {
 @group(0) @binding(8) var brdfLUT      : texture_2d<f32>;  // IBL split-sum BRDF LUT
 @group(0) @binding(9) var brdfSampler  : sampler;
 @group(0) @binding(10) var<storage, read> shadowTiles : array<ShadowTile>;
-@group(0) @binding(11) var spotAtlas   : texture_depth_2d;
+@group(0) @binding(11) var spotAtlas    : texture_depth_2d;
 @group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
+@group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for SSR
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -512,13 +513,24 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
 
-  // Transmission: refract the environment (or ambient) through the surface and
-  // attenuate by the volume (Beer-Lambert). Approximate — no screen-space capture.
+  // Transmission: refract through the surface, attenuate by Beer-Lambert volume.
+  // When SSR is active (bit 2 of envParams.w), sample the opaque scene capture at
+  // a screen-space UV perturbed by the refraction direction; otherwise fall back to
+  // the environment map.
   let transmissionFactor = material.transmission.x;
   if (transmissionFactor > 0.0) {
     let refr = refract(-V, N, 1.0 / max(ior, 1.0001));
     var background = frame.ambient.rgb;
-    if (frame.envParams.x > 0.5) {
+    let useSSR = (u32(frame.envParams.w) & 4u) != 0u;
+    if (useSSR) {
+      // Project (worldPos + refr * thickness) to screen UV and sample the opaque snapshot.
+      let thickness = max(material.transmission.y, 0.05);
+      let refractedWorld = in.worldPos + refr * thickness;
+      let clipRefr = frame.proj * frame.view * vec4<f32>(refractedWorld, 1.0);
+      let ndcRefr = clipRefr.xy / clipRefr.w;
+      let ssrUV = clamp(ndcRefr * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5), vec2<f32>(0.0), vec2<f32>(1.0));
+      background = textureSampleLevel(sceneCapture, envSampler, ssrUV, 0.0).rgb;
+    } else if (frame.envParams.x > 0.5) {
       background = sampleEnv(refr, roughness * frame.envParams.z) * frame.envParams.y;
     }
     var attenuation = vec3<f32>(1.0);

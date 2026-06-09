@@ -63,6 +63,8 @@ export class PipelineCache {
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
         { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
         { binding: 12, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        // Screen-space refraction capture (13).
+        { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
 

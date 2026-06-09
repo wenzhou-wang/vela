@@ -56,6 +56,9 @@ export class PostProcessing {
   // MSAA OIT targets (when sampleCount > 1): resolve into the non-MSAA views above.
   private oitAccumMSAA: GPUTexture | null = null;
   private oitRevealMSAA: GPUTexture | null = null;
+  // Screen-space refraction: a copy of the HDR target captured before transparent draws.
+  private sceneCapture: GPUTexture | null = null;
+  private _sceneCaptureView!: GPUTextureView;
 
   constructor(
     private device: GPUDevice,
@@ -92,6 +95,13 @@ export class PostProcessing {
       { bytesPerRow: 4 }, [1, 1]);
     this.dummyWhiteView = whiteTex.createView();
 
+    // Dummy scene-capture (1×1) — replaced by ensureSize(); keeps sceneCaptureView valid.
+    const capDummy = device.createTexture({
+      size: [1, 1], format: HDR_FORMAT,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this._sceneCaptureView = capDummy.createView();
+
     // SSAO resources
     this.ssaoModule = device.createShaderModule({ code: SSAO_SHADER, label: 'ssao' });
     this.ssaoBindLayout = device.createBindGroupLayout({
@@ -125,8 +135,19 @@ export class PostProcessing {
       });
 
     this.hdrMSAA = this.sampleCount > 1 ? attach(HDR_FORMAT, [w, h], this.sampleCount) : null;
-    this.hdrResolve = attach(HDR_FORMAT, [w, h]);
+    // hdrResolve needs COPY_SRC so we can snapshot it for screen-space refraction.
+    this.hdrResolve = this.device.createTexture({
+      size: [w, h], format: HDR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    });
     this.hdrView = this.hdrResolve.createView();
+    // Screen-space refraction capture (same size, COPY_DST | TEXTURE_BINDING).
+    this.sceneCapture?.destroy();
+    this.sceneCapture = this.device.createTexture({
+      size: [w, h], format: HDR_FORMAT,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this._sceneCaptureView = this.sceneCapture.createView();
     this.ldrPing = attach(LDR_FORMAT, [w, h]);
     this.ldrView = this.ldrPing.createView();
     // Half-resolution bloom targets (cheaper, naturally softer).
@@ -159,6 +180,20 @@ export class PostProcessing {
 
   /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
   get hdrTargetView(): GPUTextureView { return this.hdrView; }
+
+  /** View of the HDR snapshot taken before transparent draws (screen-space refraction). */
+  get sceneCaptureView(): GPUTextureView { return this._sceneCaptureView; }
+
+  /** Copy the current HDR render target into the scene-capture texture. */
+  captureHDR(encoder: GPUCommandEncoder): void {
+    if (!this.sceneCapture) return;
+    const [w, h] = [this.width, this.height];
+    encoder.copyTextureToTexture(
+      { texture: this.hdrResolve },
+      { texture: this.sceneCapture },
+      [w, h],
+    );
+  }
 
   /** Color attachments for the OIT transparent pass (accum cleared to 0, reveal to 1). */
   oitColorAttachments(): GPURenderPassColorAttachment[] {

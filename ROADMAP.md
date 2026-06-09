@@ -137,8 +137,11 @@ A post-processing stack and richer materials.
       1) reproduce the old flat 0.04. ✅ **`KHR_materials_sheen`** adds a Charlie-NDF
       retroreflective lobe for cloth (black sheen color = disabled). ✅ **`KHR_materials_transmission`**
       + **`_volume`** refract the environment/ambient through the surface with Beer–Lambert
-      volume attenuation (an approximation avoiding a screen-space capture). ⬜ clearcoat
-      textures, true screen-space refraction.
+      volume attenuation. ✅ **True screen-space refraction**: when `postProcessing=true`,
+      the opaque HDR output is copied to a `sceneCapture` texture before the transparent
+      pass; the refraction direction is projected to screen-space UV (worldPos + refr×thickness
+      → clip → NDC → [0,1]²) and used to sample the snapshot, giving correct refractive
+      distortion of opaque scene content. Falls back to env-map when post-processing is off.
 - ✅ **Transparency (weighted-blended OIT)** — opt-in `renderer.oit` (requires the HDR post
       path): transparent meshes accumulate weighted premultiplied color into an `accum`
       target and product-of-(1−α) into a `reveal` target (depth-tested, no write), then a

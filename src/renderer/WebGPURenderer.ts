@@ -327,6 +327,8 @@ export class WebGPURenderer {
         { binding: 10, resource: { buffer: this.spotShadowTilesBuffer! } },
         { binding: 11, resource: this.spotAtlasView! },
         { binding: 12, resource: this.spotAtlasSampler! },
+        // binding 13: screen-space refraction capture (post.sceneCaptureView is always valid)
+        { binding: 13, resource: this.post.sceneCaptureView },
       ],
     });
   }
@@ -519,6 +521,11 @@ export class WebGPURenderer {
     }
 
     pass.end();
+
+    // Capture the opaque HDR scene for screen-space refraction before transparent draws.
+    if (this.postProcessing && this.transparent.length > 0) {
+      this.post.captureHDR(encoder);
+    }
 
     // Order-independent transparency: accumulate into HDR-side targets, then composite.
     if (useOIT) {
@@ -1029,8 +1036,8 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    // Bit 0: linear output (post pipeline tonemaps); bit 1: IBL prefilter active.
-    f[63] = (this.postProcessing ? 1 : 0) | (this.iblActive ? 2 : 0);
+    // Bit 0: linear output; bit 1: IBL active; bit 2: screen-space refraction available.
+    f[63] = (this.postProcessing ? 1 : 0) | (this.iblActive ? 2 : 0) | (this.postProcessing ? 4 : 0);
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {
