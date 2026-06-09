@@ -90,8 +90,15 @@ Push toward "thousands of objects at 120 fps."
       spheres; off-screen meshes skipped on the CPU each frame. Toggle via
       `renderer.frustumCulling`, per-object opt-out via `object.frustumCulled`, and
       `renderer.culledCount` reports the last frame's skipped meshes.
-- ⬜ **GPU-driven culling** — compute-shader frustum/occlusion cull writing an indirect
-      draw buffer (`drawIndexedIndirect`).
+- ✅ **GPU-driven culling** — opt-in `renderer.gpuCulling`: a compute shader
+      (`@workgroup_size(64)`) reads per-slot world-space bounding spheres (updated
+      each frame via `writeBuffer`) and six normalized frustum planes extracted from
+      the view-projection matrix; it writes `instanceCount = 0` (culled) or `1`
+      (visible) into a slot-indexed indirect draw buffer.  Opaque indexed meshes use
+      `drawIndexedIndirect`; instanced/non-indexed meshes and OIT passes fall through
+      to the CPU path.  Incompatible with `renderBundles` (silently uses the CPU path
+      inside bundle encoders).  Sphere and indirect buffers grow × 2 when the model
+      pool expands.
 - ✅ **Render bundles** — opt-in `renderer.renderBundles` records the opaque draws into a
       `GPURenderBundle` and replays it, re-recording only when the draw set (or frame bind
       group) changes; per-object uniform buffers are still refreshed each frame so dynamic

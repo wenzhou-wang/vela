@@ -28,6 +28,7 @@ import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
+import { CULL_SHADER } from './shaders/cull.wgsl';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
 type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
@@ -39,6 +40,10 @@ const FRAME_SIZE = 256; // bytes (lightViewProj mat4 + shadowParams + envParams 
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
+
+// GPU-driven culling: indirect draw + compute-shader sphere cull.
+const CULL_PARAMS_SIZE = 112;   // 6×vec4 planes (96) + u32 drawCount + 12 pad
+const INDIRECT_STRIDE  = 20;    // GPUDrawIndexedIndirectParameters: 5 × u32
 
 // Spot-light shadow atlas: 2048×2048 depth texture, 512×512 tiles (4×4 = 16 max tiles).
 const SPOT_ATLAS_SIZE = 2048;
@@ -155,6 +160,20 @@ export class WebGPURenderer {
   /** Record the opaque draws into a render bundle to amortize encoding cost. */
   renderBundles = false;
   private opaqueBundle: GPURenderBundle | null = null;
+  /**
+   * GPU-driven frustum culling: a compute shader tests bounding spheres against
+   * the camera frustum and writes instanceCount 0/1 into an indirect draw buffer.
+   * Opaque indexed meshes use `drawIndexedIndirect`; instanced and non-indexed
+   * meshes always follow the normal CPU path.  Incompatible with `renderBundles`.
+   */
+  gpuCulling = false;
+  private gpuCullPipeline: GPUComputePipeline | null = null;
+  private gpuCullLayout: GPUBindGroupLayout | null = null;
+  private gpuCullParamsBuffer: GPUBuffer | null = null;
+  private gpuSphereBuffer: GPUBuffer | null = null;
+  private gpuIndirectBuffer: GPUBuffer | null = null;
+  private gpuCullBindGroup: GPUBindGroup | null = null;
+  private gpuCullCapacity = 0;
   private bundleKey = '';
   private frameBindGroupVersion = 0;
   private post!: PostProcessing;
@@ -453,6 +472,8 @@ export class WebGPURenderer {
     // Shadow depth passes (before the main pass).
     if (this.shadowCasterIndex >= 0) this.renderShadowPass(encoder);
     if (this.spotShadowCasters.length > 0) this.renderSpotShadowPasses(encoder);
+    // GPU frustum cull: fills instanceCount in the indirect buffer.
+    this.prepareGpuCull(encoder);
 
     const swapView = this.context.getCurrentTexture().createView();
     const clear = this.clearColor(scene);
@@ -761,6 +782,109 @@ export class WebGPURenderer {
     }
   }
 
+  private ensureGpuCullResources(minSlots: number): void {
+    if (!this.gpuCullPipeline) {
+      const module = this.device.createShaderModule({ code: CULL_SHADER, label: 'cull' });
+      this.gpuCullLayout = this.device.createBindGroupLayout({
+        label: 'cull',
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        ],
+      });
+      this.gpuCullPipeline = this.device.createComputePipeline({
+        label: 'frustum-cull',
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.gpuCullLayout] }),
+        compute: { module, entryPoint: 'cs_cull' },
+      });
+      this.gpuCullParamsBuffer = this.device.createBuffer({
+        size: CULL_PARAMS_SIZE,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    if (this.gpuCullCapacity >= minSlots) return;
+    const cap = Math.max(minSlots, this.gpuCullCapacity * 2 || 256);
+    this.gpuSphereBuffer?.destroy();
+    this.gpuSphereBuffer = this.device.createBuffer({
+      size: cap * 16, // vec4 per slot
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.gpuIndirectBuffer?.destroy();
+    this.gpuIndirectBuffer = this.device.createBuffer({
+      size: cap * INDIRECT_STRIDE,
+      usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.gpuCullCapacity = cap;
+    this.gpuCullBindGroup = null;
+  }
+
+  private prepareGpuCull(encoder: GPUCommandEncoder): void {
+    if (!this.gpuCulling || this.opaque.length === 0) return;
+
+    // Pre-upload sphere data and draw params for all opaque meshes.
+    for (const mesh of this.opaque) {
+      if (mesh instanceof InstancedMesh) continue;
+      const slot = this.getMeshSlot(mesh); // uploads model matrix, assigns slot
+      this.ensureGpuCullResources(slot + 1);
+
+      // World-space bounding sphere.
+      const geo = mesh.geometry;
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      const bs = geo.boundingSphere;
+      const sphere = new Float32Array(4);
+      if (bs && !bs.isEmpty()) {
+        this._worldSphere.copy(bs).applyMatrix4(mesh.matrixWorld);
+        sphere[0] = this._worldSphere.center.x;
+        sphere[1] = this._worldSphere.center.y;
+        sphere[2] = this._worldSphere.center.z;
+        sphere[3] = this._worldSphere.radius;
+      } else {
+        sphere[3] = -1; // no valid sphere → always cull
+      }
+      this.device.queue.writeBuffer(this.gpuSphereBuffer!, slot * 16, sphere);
+
+      // Draw params (instanceCount=1; compute shader may set to 0).
+      const gpuGeo = this.geometries.get(mesh.geometry);
+      if (gpuGeo.index) {
+        const cmd = new Uint32Array([gpuGeo.drawCount, 1, 0, 0, 0]);
+        this.device.queue.writeBuffer(this.gpuIndirectBuffer!, slot * INDIRECT_STRIDE, cmd);
+      }
+    }
+
+    // Upload frustum planes + draw count.
+    const paramsBuf = new ArrayBuffer(CULL_PARAMS_SIZE);
+    const pf = new Float32Array(paramsBuf);
+    const pu = new Uint32Array(paramsBuf);
+    for (let i = 0; i < 6; i++) {
+      const pl = this._frustum.planes[i];
+      pf[i * 4 + 0] = pl.normal.x;
+      pf[i * 4 + 1] = pl.normal.y;
+      pf[i * 4 + 2] = pl.normal.z;
+      pf[i * 4 + 3] = pl.constant;
+    }
+    pu[24] = this.nextMeshSlot; // drawCount at byte 96
+    this.device.queue.writeBuffer(this.gpuCullParamsBuffer!, 0, paramsBuf);
+
+    // Rebuild bind group if buffers were (re)created.
+    if (!this.gpuCullBindGroup) {
+      this.gpuCullBindGroup = this.device.createBindGroup({
+        layout: this.gpuCullLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: this.gpuCullParamsBuffer! } },
+          { binding: 1, resource: { buffer: this.gpuSphereBuffer! } },
+          { binding: 2, resource: { buffer: this.gpuIndirectBuffer! } },
+        ],
+      });
+    }
+
+    const pass = encoder.beginComputePass({ label: 'frustum-cull' });
+    pass.setPipeline(this.gpuCullPipeline!);
+    pass.setBindGroup(0, this.gpuCullBindGroup);
+    pass.dispatchWorkgroups(Math.ceil(this.nextMeshSlot / 64));
+    pass.end();
+  }
+
   private clearColor(scene: Scene): GPUColor {
     const bg = scene.background;
     if (!bg) return { r: 0.05, g: 0.05, b: 0.06, a: 1 };
@@ -961,7 +1085,14 @@ export class WebGPURenderer {
     const instanceCount = instanced ? (mesh as InstancedMesh).count : 1;
     if (geometry.index) {
       pass.setIndexBuffer(geometry.index, geometry.indexFormat);
-      pass.drawIndexed(geometry.drawCount, instanceCount);
+      // For GPU-driven culling, use an indirect draw so instanceCount can be zeroed by the
+      // compute shader.  Only works with a render pass encoder (not render bundles).
+      if (this.gpuCulling && !instanced && !oit && pass instanceof GPURenderPassEncoder) {
+        const slot = this.meshSlots.get(mesh) ?? 0;
+        pass.drawIndexedIndirect(this.gpuIndirectBuffer!, slot * INDIRECT_STRIDE);
+      } else {
+        pass.drawIndexed(geometry.drawCount, instanceCount);
+      }
     } else {
       pass.draw(geometry.drawCount, instanceCount);
     }
