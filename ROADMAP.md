@@ -137,8 +137,12 @@ Faster loads, broader inputs, and ergonomics.
       implements `transcodeToCompressed`, the loader transcodes to BC7/ASTC 4×4/ETC2 (in
       that priority order, based on `device.features`) producing a `CompressedDataTexture`
       that `TextureManager` uploads directly without any RGBA8 intermediate.
-- ⬜ **Worker-based loading** — parse glTF and decode images off the main thread;
-      transfer typed arrays / `ImageBitmap`s.
+- ✅ **Worker-based loading** — `WorkerGLTFLoader` (drop-in for `GLTFLoader`) spawns an
+      inline Web Worker that fetches buffers and decodes images via `createImageBitmap` off
+      the main thread, then transfers `ArrayBuffer`s and `ImageBitmap`s back as transferables;
+      main thread assembles the scene graph. Decoder plugins (meshopt/Draco/KTX2) are forwarded
+      to an underlying `GLTFLoader` and applied on the main thread after the worker returns.
+      `GLTFLoader.buildFromPreloaded()` accepts pre-loaded resources from any source.
 - ✅ **More cameras/controls** — `OrthographicCamera`; `FlyControls` (WASD + Q/E,
       mouse-look via drag or pointer lock, frame-rate-independent `update(delta)`).
 - ✅ **Raycasting / picking** — `Ray` + `Raycaster` pick meshes; the broad phase

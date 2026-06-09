@@ -65,6 +65,7 @@ export { FlyControls } from './controls/FlyControls';
 // loaders
 export { GLTFLoader } from './loaders/GLTFLoader';
 export type { GLTFResult } from './loaders/GLTFLoader';
+export { WorkerGLTFLoader } from './loaders/WorkerGLTFLoader';
 export { RGBELoader } from './loaders/RGBELoader';
 export { KTX2Loader } from './loaders/KTX2Loader';
 export type { BasisTranscoder, KTX2Image } from './loaders/KTX2Loader';

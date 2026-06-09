@@ -90,6 +90,22 @@ export class GLTFLoader {
     return this.build(json, baseUrl, glbBinary);
   }
 
+  /**
+   * Build a {@link GLTFResult} from pre-loaded resources (used by
+   * {@link WorkerGLTFLoader}). Skips the I/O phases (buffer fetch, image decode)
+   * since those already happened off the main thread.
+   */
+  async buildFromPreloaded(
+    json: GLTFRoot,
+    buffers: ArrayBuffer[],
+    images: (ImageBitmap | null)[],
+  ): Promise<GLTFResult> {
+    return this.build(json, '', null, {
+      buffers: buffers.map((ab) => new Uint8Array(ab)),
+      images,
+    });
+  }
+
   private parseGLB(data: ArrayBuffer): { json: GLTFRoot; glbBinary: Uint8Array | null } {
     const view = new DataView(data);
     const length = view.getUint32(8, true);
@@ -116,10 +132,11 @@ export class GLTFLoader {
     json: GLTFRoot,
     baseUrl: string,
     glbBinary: Uint8Array | null,
+    preloaded?: { buffers: Uint8Array[]; images: (ImageBitmap | null)[] },
   ): Promise<GLTFResult> {
-    const buffers = await this.loadBuffers(json, baseUrl, glbBinary);
+    const buffers = preloaded?.buffers ?? await this.loadBuffers(json, baseUrl, glbBinary);
     const meshopt = await this.decodeMeshopt(json, buffers);
-    const images = await this.loadImages(json, baseUrl, buffers);
+    const images = preloaded?.images ?? await this.loadImages(json, baseUrl, buffers);
     const textures = await this.buildTextures(json, images, buffers);
     const materials = (json.materials ?? []).map((m) => this.buildMaterial(m, textures));
     if (materials.length === 0) materials.push(new StandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.8 }));
