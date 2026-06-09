@@ -10,11 +10,15 @@
  * threshold (bright-pass), blurH/blurV (separable Gaussian), fxaa, copy.
  */
 export const POST_SHADER = /* wgsl */ `
-@group(0) @binding(0) var src : texture_2d<f32>;
-@group(0) @binding(1) var samp : sampler;
-struct Params { data : vec4<f32> };
-@group(0) @binding(2) var<uniform> params : Params;
+@group(0) @binding(0) var src      : texture_2d<f32>;
+@group(0) @binding(1) var samp     : sampler;
+struct Params {
+  data : vec4<f32>,  // (1/width, 1/height, bloomThreshold, bloomIntensity)
+  ssao : vec4<f32>,  // (ssaoStrength, 0, 0, 0)
+};
+@group(0) @binding(2) var<uniform> params   : Params;
 @group(0) @binding(3) var bloomTex : texture_2d<f32>;
+@group(0) @binding(4) var ssaoTex  : texture_2d<f32>;
 
 struct VSOut {
   @builtin(position) clip : vec4<f32>,
@@ -49,13 +53,15 @@ fn luma(c : vec3<f32>) -> f32 {
 
 @fragment
 fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
-  let hdr = textureSample(src, samp, in.uv).rgb;
+  let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
+  let hdr = textureSample(src, samp, in.uv).rgb * ao;
   return vec4<f32>(linearToSRGB(acesFilmic(hdr)), 1.0);
 }
 
 @fragment
 fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
-  let hdr = textureSample(src, samp, in.uv).rgb;
+  let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
+  let hdr   = textureSample(src, samp, in.uv).rgb * ao;
   let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
   return vec4<f32>(linearToSRGB(acesFilmic(hdr + bloom)), 1.0);
 }

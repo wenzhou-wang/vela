@@ -99,8 +99,15 @@ A post-processing stack and richer materials.
       in-shader tonemap when a "linear output" frame flag is set.
 - 🚧 **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader),
       ✅ **FXAA** (`renderer.fxaa`), and ✅ **bloom** (`renderer.bloom`: bright-pass +
-      half-res separable-Gaussian blur, added before tonemap). ⬜ SSAO, optional TAA with
-      motion vectors.
+      half-res separable-Gaussian blur, added before tonemap). ✅ **SSAO**
+      (`renderer.ssao`, requires `postProcessing = true` + `sampleCount = 1`): an
+      8-sample hemisphere SSAO pass reads the scene depth (sampled as `texture_depth_2d`),
+      reconstructs view-space positions + depth-gradient normals via the inverse
+      projection, rotates the kernel per pixel via a hash-based noise vector, projects
+      samples with a soft range-check, blurs the occlusion result with the existing
+      Gaussian passes, then multiplies it into the HDR output before tonemap; intensity
+      tunable via `ssaoStrength`, `ssaoRadius`, `ssaoBias`. ⬜ Optional TAA with motion
+      vectors.
 - 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):

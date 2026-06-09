@@ -93,6 +93,7 @@ export class WebGPURenderer {
   private lightData = new Float32Array((MAX_LIGHTS * LIGHT_STRIDE) / 4);
 
   private depthTexture!: GPUTexture;
+  private depthSampleView: GPUTextureView | null = null; // depth-only view for SSAO sampling
   private msaaTexture: GPUTexture | null = null;
   private width = 1;
   private height = 1;
@@ -132,6 +133,14 @@ export class WebGPURenderer {
    * and sampleCount 1; otherwise transparent meshes fall back to sorted blending.
    */
   oit = false;
+  /**
+   * Screen-space ambient occlusion. Requires `postProcessing = true` and
+   * `sampleCount = 1`; otherwise silently disabled.
+   */
+  ssao = false;
+  ssaoRadius = 0.5;
+  ssaoBias = 0.025;
+  ssaoStrength = 1.0;
   /** Record the opaque draws into a render bundle to amortize encoding cost. */
   renderBundles = false;
   private opaqueBundle: GPURenderBundle | null = null;
@@ -305,12 +314,18 @@ export class WebGPURenderer {
     this.canvas.height = h;
 
     this.depthTexture?.destroy();
+    // sampleCount=1 depth textures also expose TEXTURE_BINDING for SSAO sampling.
+    const depthUsage = GPUTextureUsage.RENDER_ATTACHMENT |
+      (this.sampleCount === 1 ? GPUTextureUsage.TEXTURE_BINDING : 0);
     this.depthTexture = this.device.createTexture({
       size: [w, h],
       format: DEPTH_FORMAT,
       sampleCount: this.sampleCount,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      usage: depthUsage,
     });
+    this.depthSampleView = this.sampleCount === 1
+      ? this.depthTexture.createView({ aspect: 'depth-only' })
+      : null;
 
     this.msaaTexture?.destroy();
     this.msaaTexture = null;
@@ -415,13 +430,26 @@ export class WebGPURenderer {
       this.post.compositeOIT(encoder);
     }
 
+    const useSSAO = this.ssao && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
     // Resolve the HDR target through the post chain into the swap chain.
     if (this.postProcessing) {
+      if (useSSAO) {
+        this.post.runSSAO(
+          encoder,
+          this.depthSampleView!,
+          new Float32Array(camera.projectionMatrixInverse.elements),
+          new Float32Array(camera.projectionMatrix.elements),
+          this.ssaoRadius,
+          this.ssaoBias,
+        );
+      }
       this.post.run(encoder, swapView, {
         fxaa: this.fxaa,
         bloom: this.bloom,
         bloomThreshold: this.bloomThreshold,
         bloomIntensity: this.bloomIntensity,
+        ssao: useSSAO,
+        ssaoStrength: this.ssaoStrength,
       });
     }
 
