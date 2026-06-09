@@ -53,6 +53,7 @@ export { Light } from './lights/Light';
 export { AmbientLight } from './lights/AmbientLight';
 export { DirectionalLight } from './lights/DirectionalLight';
 export { PointLight } from './lights/PointLight';
+export { SpotLight } from './lights/SpotLight';
 
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';

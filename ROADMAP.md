@@ -46,12 +46,18 @@ Make loaded models move and sit in believable lighting.
       attributes (indexed by `@builtin(vertex_index)`). glTF `mesh.primitives[].targets`,
       default `mesh.weights`, `extras.targetNames`, and `weights` animation channels
       (LINEAR/STEP/CUBICSPLINE) are parsed; the pipeline key gains a `morph` variant.
-- 🚧 **Shadow maps** — ✅ directional shadow mapping: a depth pass renders casters from
+- ✅ **Shadow maps** — ✅ directional shadow mapping: a depth pass renders casters from
       the light's POV into a `depth32float` map (light frustum auto-fit to the opaque scene
       bounds), sampled with 3×3 PCF (`textureSampleCompareLevel`) in the PBR shader. Frame
       uniforms gained `lightViewProj` + shadow params; group 0 gained the shadow map +
-      comparison sampler. Enable via `renderer.shadows` + `light.castShadow`. ⬜ spot/point
-      shadows and a multi-light atlas.
+      comparison sampler. Enable via `renderer.shadows` + `light.castShadow`. ✅ **Spot
+      lights + shadow atlas**: `SpotLight` (angle, penumbra, distance, decay, castShadow,
+      target) packs into the light storage buffer with kind=2; angular attenuation uses inner/
+      outer cosine thresholds with squared smoothstep. Shadow-casting spot lights (up to 4)
+      each write a 512×512 tile in a 2048×2048 depth atlas via `setViewport`; per-tile
+      `viewProj` matrices and UV-offset/scale region descriptors are uploaded in a 320-byte
+      storage buffer (binding 10); the PBR fragment shader does 3×3 PCF against the correct
+      atlas tile per spot light. ⬜ Point-light cube shadow atlas (6-face per light).
 - ✅ **Image-based lighting (IBL)** — an equirectangular `scene.environment` drives
       indirect light. ✅ Initial path: diffuse from smallest mip, specular from
       roughness-scaled LOD, Karis analytic env-BRDF fit. ✅ **`.hdr` (RGBE) loading**

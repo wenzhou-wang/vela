@@ -16,6 +16,7 @@ const HEADER = /* wgsl */ `
 const PI = 3.141592653589793;
 const LIGHT_DIRECTIONAL = 0u;
 const LIGHT_POINT = 1u;
+const LIGHT_SPOT = 2u;
 
 struct Frame {
   view : mat4x4<f32>,
@@ -28,9 +29,15 @@ struct Frame {
 };
 
 struct Light {
-  positionKind : vec4<f32>,
-  directionRange : vec4<f32>,
-  colorDecay : vec4<f32>,
+  positionKind  : vec4<f32>,  // xyz = position, w = kind
+  directionRange: vec4<f32>,  // xyz = direction, w = range
+  colorDecay    : vec4<f32>,  // rgb = color, w = decay
+  spotParams    : vec4<f32>,  // x = cosInner, y = cosOuter, z = shadow tile (-1=none), w = unused
+};
+
+struct ShadowTile {
+  viewProj : mat4x4<f32>,
+  region   : vec4<f32>,  // xy = UV offset in atlas, z = UV scale, w = texel step (1/atlasSize)
 };
 
 struct MaterialU {
@@ -53,8 +60,11 @@ struct MaterialU {
 @group(0) @binding(5) var envSampler : sampler;
 @group(0) @binding(6) var irrMap     : texture_2d<f32>;  // IBL irradiance
 @group(0) @binding(7) var irrSampler : sampler;
-@group(0) @binding(8) var brdfLUT    : texture_2d<f32>;  // IBL split-sum BRDF LUT
-@group(0) @binding(9) var brdfSampler : sampler;
+@group(0) @binding(8) var brdfLUT      : texture_2d<f32>;  // IBL split-sum BRDF LUT
+@group(0) @binding(9) var brdfSampler  : sampler;
+@group(0) @binding(10) var<storage, read> shadowTiles : array<ShadowTile>;
+@group(0) @binding(11) var spotAtlas   : texture_depth_2d;
+@group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -309,6 +319,26 @@ fn sampleShadow(worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
   return sum / 9.0;
 }
 
+// 3x3 PCF against the spot-shadow atlas for one tile.
+fn sampleSpotShadow(tileIdx : u32, worldPos : vec3<f32>, N : vec3<f32>, bias : f32) -> f32 {
+  let tile = shadowTiles[tileIdx];
+  let lp = tile.viewProj * vec4<f32>(worldPos + N * bias, 1.0);
+  if (lp.w <= 0.0) { return 1.0; }
+  let ndc = lp.xyz / lp.w;
+  if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) { return 1.0; }
+  let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  let atlasUV = tile.region.xy + uv * tile.region.z;
+  let step = tile.region.w;
+  var sum = 0.0;
+  for (var dy = -1; dy <= 1; dy = dy + 1) {
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+      let off = vec2<f32>(f32(dx), f32(dy)) * step;
+      sum = sum + textureSampleCompareLevel(spotAtlas, spotAtlasCmp, atlasUV + off, ndc.z);
+    }
+  }
+  return sum / 9.0;
+}
+
 fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   let cutoff = step(vec3<f32>(0.0031308), c);
   let lo = c * 12.92;
@@ -389,13 +419,34 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
         let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
         attenuation = attenuation * f * f;
       }
+    } else if (kind == LIGHT_SPOT) {
+      let toLight = light.positionKind.xyz - in.worldPos;
+      let dist = length(toLight);
+      L = toLight / max(dist, 1e-4);
+      let decay = light.colorDecay.w;
+      attenuation = 1.0 / max(pow(dist, decay), 1e-4);
+      let range = light.directionRange.w;
+      if (range > 0.0) {
+        let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+        attenuation = attenuation * f * f;
+      }
+      // Angular falloff between inner and outer cone.
+      let cosTheta = dot(-L, normalize(light.directionRange.xyz));
+      let angleFactor = clamp(
+        (cosTheta - light.spotParams.y) / max(light.spotParams.x - light.spotParams.y, 1e-4),
+        0.0, 1.0);
+      attenuation = attenuation * angleFactor * angleFactor;
+      // Spot shadow atlas.
+      let tileIdx = i32(light.spotParams.z);
+      if (tileIdx >= 0) {
+        radiance = radiance * sampleSpotShadow(u32(tileIdx), in.worldPos, N, frame.shadowParams.z);
+      }
     } else {
       L = -light.directionRange.xyz;
-    }
-
-    // The designated directional caster is attenuated by the shadow map.
-    if (i == u32(frame.shadowParams.w)) {
-      radiance = radiance * sampleShadow(in.worldPos, N);
+      // The designated directional caster is attenuated by the shadow map.
+      if (i == u32(frame.shadowParams.w)) {
+        radiance = radiance * sampleShadow(in.worldPos, N);
+      }
     }
 
     let H = normalize(V + L);

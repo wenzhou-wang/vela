@@ -6,6 +6,7 @@ import { Light } from '../lights/Light';
 import { AmbientLight } from '../lights/AmbientLight';
 import { DirectionalLight } from '../lights/DirectionalLight';
 import { PointLight } from '../lights/PointLight';
+import { SpotLight } from '../lights/SpotLight';
 import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
 import type { Material } from '../materials/Material';
@@ -37,7 +38,13 @@ const UNIT_Z = new Vector3(0, 0, 1);
 const FRAME_SIZE = 256; // bytes (lightViewProj mat4 + shadowParams + envParams vec4s)
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 144;
-const LIGHT_STRIDE = 48; // bytes per light
+const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
+
+// Spot-light shadow atlas: 2048×2048 depth texture, 512×512 tiles (4×4 = 16 max tiles).
+const SPOT_ATLAS_SIZE = 2048;
+const SPOT_TILE_SIZE = 512;
+const MAX_SPOT_SHADOWS = 4; // tiles reserved for shadow-casting spot lights
+const SHADOW_TILE_STRIDE = 80; // bytes: mat4x4 (64) + vec4 (16)
 
 interface SkinnedResources {
   boneBuffer: GPUBuffer;
@@ -159,6 +166,21 @@ export class WebGPURenderer {
   private _sceneCenter = new Vector3();
   private _corner = new Vector3();
   private shadowCasterIndex = -1;
+
+  // Spot-light shadow atlas resources.
+  private spotAtlasTexture: GPUTexture | null = null;
+  private spotAtlasView: GPUTextureView | null = null;
+  private spotAtlasSampler: GPUSampler | null = null;
+  private spotShadowTilesBuffer: GPUBuffer | null = null;
+  private spotLightBuffers: GPUBuffer[] = [];
+  private spotLightBindGroups: GPUBindGroup[] = [];
+  private spotAtlasAllocated = 0; // 0 = not allocated, SPOT_ATLAS_SIZE = allocated full
+  // Populated by prepareShadow(); read by uploadFrame() and renderSpotShadowPasses().
+  private spotShadowCasters: Array<{
+    tileIndex: number;
+    packedIndex: number;
+    viewProj: Matrix4;
+  }> = [];
 
   // Single pool buffer for all mesh model matrices (dynamic-offset uniform).
   private modelPoolBuffer: GPUBuffer | null = null;
@@ -282,11 +304,15 @@ export class WebGPURenderer {
         { binding: 7, resource: iblSampler },
         { binding: 8, resource: this.iblActive ? this.ibl.brdfLUTView : this.textures.defaultWhiteView },
         { binding: 9, resource: iblSampler },
+        // bindings 10-12: spot-light shadow atlas (dummy when not allocated)
+        { binding: 10, resource: { buffer: this.spotShadowTilesBuffer! } },
+        { binding: 11, resource: this.spotAtlasView! },
+        { binding: 12, resource: this.spotAtlasSampler! },
       ],
     });
   }
 
-  /** Allocate the shadow map (sized to `shadowMapSize` when enabled, else 1×1). */
+  /** Allocate directional shadow map + spot atlas (1×1 dummies when shadows disabled). */
   private createShadowResources(): void {
     const size = this.shadows ? this.shadowMapSize : 1;
     if (this.shadowMapAllocated !== size) {
@@ -313,6 +339,41 @@ export class WebGPURenderer {
         layout: this.pipelines.shadowLightLayout,
         entries: [{ binding: 0, resource: { buffer: this.shadowLightBuffer } }],
       });
+    }
+
+    // Spot-light shadow atlas (lazily allocated on first use; 1×1 dummy until then).
+    const atlasSize = this.shadows ? SPOT_ATLAS_SIZE : 1;
+    if (this.spotAtlasAllocated !== atlasSize) {
+      this.spotAtlasTexture?.destroy();
+      this.spotAtlasTexture = this.device.createTexture({
+        label: 'spot-shadow-atlas',
+        size: [atlasSize, atlasSize],
+        format: SHADOW_DEPTH_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.spotAtlasView = this.spotAtlasTexture.createView();
+      this.spotAtlasAllocated = atlasSize;
+      if (this.frameBuffer) this.buildFrameBindGroup();
+    }
+    if (!this.spotAtlasSampler) {
+      this.spotAtlasSampler = this.device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
+    }
+    if (!this.spotShadowTilesBuffer) {
+      this.spotShadowTilesBuffer = this.device.createBuffer({
+        size: MAX_SPOT_SHADOWS * SHADOW_TILE_STRIDE,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    if (this.spotLightBuffers.length === 0) {
+      for (let i = 0; i < MAX_SPOT_SHADOWS; i++) {
+        const buf = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const bg = this.device.createBindGroup({
+          layout: this.pipelines.shadowLightLayout,
+          entries: [{ binding: 0, resource: { buffer: buf } }],
+        });
+        this.spotLightBuffers.push(buf);
+        this.spotLightBindGroups.push(bg);
+      }
     }
   }
 
@@ -389,8 +450,9 @@ export class WebGPURenderer {
     // IBL prefilter compute passes run first (before any render pass).
     this.prepareEnvironment(scene, encoder);
 
-    // Shadow depth pass (before the main pass) when a caster is active.
+    // Shadow depth passes (before the main pass).
     if (this.shadowCasterIndex >= 0) this.renderShadowPass(encoder);
+    if (this.spotShadowCasters.length > 0) this.renderSpotShadowPasses(encoder);
 
     const swapView = this.context.getCurrentTexture().createView();
     const clear = this.clearColor(scene);
@@ -482,6 +544,7 @@ export class WebGPURenderer {
    */
   private prepareShadow(): void {
     this.shadowCasterIndex = -1;
+    this.spotShadowCasters.length = 0;
     if (!this.shadows) return;
     this.createShadowResources(); // (re)allocate if size/enabled changed
 
@@ -491,73 +554,114 @@ export class WebGPURenderer {
     let i = 0;
     for (const light of this.lights) {
       if (light instanceof AmbientLight) continue;
-      if (light instanceof DirectionalLight && light.castShadow) {
+      if (light instanceof DirectionalLight && light.castShadow && !caster) {
         caster = light;
         packedIndex = i;
-        break;
+      } else if (light instanceof SpotLight && light.castShadow && this.spotShadowCasters.length < MAX_SPOT_SHADOWS) {
+        this.prepareSpotShadow(light, i);
       }
       i++;
     }
-    if (!caster) return;
+    if (!caster && this.spotShadowCasters.length === 0) return;
 
-    // World-space bounds of the opaque casters (from their bounding spheres).
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    for (const mesh of this.opaque) {
-      const geo = mesh.geometry;
-      if (!geo.boundingSphere) geo.computeBoundingSphere();
-      const s = geo.boundingSphere;
-      if (!s || s.isEmpty()) continue;
-      this._worldSphere.copy(s).applyMatrix4(mesh.matrixWorld);
-      const c = this._worldSphere.center, r = this._worldSphere.radius;
-      minX = Math.min(minX, c.x - r); maxX = Math.max(maxX, c.x + r);
-      minY = Math.min(minY, c.y - r); maxY = Math.max(maxY, c.y + r);
-      minZ = Math.min(minZ, c.z - r); maxZ = Math.max(maxZ, c.z + r);
+    if (caster) {
+      // World-space bounds of the opaque casters (from their bounding spheres).
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (const mesh of this.opaque) {
+        const geo = mesh.geometry;
+        if (!geo.boundingSphere) geo.computeBoundingSphere();
+        const s = geo.boundingSphere;
+        if (!s || s.isEmpty()) continue;
+        this._worldSphere.copy(s).applyMatrix4(mesh.matrixWorld);
+        const c = this._worldSphere.center, r = this._worldSphere.radius;
+        minX = Math.min(minX, c.x - r); maxX = Math.max(maxX, c.x + r);
+        minY = Math.min(minY, c.y - r); maxY = Math.max(maxY, c.y + r);
+        minZ = Math.min(minZ, c.z - r); maxZ = Math.max(maxZ, c.z + r);
+      }
+      if (minX <= maxX) {
+        this._sceneCenter.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+        const radius = 0.5 * Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+
+        caster.getWorldPosition(this._lightPos);
+        caster.target.updateWorldMatrix(true, false);
+        this._lightDir.set(
+          caster.target.matrixWorld.elements[12] - this._lightPos.x,
+          caster.target.matrixWorld.elements[13] - this._lightPos.y,
+          caster.target.matrixWorld.elements[14] - this._lightPos.z,
+        );
+        if (this._lightDir.lengthSq() === 0) this._lightDir.set(0, -1, 0);
+        this._lightDir.normalize();
+
+        const eye = this._lightPos.set(
+          this._sceneCenter.x - this._lightDir.x * radius,
+          this._sceneCenter.y - this._lightDir.y * radius,
+          this._sceneCenter.z - this._lightDir.z * radius,
+        );
+        const up = Math.abs(this._lightDir.y) > 0.99 ? UNIT_Z : UNIT_Y;
+        this._lightView.identity().lookAt(eye, this._sceneCenter, up).setPosition(eye).invert();
+
+        let lminX = Infinity, lminY = Infinity, lminZ = Infinity;
+        let lmaxX = -Infinity, lmaxY = -Infinity, lmaxZ = -Infinity;
+        for (let k = 0; k < 8; k++) {
+          this._corner.set(k & 1 ? maxX : minX, k & 2 ? maxY : minY, k & 4 ? maxZ : minZ);
+          this._corner.applyMatrix4(this._lightView);
+          lminX = Math.min(lminX, this._corner.x); lmaxX = Math.max(lmaxX, this._corner.x);
+          lminY = Math.min(lminY, this._corner.y); lmaxY = Math.max(lmaxY, this._corner.y);
+          lminZ = Math.min(lminZ, this._corner.z); lmaxZ = Math.max(lmaxZ, this._corner.z);
+        }
+        const near = -lmaxZ;
+        const far = -lminZ;
+        this._lightProj.makeOrthographic(lminX, lmaxX, lmaxY, lminY, near, far);
+        this._lightViewProj.multiplyMatrices(this._lightProj, this._lightView);
+
+        this.device.queue.writeBuffer(this.shadowLightBuffer, 0, new Float32Array(this._lightViewProj.elements));
+        this.shadowCasterIndex = packedIndex;
+      }
     }
-    if (minX > maxX) return; // nothing to shadow
 
-    this._sceneCenter.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
-    const radius = 0.5 * Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+    // Upload spot-shadow tile data (viewProj + atlas region) to the storage buffer.
+    if (this.spotShadowCasters.length > 0 && this.spotShadowTilesBuffer) {
+      const tileData = new Float32Array(MAX_SPOT_SHADOWS * (SHADOW_TILE_STRIDE / 4));
+      const tilesPerRow = SPOT_ATLAS_SIZE / SPOT_TILE_SIZE;
+      for (const sc of this.spotShadowCasters) {
+        const base = sc.tileIndex * (SHADOW_TILE_STRIDE / 4);
+        tileData.set(sc.viewProj.elements, base);
+        const col = sc.tileIndex % tilesPerRow;
+        const row = Math.floor(sc.tileIndex / tilesPerRow);
+        tileData[base + 16] = (col * SPOT_TILE_SIZE) / SPOT_ATLAS_SIZE; // uv offset x
+        tileData[base + 17] = (row * SPOT_TILE_SIZE) / SPOT_ATLAS_SIZE; // uv offset y
+        tileData[base + 18] = SPOT_TILE_SIZE / SPOT_ATLAS_SIZE;          // uv scale
+        tileData[base + 19] = 1 / SPOT_ATLAS_SIZE;                       // texel step
+      }
+      this.device.queue.writeBuffer(this.spotShadowTilesBuffer, 0, tileData);
+    }
+  }
 
-    // Light direction: from the light position toward its target.
-    caster.getWorldPosition(this._lightPos);
-    caster.target.updateWorldMatrix(true, false);
+  /** Compute the perspective viewProj for a shadow-casting SpotLight and record it. */
+  private prepareSpotShadow(light: SpotLight, packedIndex: number): void {
+    const tileIndex = this.spotShadowCasters.length;
+    light.getWorldPosition(this._lightPos);
+    light.target.updateWorldMatrix(true, false);
     this._lightDir.set(
-      caster.target.matrixWorld.elements[12] - this._lightPos.x,
-      caster.target.matrixWorld.elements[13] - this._lightPos.y,
-      caster.target.matrixWorld.elements[14] - this._lightPos.z,
+      light.target.matrixWorld.elements[12] - this._lightPos.x,
+      light.target.matrixWorld.elements[13] - this._lightPos.y,
+      light.target.matrixWorld.elements[14] - this._lightPos.z,
     );
-    if (this._lightDir.lengthSq() === 0) this._lightDir.set(0, -1, 0);
+    if (this._lightDir.lengthSq() === 0) this._lightDir.set(0, 0, -1);
     this._lightDir.normalize();
 
-    // Place the light camera back along -dir from the scene center.
-    const eye = this._lightPos.set(
-      this._sceneCenter.x - this._lightDir.x * radius,
-      this._sceneCenter.y - this._lightDir.y * radius,
-      this._sceneCenter.z - this._lightDir.z * radius,
-    );
     const up = Math.abs(this._lightDir.y) > 0.99 ? UNIT_Z : UNIT_Y;
-    // identity() first: lookAt only writes the upper 3x3.
-    this._lightView.identity().lookAt(eye, this._sceneCenter, up).setPosition(eye).invert();
+    const target = this._lightPos.clone().add(this._lightDir);
+    this._lightView.identity().lookAt(this._lightPos, target, up).setPosition(this._lightPos).invert();
+    const far = light.distance > 0 ? light.distance : 200;
+    this._lightProj.makePerspective(light.angle * 2, 1, 0.05, far);
+    const vp = new Matrix4().multiplyMatrices(this._lightProj, this._lightView);
 
-    // Fit the ortho box to the bounds transformed into light space.
-    let lminX = Infinity, lminY = Infinity, lminZ = Infinity;
-    let lmaxX = -Infinity, lmaxY = -Infinity, lmaxZ = -Infinity;
-    for (let k = 0; k < 8; k++) {
-      this._corner.set(k & 1 ? maxX : minX, k & 2 ? maxY : minY, k & 4 ? maxZ : minZ);
-      this._corner.applyMatrix4(this._lightView);
-      lminX = Math.min(lminX, this._corner.x); lmaxX = Math.max(lmaxX, this._corner.x);
-      lminY = Math.min(lminY, this._corner.y); lmaxY = Math.max(lmaxY, this._corner.y);
-      lminZ = Math.min(lminZ, this._corner.z); lmaxZ = Math.max(lmaxZ, this._corner.z);
-    }
-    // In view space the camera looks down -Z; depth distance d = -z.
-    const near = -lmaxZ;
-    const far = -lminZ;
-    this._lightProj.makeOrthographic(lminX, lmaxX, lmaxY, lminY, near, far);
-    this._lightViewProj.multiplyMatrices(this._lightProj, this._lightView);
+    // Write to the per-tile uniform buffer (separate buffer per tile = no writeBuffer conflict).
+    this.device.queue.writeBuffer(this.spotLightBuffers[tileIndex], 0, new Float32Array(vp.elements));
 
-    this.device.queue.writeBuffer(this.shadowLightBuffer, 0, new Float32Array(this._lightViewProj.elements));
-    this.shadowCasterIndex = packedIndex;
+    this.spotShadowCasters.push({ tileIndex, packedIndex, viewProj: vp });
   }
 
   /** Resolve `scene.environment` into the env bindings, rebuilding on change. */
@@ -619,6 +723,42 @@ export class WebGPURenderer {
       }
     }
     pass.end();
+  }
+
+  private renderSpotShadowPasses(encoder: GPUCommandEncoder): void {
+    const ts = SPOT_TILE_SIZE;
+    const tilesPerRow = SPOT_ATLAS_SIZE / SPOT_TILE_SIZE;
+    for (let ci = 0; ci < this.spotShadowCasters.length; ci++) {
+      const sc = this.spotShadowCasters[ci];
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this.spotAtlasView!,
+          depthClearValue: 1.0,
+          depthLoadOp: ci === 0 ? 'clear' : 'load',
+          depthStoreOp: 'store',
+        },
+      });
+      const col = sc.tileIndex % tilesPerRow;
+      const row = Math.floor(sc.tileIndex / tilesPerRow);
+      pass.setViewport(col * ts, row * ts, ts, ts, 0, 1);
+      pass.setScissorRect(col * ts, row * ts, ts, ts);
+      pass.setPipeline(this.pipelines.shadowPipeline);
+      pass.setBindGroup(0, this.spotLightBindGroups[ci]);
+      for (const mesh of this.opaque) {
+        if (mesh instanceof InstancedMesh) continue;
+        const geometry = this.geometries.get(mesh.geometry);
+        pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+        pass.setVertexBuffer(0, geometry.position);
+        if (geometry.index) {
+          pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+          pass.drawIndexed(geometry.drawCount);
+        } else {
+          pass.draw(geometry.drawCount);
+        }
+      }
+      pass.end();
+    }
   }
 
   private clearColor(scene: Scene): GPUColor {
@@ -714,6 +854,32 @@ export class WebGPURenderer {
         ld[base + 9] = light.color.g * light.intensity;
         ld[base + 10] = light.color.b * light.intensity;
         ld[base + 11] = light.decay;
+        // spotParams unused for point lights
+        ld[base + 12] = 1; ld[base + 13] = 1; ld[base + 14] = -1; ld[base + 15] = 0;
+      } else if (light instanceof SpotLight) {
+        light.target.updateWorldMatrix(true, false);
+        const tx = light.target.matrixWorld.elements[12];
+        const ty = light.target.matrixWorld.elements[13];
+        const tz = light.target.matrixWorld.elements[14];
+        const dir = new Vector3(tx - this._meshPos.x, ty - this._meshPos.y, tz - this._meshPos.z).normalize();
+        ld[base + 0] = this._meshPos.x;
+        ld[base + 1] = this._meshPos.y;
+        ld[base + 2] = this._meshPos.z;
+        ld[base + 3] = 2; // kind = spot
+        ld[base + 4] = dir.x;
+        ld[base + 5] = dir.y;
+        ld[base + 6] = dir.z;
+        ld[base + 7] = light.distance;
+        ld[base + 8] = light.color.r * light.intensity;
+        ld[base + 9] = light.color.g * light.intensity;
+        ld[base + 10] = light.color.b * light.intensity;
+        ld[base + 11] = light.decay;
+        ld[base + 12] = Math.cos(light.angle * (1 - light.penumbra)); // cosInner
+        ld[base + 13] = Math.cos(light.angle);                         // cosOuter
+        // Look up this light's shadow tile index (−1 if none).
+        const sc = this.spotShadowCasters.find(c => c.packedIndex === lightCount);
+        ld[base + 14] = sc ? sc.tileIndex : -1;
+        ld[base + 15] = 0;
       }
       lightCount++;
     }
