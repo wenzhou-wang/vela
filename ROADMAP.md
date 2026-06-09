@@ -124,9 +124,13 @@ A post-processing stack and richer materials.
 
 Faster loads, broader inputs, and ergonomics.
 
-- 🚧 **Compressed geometry** — ✅ **`EXT_meshopt_compression`**: the loader decodes
+- ✅ **Compressed geometry** — **`EXT_meshopt_compression`**: the loader decodes
       meshopt buffer views through a pluggable `MeshoptDecoder` (`loader.setMeshoptDecoder(MeshoptDecoder)`,
-      the standard meshoptimizer module), then accessors read the decoded data. ⬜ `KHR_draco_mesh_compression`.
+      the standard meshoptimizer module), then accessors read the decoded data. **`KHR_draco_mesh_compression`**:
+      pluggable `DracoDecoder` interface (`loader.setDracoDecoder(decoder)`); the decoder
+      receives the compressed buffer view bytes + Draco attribute ID map, returns indices +
+      per-attribute typed arrays (Float32/Uint32); geometry is built from decoded data
+      bypassing the stub accessors.
 - 🚧 **Compressed textures** — ✅ **`KHR_texture_basisu` / KTX2**: `KTX2Loader` parses the
       container, uploads uncompressed RGBA8 directly, and transcodes Basis (ETC1S/UASTC) via
       a pluggable transcoder that yields RGBA8 (`loader.setKTX2Loader(new KTX2Loader().setTranscoder(...))`).

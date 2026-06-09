@@ -10,7 +10,7 @@ import { Box3 } from '../math/Box3';
 import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
 import { computeTangents } from './computeTangents';
-import type { MeshoptDecoder, KTX2TextureLoader } from './decoders';
+import type { MeshoptDecoder, KTX2TextureLoader, DracoDecoder } from './decoders';
 import { AnimationClip } from '../animation/AnimationClip';
 import { KeyframeTrack, type TrackPath, type InterpolationMode } from '../animation/KeyframeTrack';
 import {
@@ -46,6 +46,7 @@ const CHUNK_BIN = 0x004e4942; // "BIN\0"
 export class GLTFLoader {
   private meshoptDecoder: MeshoptDecoder | null = null;
   private ktx2Loader: KTX2TextureLoader | null = null;
+  private dracoDecoder: DracoDecoder | null = null;
 
   /** Provide a meshoptimizer decoder to enable `EXT_meshopt_compression`. */
   setMeshoptDecoder(decoder: MeshoptDecoder): this {
@@ -56,6 +57,12 @@ export class GLTFLoader {
   /** Provide a KTX2 loader/transcoder to enable `KHR_texture_basisu`. */
   setKTX2Loader(loader: KTX2TextureLoader): this {
     this.ktx2Loader = loader;
+    return this;
+  }
+
+  /** Provide a Draco decoder to enable `KHR_draco_mesh_compression`. */
+  setDracoDecoder(decoder: DracoDecoder): this {
+    this.dracoDecoder = decoder;
     return this;
   }
 
@@ -117,10 +124,15 @@ export class GLTFLoader {
     const materials = (json.materials ?? []).map((m) => this.buildMaterial(m, textures));
     if (materials.length === 0) materials.push(new StandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.8 }));
 
-    const ctx: BuildContext = { json, buffers, materials, geometryCache: new Map(), pendingSkins: [], meshopt };
+    if (this.dracoDecoder?.ready) await this.dracoDecoder.ready;
+    const ctx: BuildContext = {
+      json, buffers, materials, geometryCache: new Map(), pendingSkins: [], meshopt,
+      dracoDecoder: this.dracoDecoder ?? undefined,
+    };
 
-    // Build nodes
-    const nodes: Object3D[] = (json.nodes ?? []).map((n) => this.buildNode(n, ctx));
+    // Build nodes (sequential to avoid concurrent Draco decode races on shared primitives).
+    const nodes: Object3D[] = [];
+    for (const n of json.nodes ?? []) nodes.push(await this.buildNode(n, ctx));
 
     // Wire up hierarchy
     (json.nodes ?? []).forEach((n, i) => {
@@ -192,7 +204,7 @@ export class GLTFLoader {
     return clips;
   }
 
-  private buildNode(node: GLTFNode, ctx: BuildContext): Object3D {
+  private async buildNode(node: GLTFNode, ctx: BuildContext): Promise<Object3D> {
     const hasMesh = node.mesh !== undefined;
     const object = new Object3D();
     object.name = node.name ?? '';
@@ -211,7 +223,7 @@ export class GLTFLoader {
       for (let p = 0; p < meshDef.primitives.length; p++) {
         const prim = meshDef.primitives[p];
         if (prim.mode !== undefined && prim.mode !== 4) continue; // only TRIANGLES
-        const geometry = this.buildGeometry(prim, ctx);
+        const geometry = await this.buildGeometry(prim, ctx);
         const material = prim.material !== undefined ? ctx.materials[prim.material] : ctx.materials[ctx.materials.length - 1];
         if (material.normalMap && !geometry.getAttribute('tangent')) {
           computeTangents(geometry);
@@ -260,12 +272,39 @@ export class GLTFLoader {
     return new Skeleton(joints, inverses);
   }
 
-  private buildGeometry(prim: GLTFPrimitive, ctx: BuildContext): BufferGeometry {
+  private async buildGeometry(prim: GLTFPrimitive, ctx: BuildContext): Promise<BufferGeometry> {
     const key = JSON.stringify(prim);
     const cached = ctx.geometryCache.get(key);
     if (cached) return cached;
 
     const geometry = new BufferGeometry();
+
+    // Draco-compressed primitive: decode the compressed buffer view instead of
+    // reading the normal (stub) accessors for position/normal/uv/etc.
+    const dracoExt = prim.extensions?.KHR_draco_mesh_compression;
+    if (dracoExt) {
+      if (!ctx.dracoDecoder) {
+        throw new Error('[vela] KHR_draco_mesh_compression requires a decoder — call setDracoDecoder(...)');
+      }
+      const bv = ctx.json.bufferViews![dracoExt.bufferView];
+      const compressed = ctx.buffers[bv.buffer].subarray(
+        bv.byteOffset ?? 0,
+        (bv.byteOffset ?? 0) + bv.byteLength,
+      );
+      const decoded = await ctx.dracoDecoder.decode(compressed, dracoExt.attributes);
+
+      geometry.setIndex(new BufferAttribute(decoded.indices, 1));
+      for (const [semantic, attr] of Object.entries(decoded.attributes)) {
+        const name = dracoAttrName(semantic);
+        if (name) geometry.setAttribute(name, new BufferAttribute(attr.array, attr.itemSize));
+      }
+
+      if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      ctx.geometryCache.set(key, geometry);
+      return geometry;
+    }
+
     const attributes = prim.attributes as Record<string, number>;
 
     if (attributes.POSITION !== undefined) {
@@ -660,6 +699,21 @@ interface BuildContext {
   pendingSkins: { mesh: SkinnedMesh; skinIndex: number }[];
   /** Decoded EXT_meshopt_compression buffer views, by bufferView index. */
   meshopt: Map<number, { data: Uint8Array; byteStride: number }>;
+  dracoDecoder?: DracoDecoder;
+}
+
+/** Map glTF/Draco attribute semantics to vela BufferGeometry attribute names. */
+function dracoAttrName(semantic: string): string | null {
+  const map: Record<string, string> = {
+    POSITION: 'position',
+    NORMAL: 'normal',
+    TEXCOORD_0: 'uv',
+    TANGENT: 'tangent',
+    COLOR_0: 'color',
+    JOINTS_0: 'joints',
+    WEIGHTS_0: 'weights',
+  };
+  return map[semantic] ?? null;
 }
 
 function configure(texture: Texture | undefined, colorSpace: 'srgb' | 'linear'): Texture | null {

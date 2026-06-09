@@ -68,7 +68,7 @@ export type { GLTFResult } from './loaders/GLTFLoader';
 export { RGBELoader } from './loaders/RGBELoader';
 export { KTX2Loader } from './loaders/KTX2Loader';
 export type { BasisTranscoder, KTX2Image } from './loaders/KTX2Loader';
-export type { MeshoptDecoder, KTX2TextureLoader } from './loaders/decoders';
+export type { MeshoptDecoder, KTX2TextureLoader, DracoDecoder, DracoGeometry } from './loaders/decoders';
 export { GLTFExporter } from './loaders/GLTFExporter';
 export type { GLTFExportResult } from './loaders/GLTFExporter';
 export { SceneSerializer } from './loaders/SceneSerializer';

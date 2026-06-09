@@ -67,6 +67,14 @@ export interface GLTFPrimitive {
   mode?: number;
   /** Morph-target attribute accessors: each entry maps POSITION/NORMAL → accessor. */
   targets?: Record<string, number>[];
+  extensions?: {
+    /** KHR_draco_mesh_compression: compressed geometry replacing the normal accessors. */
+    KHR_draco_mesh_compression?: {
+      bufferView: number;
+      /** Maps attribute semantics to Draco-internal unique attribute IDs. */
+      attributes: Record<string, number>;
+    };
+  };
 }
 
 export interface GLTFMaterial {
