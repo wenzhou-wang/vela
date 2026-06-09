@@ -23,6 +23,7 @@ import { DEPTH_FORMAT } from './constants';
 import { PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER } from './shaders/pbr.wgsl';
 import { LINE_SHADER } from './shaders/line.wgsl';
 import { SHADOW_SHADER } from './shaders/shadow.wgsl';
+import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
 
@@ -157,6 +158,18 @@ export class WebGPURenderer {
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
   private morphResources = new WeakMap<Mesh, MorphResources>();
   private lineResources = new WeakMap<LineBasicMaterial, { buffer: GPUBuffer; bindGroup: GPUBindGroup }>();
+
+  // Id-buffer picking (all lazy — created on first pickAt call)
+  private idPipeline: GPURenderPipeline | null = null;
+  private idLayout: GPUBindGroupLayout | null = null;
+  private idUniformBuffer: GPUBuffer | null = null;
+  private idBindGroup: GPUBindGroup | null = null;
+  private idBufferCapacity = 0;
+  private idColorTexture: GPUTexture | null = null;
+  private idDepthTexture: GPUTexture | null = null;
+  private idReadBuffer: GPUBuffer | null = null;
+  private idTexW = 0;
+  private idTexH = 0;
 
   private _normalMatrix = new Matrix3();
   private _camPos = new Vector3();
@@ -1039,5 +1052,164 @@ export class WebGPURenderer {
             m.clearcoatMap, m.clearcoatRoughnessMap]
       .map(id)
       .join('|');
+  }
+
+  // ---------------------------------------------------------------------------
+  // GPU id-buffer picking
+  // ---------------------------------------------------------------------------
+
+  private ensureIdResources(meshCount: number): void {
+    if (!this.idLayout) {
+      this.idLayout = this.device.createBindGroupLayout({
+        entries: [{
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 4 },
+        }],
+      });
+    }
+
+    const needed = Math.max(meshCount, 1) * 256;
+    if (this.idBufferCapacity < needed) {
+      this.idUniformBuffer?.destroy();
+      this.idUniformBuffer = this.device.createBuffer({
+        size: needed,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.idBindGroup = this.device.createBindGroup({
+        layout: this.idLayout,
+        entries: [{ binding: 0, resource: { buffer: this.idUniformBuffer, size: 4 } }],
+      });
+      this.idBufferCapacity = needed;
+    }
+
+    if (!this.idPipeline) {
+      const module = this.device.createShaderModule({ code: ID_SHADER });
+      const layout = this.device.createPipelineLayout({
+        bindGroupLayouts: [this.pipelines.frameLayout, this.pipelines.modelLayout, this.idLayout],
+      });
+      this.idPipeline = this.device.createRenderPipeline({
+        layout,
+        vertex: {
+          module,
+          entryPoint: 'vs_main',
+          buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }],
+        },
+        fragment: {
+          module,
+          entryPoint: 'fs_main',
+          targets: [{ format: 'rgba8unorm' }],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'back' },
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+      });
+    }
+  }
+
+  private ensureIdTextures(): void {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    if (this.idTexW !== w || this.idTexH !== h) {
+      this.idColorTexture?.destroy();
+      this.idDepthTexture?.destroy();
+      this.idColorTexture = this.device.createTexture({
+        size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      });
+      this.idDepthTexture = this.device.createTexture({
+        size: [w, h],
+        format: DEPTH_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.idTexW = w;
+      this.idTexH = h;
+    }
+    if (!this.idReadBuffer) {
+      this.idReadBuffer = this.device.createBuffer({
+        size: 256,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+    }
+  }
+
+  /**
+   * Render an offscreen id-buffer pass and read back the pixel at (cssX, cssY)
+   * to identify which mesh lies under the cursor. Returns null for background.
+   * Skinned and morph deformations are not reflected; positions use the mesh
+   * world matrix only. InstancedMesh is excluded (returns null for instances).
+   */
+  async pickAt(cssX: number, cssY: number, scene: Scene, camera: Camera): Promise<Mesh | null> {
+    scene.updateMatrixWorld();
+    camera.updateMatrixWorld();
+    this.collect(scene);
+    this.uploadFrame(scene, camera);
+
+    const meshList: Mesh[] = [];
+    scene.traverseVisible((obj: Object3D) => {
+      if (obj instanceof Mesh && !(obj instanceof InstancedMesh)) {
+        const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+        if (mat instanceof StandardMaterial) meshList.push(obj);
+      }
+    });
+
+    this.ensureIdResources(meshList.length);
+    this.ensureIdTextures();
+
+    // Pre-upload all mesh ids. Each id occupies 256 bytes (uniform alignment).
+    // id=0 means background; meshes get ids 1..N at 256-byte strides.
+    const idData = new Uint32Array(meshList.length * 64);
+    for (let i = 0; i < meshList.length; i++) idData[i * 64] = i + 1;
+    this.device.queue.writeBuffer(this.idUniformBuffer!, 0, idData);
+
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.idColorTexture!.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      }],
+      depthStencilAttachment: {
+        view: this.idDepthTexture!.createView(),
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+
+    pass.setPipeline(this.idPipeline!);
+    pass.setBindGroup(0, this.frameBindGroup);
+    for (let i = 0; i < meshList.length; i++) this.drawMeshId(pass, meshList[i], i);
+    pass.end();
+
+    const px = Math.max(0, Math.min(this.idTexW - 1, Math.floor(cssX * this.pixelRatio)));
+    const py = Math.max(0, Math.min(this.idTexH - 1, Math.floor(cssY * this.pixelRatio)));
+    encoder.copyTextureToBuffer(
+      { texture: this.idColorTexture!, origin: { x: px, y: py } },
+      { buffer: this.idReadBuffer!, bytesPerRow: 256 },
+      { width: 1, height: 1 },
+    );
+
+    this.device.queue.submit([encoder.finish()]);
+    await this.idReadBuffer!.mapAsync(GPUMapMode.READ);
+    const pixel = new Uint8Array(this.idReadBuffer!.getMappedRange(0, 4));
+    const id = pixel[0] | (pixel[1] << 8) | (pixel[2] << 16);
+    this.idReadBuffer!.unmap();
+
+    return id > 0 && id <= meshList.length ? meshList[id - 1] : null;
+  }
+
+  private drawMeshId(pass: GPURenderPassEncoder, mesh: Mesh, index: number): void {
+    const geometry = this.geometries.get(mesh.geometry);
+    pass.setBindGroup(1, this.getMeshResources(mesh).bindGroup);
+    pass.setBindGroup(2, this.idBindGroup!, [index * 256]);
+    pass.setVertexBuffer(0, geometry.position);
+    if (geometry.index) {
+      pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+      pass.drawIndexed(geometry.drawCount);
+    } else {
+      pass.draw(geometry.drawCount);
+    }
   }
 }

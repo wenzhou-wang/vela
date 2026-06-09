@@ -150,8 +150,12 @@ Faster loads, broader inputs, and ergonomics.
       local space (Möller–Trumbore), so hits carry an exact `point`, `faceIndex`, and a
       barycentric-interpolated `uv`. `setFromCamera` unprojects NDC; `precise = false`
       reverts to the coarse sphere test. Meshes at/above `bvhThreshold` triangles use a
-      cached median-split **CPU `BVH`** that prunes subtrees the ray misses. ⬜ A GPU
-      id-buffer pass for pixel-exact picking remains optional.
+      cached median-split **CPU `BVH`** that prunes subtrees the ray misses. ✅ **GPU
+      id-buffer picking** (`renderer.pickAt(cssX, cssY, scene, camera)`): renders an
+      offscreen `rgba8unorm` pass where each mesh is drawn with a flat RGB-encoded
+      uint32 id, then copies the single clicked pixel to a read-back buffer; returns the
+      hit `Mesh | null`. Id bind group uses 256-byte-aligned dynamic offsets so one
+      `writeBuffer` call uploads all ids before the pass.
 - ✅ **Helpers & debug** — `GridHelper`, `AxesHelper`, `Box3Helper`, and light gizmos
       (`DirectionalLightHelper`, `PointLightHelper`) via an unlit `LineSegments` +
       `LineBasicMaterial` path (line-list pipeline, per-vertex colors); plus a `Stats`
