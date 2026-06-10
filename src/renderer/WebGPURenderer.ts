@@ -29,14 +29,15 @@ import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
+import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
 type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
 
-const MAX_LIGHTS = 32;
+const MAX_LIGHTS = 256;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
-const FRAME_SIZE = 256; // bytes (lightViewProj mat4 + shadowParams + envParams vec4s)
+const FRAME_SIZE = 288; // bytes (view/proj/lightViewProj mat4s + cameraPos..clusterDims vec4s)
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
@@ -44,6 +45,14 @@ const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + col
 // GPU-driven culling: indirect draw + compute-shader sphere cull.
 const CULL_PARAMS_SIZE = 112;   // 6×vec4 planes (96) + u32 drawCount + 12 pad
 const INDIRECT_STRIDE  = 20;    // GPUDrawIndexedIndirectParameters: 5 × u32
+
+// Clustered forward+ grid (must match clusters.wgsl / pbr.wgsl).
+const CLUSTER_X = 16;
+const CLUSTER_Y = 9;
+const CLUSTER_Z = 24;
+const CLUSTER_COUNT = CLUSTER_X * CLUSTER_Y * CLUSTER_Z;
+const MAX_PER_CLUSTER = 32;
+const CLUSTER_PARAMS_SIZE = 144; // view mat4 + invProj mat4 + info vec4
 
 // Spot/point shadow atlas: 2048×2048 depth texture, 512×512 tiles (4×4 = 16 tiles).
 // Tiles 0..MAX_SPOT_SHADOWS-1 hold spot lights; the rest hold point-light cube
@@ -211,6 +220,20 @@ export class WebGPURenderer {
    * meshes always follow the normal CPU path.  Incompatible with `renderBundles`.
    */
   gpuCulling = false;
+  /**
+   * Clustered forward+ lighting: a compute shader bins light bounding spheres
+   * into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade
+   * only the lights in their cluster (up to 32), so hundreds of ranged lights
+   * stay cheap. Perspective cameras only; ranged point/spot lights benefit —
+   * directional and infinite-range lights still hit every cluster.
+   */
+  clusteredLighting = false;
+  private clusterPipeline: GPUComputePipeline | null = null;
+  private clusterLayout: GPUBindGroupLayout | null = null;
+  private clusterParamsBuffer: GPUBuffer | null = null;
+  private clusterLightsBuffer: GPUBuffer | null = null;
+  private clusterDummyBuffer: GPUBuffer | null = null;
+  private clusterBindGroup: GPUBindGroup | null = null;
   private gpuCullPipeline: GPUComputePipeline | null = null;
   private gpuCullLayout: GPUBindGroupLayout | null = null;
   private gpuCullParamsBuffer: GPUBuffer | null = null;
@@ -345,6 +368,11 @@ export class WebGPURenderer {
       size: MAX_LIGHTS * LIGHT_STRIDE,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // Placeholder for the cluster-light list until clustered lighting is enabled.
+    this.clusterDummyBuffer = this.device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.STORAGE,
+    });
     this.buildFrameBindGroup();
   }
 
@@ -373,6 +401,8 @@ export class WebGPURenderer {
         { binding: 12, resource: this.spotAtlasSampler! },
         // binding 13: screen-space refraction capture (post.sceneCaptureView is always valid)
         { binding: 13, resource: this.post.sceneCaptureView },
+        // binding 14: clustered light lists (dummy until clustered lighting runs)
+        { binding: 14, resource: { buffer: this.clusterLightsBuffer ?? this.clusterDummyBuffer! } },
       ],
     });
   }
@@ -533,6 +563,8 @@ export class WebGPURenderer {
     if (this.spotShadowCasters.length > 0) this.renderSpotShadowPasses(encoder);
     // GPU frustum cull: fills instanceCount in the indirect buffer.
     this.prepareGpuCull(encoder);
+    // Clustered forward+: bin lights into the cluster grid.
+    this.prepareClusters(encoder, camera);
 
     const swapView = this.context.getCurrentTexture().createView();
     const clear = this.clearColor(scene);
@@ -888,6 +920,63 @@ export class WebGPURenderer {
     }
   }
 
+  private ensureClusterResources(): void {
+    if (this.clusterPipeline) return;
+    const module = this.device.createShaderModule({ code: CLUSTER_SHADER, label: 'clusters' });
+    this.clusterLayout = this.device.createBindGroupLayout({
+      label: 'clusters',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+    this.clusterPipeline = this.device.createComputePipeline({
+      label: 'clusters',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.clusterLayout] }),
+      compute: { module, entryPoint: 'cs_cluster' },
+    });
+    this.clusterParamsBuffer = this.device.createBuffer({
+      size: CLUSTER_PARAMS_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // Per cluster: u32 count + MAX_PER_CLUSTER u32 light indices.
+    this.clusterLightsBuffer = this.device.createBuffer({
+      size: CLUSTER_COUNT * (MAX_PER_CLUSTER + 1) * 4,
+      usage: GPUBufferUsage.STORAGE,
+    });
+    this.clusterBindGroup = this.device.createBindGroup({
+      layout: this.clusterLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.clusterParamsBuffer } },
+        { binding: 1, resource: { buffer: this.lightBuffer } },
+        { binding: 2, resource: { buffer: this.clusterLightsBuffer } },
+      ],
+    });
+    this.buildFrameBindGroup(); // binding 14 now points at the real list
+  }
+
+  /** Encode the clustered-lighting light-assignment compute pass. */
+  private prepareClusters(encoder: GPUCommandEncoder, camera: Camera): void {
+    if (!this.clusteredLighting) return;
+    this.ensureClusterResources();
+
+    const params = new Float32Array(CLUSTER_PARAMS_SIZE / 4);
+    params.set(camera.matrixWorldInverse.elements, 0);
+    params.set(camera.projectionMatrixInverse.elements, 16);
+    params[32] = this.frameData[35]; // packed light count (set by uploadFrame)
+    const cam = camera as unknown as { near?: number; far?: number };
+    params[33] = Math.max(cam.near ?? 0.1, 0.001);
+    params[34] = cam.far ?? 2000;
+    this.device.queue.writeBuffer(this.clusterParamsBuffer!, 0, params);
+
+    const pass = encoder.beginComputePass({ label: 'clusters' });
+    pass.setPipeline(this.clusterPipeline!);
+    pass.setBindGroup(0, this.clusterBindGroup!);
+    pass.dispatchWorkgroups(Math.ceil(CLUSTER_COUNT / 64));
+    pass.end();
+  }
+
   private ensureGpuCullResources(minSlots: number): void {
     if (!this.gpuCullPipeline) {
       const module = this.device.createShaderModule({ code: CULL_SHADER, label: 'cull' });
@@ -1154,6 +1243,17 @@ export class WebGPURenderer {
     f[62] = this.envMaxMip;
     // Bit 0: linear output; bit 1: IBL active; bit 2: screen-space refraction available.
     f[63] = (this.postProcessing ? 1 : 0) | (this.iblActive ? 2 : 0) | (this.postProcessing ? 4 : 0);
+
+    // clusterParams (64..67) + clusterDims (68..71)
+    const cam = camera as unknown as { near?: number; far?: number };
+    f[64] = this.clusteredLighting ? 1 : 0;
+    f[65] = Math.max(cam.near ?? 0.1, 0.001);
+    f[66] = cam.far ?? 2000;
+    f[67] = 0;
+    f[68] = this.canvas.width / CLUSTER_X;  // tile size in pixels
+    f[69] = this.canvas.height / CLUSTER_Y;
+    f[70] = 0;
+    f[71] = 0;
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

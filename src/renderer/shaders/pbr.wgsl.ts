@@ -18,6 +18,12 @@ const LIGHT_DIRECTIONAL = 0u;
 const LIGHT_POINT = 1u;
 const LIGHT_SPOT = 2u;
 
+// Clustered forward+ grid (must match clusters.wgsl).
+const CLUSTER_X = 16u;
+const CLUSTER_Y = 9u;
+const CLUSTER_Z = 24u;
+const MAX_PER_CLUSTER = 32u;
+
 struct Frame {
   view : mat4x4<f32>,
   proj : mat4x4<f32>,
@@ -26,6 +32,8 @@ struct Frame {
   lightViewProj : mat4x4<f32>, // directional shadow caster's view-projection
   shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
   envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = flags (bit0=linearOut,bit1=IBL)
+  clusterParams : vec4<f32>,   // x = clustered enabled, y = near, z = far, w = unused
+  clusterDims : vec4<f32>,     // xy = tile size in pixels, zw = unused
 };
 
 struct Light {
@@ -66,6 +74,7 @@ struct MaterialU {
 @group(0) @binding(11) var spotAtlas    : texture_depth_2d;
 @group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
 @group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for SSR
+@group(0) @binding(14) var<storage, read> clusterLights : array<u32>; // per-cluster light counts + indices
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
 @group(2) @binding(1) var baseColorTex : texture_2d<f32>;
@@ -399,9 +408,28 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   let diffuseColor = baseColor * (1.0 - metalness);
 
   var color = vec3<f32>(0.0);
-  let numLights = u32(frame.cameraPos.w);
 
-  for (var i = 0u; i < numLights; i = i + 1u) {
+  // Clustered forward+: when enabled, shade only the lights binned into this
+  // fragment's cluster (screen tile + logarithmic depth slice).
+  let clustered = frame.clusterParams.x > 0.5;
+  var numLights = u32(frame.cameraPos.w);
+  var clusterBase = 0u;
+  if (clustered) {
+    let tx = min(u32(in.clipPosition.x / frame.clusterDims.x), CLUSTER_X - 1u);
+    let ty = min(u32(in.clipPosition.y / frame.clusterDims.y), CLUSTER_Y - 1u);
+    let near = frame.clusterParams.y;
+    let far = frame.clusterParams.z;
+    let viewZ = max(-(frame.view * vec4<f32>(in.worldPos, 1.0)).z, near);
+    let slice = min(u32(log(viewZ / near) / log(far / near) * f32(CLUSTER_Z)), CLUSTER_Z - 1u);
+    clusterBase = (tx + ty * CLUSTER_X + slice * CLUSTER_X * CLUSTER_Y) * (MAX_PER_CLUSTER + 1u);
+    numLights = min(clusterLights[clusterBase], MAX_PER_CLUSTER);
+  }
+
+  for (var j = 0u; j < numLights; j = j + 1u) {
+    var i = j;
+    if (clustered) {
+      i = clusterLights[clusterBase + 1u + j];
+    }
     let light = lights[i];
     let kind = u32(light.positionKind.w);
 

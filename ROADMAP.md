@@ -213,7 +213,15 @@ Faster loads, broader inputs, and ergonomics.
 
 - Optional **WebGL2 fallback** behind the same scene-graph API (only if demand warrants
   the cost — it cuts against the project's modern-first thesis).
-- **Clustered forward+** lighting for hundreds of dynamic lights.
+- ✅ **Clustered forward+** lighting (`renderer.clusteredLighting`) — a compute pass
+  divides the view frustum into a 16×9×24 grid (screen tiles × logarithmic depth
+  slices), computes each cluster's view-space AABB by scaling unprojected near-plane
+  tile corners along their view rays, and bins light bounding spheres into per-cluster
+  lists (count + up to 32 light indices, binding 14). Fragments derive their cluster
+  from the pixel position and view-space depth and shade only that cluster's lights;
+  `MAX_LIGHTS` rises to 256. Directional and infinite-range lights land in every
+  cluster; perspective cameras only. Disabled, the shader falls back to the
+  loop-over-all-lights path with a dummy buffer bound.
 - ✅ **glTF export** (`GLTFExporter`) — writes node hierarchy + TRS, mesh geometry
   (position/normal/uv/color/indices), `StandardMaterial` PBR factors + **textures**
   (map/normalMap/metalnessRoughnessMap/emissiveMap/occlusionMap encoded as PNG into the
