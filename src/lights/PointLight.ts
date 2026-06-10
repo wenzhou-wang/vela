@@ -8,6 +8,8 @@ export class PointLight extends Light {
   distance: number;
   /** Additional falloff exponent (2 = physically correct). */
   decay: number;
+  /** Render this light's shadow into the cube-face shadow atlas (requires `renderer.shadows`). */
+  castShadow = false;
 
   constructor(color: number | Color = 0xffffff, intensity = 1, distance = 0, decay = 2) {
     super(color, intensity);

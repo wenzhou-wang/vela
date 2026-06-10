@@ -45,11 +45,24 @@ const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + col
 const CULL_PARAMS_SIZE = 112;   // 6×vec4 planes (96) + u32 drawCount + 12 pad
 const INDIRECT_STRIDE  = 20;    // GPUDrawIndexedIndirectParameters: 5 × u32
 
-// Spot-light shadow atlas: 2048×2048 depth texture, 512×512 tiles (4×4 = 16 max tiles).
+// Spot/point shadow atlas: 2048×2048 depth texture, 512×512 tiles (4×4 = 16 tiles).
+// Tiles 0..MAX_SPOT_SHADOWS-1 hold spot lights; the rest hold point-light cube
+// faces (6 consecutive tiles per point light).
 const SPOT_ATLAS_SIZE = 2048;
 const SPOT_TILE_SIZE = 512;
-const MAX_SPOT_SHADOWS = 4; // tiles reserved for shadow-casting spot lights
+const MAX_SPOT_SHADOWS = 4;  // tiles reserved for shadow-casting spot lights
+const MAX_POINT_SHADOWS = 2; // shadow-casting point lights (6 tiles each)
+const MAX_SHADOW_TILES = MAX_SPOT_SHADOWS + MAX_POINT_SHADOWS * 6; // 16 = full atlas
 const SHADOW_TILE_STRIDE = 80; // bytes: mat4x4 (64) + vec4 (16)
+
+// Cube-face look directions/ups for point-light shadows (+X,-X,+Y,-Y,+Z,-Z) —
+// the face order must match the dominant-axis selection in the PBR shader.
+const POINT_FACE_DIRS = [
+  new Vector3(1, 0, 0), new Vector3(-1, 0, 0),
+  new Vector3(0, 1, 0), new Vector3(0, -1, 0),
+  new Vector3(0, 0, 1), new Vector3(0, 0, -1),
+];
+const POINT_FACE_UPS = [UNIT_Y, UNIT_Y, UNIT_Z, UNIT_Z, UNIT_Y, UNIT_Y];
 
 // TAA: 8-sample Halton(2,3) sub-pixel jitter pattern.
 const TAA_SAMPLES = 8;
@@ -412,12 +425,12 @@ export class WebGPURenderer {
     }
     if (!this.spotShadowTilesBuffer) {
       this.spotShadowTilesBuffer = this.device.createBuffer({
-        size: MAX_SPOT_SHADOWS * SHADOW_TILE_STRIDE,
+        size: MAX_SHADOW_TILES * SHADOW_TILE_STRIDE,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
     }
     if (this.spotLightBuffers.length === 0) {
-      for (let i = 0; i < MAX_SPOT_SHADOWS; i++) {
+      for (let i = 0; i < MAX_SHADOW_TILES; i++) {
         const buf = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         const bg = this.device.createBindGroup({
           layout: this.pipelines.shadowLightLayout,
@@ -640,14 +653,20 @@ export class WebGPURenderer {
     // Find the first directional light flagged castShadow, tracking its packed index.
     let caster: DirectionalLight | null = null;
     let packedIndex = -1;
+    let spotCount = 0;
+    let pointCount = 0;
     let i = 0;
     for (const light of this.lights) {
       if (light instanceof AmbientLight) continue;
       if (light instanceof DirectionalLight && light.castShadow && !caster) {
         caster = light;
         packedIndex = i;
-      } else if (light instanceof SpotLight && light.castShadow && this.spotShadowCasters.length < MAX_SPOT_SHADOWS) {
-        this.prepareSpotShadow(light, i);
+      } else if (light instanceof SpotLight && light.castShadow && spotCount < MAX_SPOT_SHADOWS) {
+        this.prepareSpotShadow(light, i, spotCount);
+        spotCount++;
+      } else if (light instanceof PointLight && light.castShadow && pointCount < MAX_POINT_SHADOWS) {
+        this.preparePointShadow(light, i, pointCount);
+        pointCount++;
       }
       i++;
     }
@@ -709,9 +728,9 @@ export class WebGPURenderer {
       }
     }
 
-    // Upload spot-shadow tile data (viewProj + atlas region) to the storage buffer.
+    // Upload shadow tile data (viewProj + atlas region) to the storage buffer.
     if (this.spotShadowCasters.length > 0 && this.spotShadowTilesBuffer) {
-      const tileData = new Float32Array(MAX_SPOT_SHADOWS * (SHADOW_TILE_STRIDE / 4));
+      const tileData = new Float32Array(MAX_SHADOW_TILES * (SHADOW_TILE_STRIDE / 4));
       const tilesPerRow = SPOT_ATLAS_SIZE / SPOT_TILE_SIZE;
       for (const sc of this.spotShadowCasters) {
         const base = sc.tileIndex * (SHADOW_TILE_STRIDE / 4);
@@ -728,8 +747,7 @@ export class WebGPURenderer {
   }
 
   /** Compute the perspective viewProj for a shadow-casting SpotLight and record it. */
-  private prepareSpotShadow(light: SpotLight, packedIndex: number): void {
-    const tileIndex = this.spotShadowCasters.length;
+  private prepareSpotShadow(light: SpotLight, packedIndex: number, tileIndex: number): void {
     light.getWorldPosition(this._lightPos);
     light.target.updateWorldMatrix(true, false);
     this._lightDir.set(
@@ -751,6 +769,26 @@ export class WebGPURenderer {
     this.device.queue.writeBuffer(this.spotLightBuffers[tileIndex], 0, new Float32Array(vp.elements));
 
     this.spotShadowCasters.push({ tileIndex, packedIndex, viewProj: vp });
+  }
+
+  /**
+   * Record 6 cube-face shadow tiles (90° perspective each) for a shadow-casting
+   * PointLight. Faces occupy consecutive atlas tiles starting after the spot
+   * tiles; the PBR shader picks the face from the dominant axis of the
+   * light→fragment vector.
+   */
+  private preparePointShadow(light: PointLight, packedIndex: number, pointIndex: number): void {
+    light.getWorldPosition(this._lightPos);
+    const far = light.distance > 0 ? light.distance : 200;
+    this._lightProj.makePerspective(Math.PI / 2, 1, 0.05, far);
+    for (let face = 0; face < 6; face++) {
+      const tileIndex = MAX_SPOT_SHADOWS + pointIndex * 6 + face;
+      const target = this._lightPos.clone().add(POINT_FACE_DIRS[face]);
+      this._lightView.identity().lookAt(this._lightPos, target, POINT_FACE_UPS[face]).setPosition(this._lightPos).invert();
+      const vp = new Matrix4().multiplyMatrices(this._lightProj, this._lightView);
+      this.device.queue.writeBuffer(this.spotLightBuffers[tileIndex], 0, new Float32Array(vp.elements));
+      this.spotShadowCasters.push({ tileIndex, packedIndex, viewProj: vp });
+    }
   }
 
   /** Resolve `scene.environment` into the env bindings, rebuilding on change. */
@@ -833,7 +871,7 @@ export class WebGPURenderer {
       pass.setViewport(col * ts, row * ts, ts, ts, 0, 1);
       pass.setScissorRect(col * ts, row * ts, ts, ts);
       pass.setPipeline(this.pipelines.shadowPipeline);
-      pass.setBindGroup(0, this.spotLightBindGroups[ci]);
+      pass.setBindGroup(0, this.spotLightBindGroups[sc.tileIndex]);
       for (const mesh of this.opaque) {
         if (mesh instanceof InstancedMesh) continue;
         const geometry = this.geometries.get(mesh.geometry);
@@ -1060,8 +1098,11 @@ export class WebGPURenderer {
         ld[base + 9] = light.color.g * light.intensity;
         ld[base + 10] = light.color.b * light.intensity;
         ld[base + 11] = light.decay;
-        // spotParams unused for point lights
-        ld[base + 12] = 1; ld[base + 13] = 1; ld[base + 14] = -1; ld[base + 15] = 0;
+        ld[base + 12] = 1; ld[base + 13] = 1;
+        // spotParams.z: first of 6 consecutive cube-face shadow tiles (−1 = none).
+        const pc = this.spotShadowCasters.find(c => c.packedIndex === lightCount);
+        ld[base + 14] = pc ? pc.tileIndex : -1;
+        ld[base + 15] = 0;
       } else if (light instanceof SpotLight) {
         light.target.updateWorldMatrix(true, false);
         const tx = light.target.matrixWorld.elements[12];

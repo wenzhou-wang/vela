@@ -57,7 +57,12 @@ Make loaded models move and sit in believable lighting.
       each write a 512×512 tile in a 2048×2048 depth atlas via `setViewport`; per-tile
       `viewProj` matrices and UV-offset/scale region descriptors are uploaded in a 320-byte
       storage buffer (binding 10); the PBR fragment shader does 3×3 PCF against the correct
-      atlas tile per spot light. ⬜ Point-light cube shadow atlas (6-face per light).
+      atlas tile per spot light. ✅ **Point-light cube shadow atlas**: shadow-casting
+      point lights (up to 2, via `pointLight.castShadow`) render 6 cube faces (90°
+      perspective, far = `distance` or 200) into 6 consecutive tiles of the same
+      2048×2048 atlas (after the 4 spot tiles — 4+12 = all 16 tiles); the PBR shader
+      picks the face from the dominant axis of the light→fragment vector and reuses
+      the spot-tile 3×3 PCF path.
 - ✅ **Image-based lighting (IBL)** — an equirectangular `scene.environment` drives
       indirect light. ✅ Initial path: diffuse from smallest mip, specular from
       roughness-scaled LOD, Karis analytic env-BRDF fit. ✅ **`.hdr` (RGBE) loading**

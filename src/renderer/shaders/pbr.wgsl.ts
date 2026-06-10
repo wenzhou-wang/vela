@@ -32,7 +32,7 @@ struct Light {
   positionKind  : vec4<f32>,  // xyz = position, w = kind
   directionRange: vec4<f32>,  // xyz = direction, w = range
   colorDecay    : vec4<f32>,  // rgb = color, w = decay
-  spotParams    : vec4<f32>,  // x = cosInner, y = cosOuter, z = shadow tile (-1=none), w = unused
+  spotParams    : vec4<f32>,  // x = cosInner, y = cosOuter, z = shadow tile (spot: tile, point: first cube-face tile, -1 = none), w = unused
 };
 
 struct ShadowTile {
@@ -419,6 +419,23 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
       if (range > 0.0) {
         let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
         attenuation = attenuation * f * f;
+      }
+      // Cube-face shadow: spotParams.z holds the first of 6 consecutive atlas
+      // tiles (+X,-X,+Y,-Y,+Z,-Z); pick the face on the dominant axis of the
+      // light→fragment direction.
+      let tileIdx = i32(light.spotParams.z);
+      if (tileIdx >= 0) {
+        let d = -toLight;
+        let ad = abs(d);
+        var face = 0u;
+        if (ad.x >= ad.y && ad.x >= ad.z) {
+          face = select(1u, 0u, d.x > 0.0);
+        } else if (ad.y >= ad.z) {
+          face = select(3u, 2u, d.y > 0.0);
+        } else {
+          face = select(5u, 4u, d.z > 0.0);
+        }
+        radiance = radiance * sampleSpotShadow(u32(tileIdx) + face, in.worldPos, N, frame.shadowParams.z);
       }
     } else if (kind == LIGHT_SPOT) {
       let toLight = light.positionKind.xyz - in.worldPos;
