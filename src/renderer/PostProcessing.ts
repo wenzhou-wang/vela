@@ -1,5 +1,6 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
+import { TAA_SHADER } from './shaders/taa.wgsl';
 import { OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
 
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
@@ -37,6 +38,17 @@ export class PostProcessing {
   private ssaoAView!: GPUTextureView;
   private ssaoB: GPUTexture | null = null;
   private ssaoBView!: GPUTextureView;
+
+  // TAA resources: ping-pong history/output targets + params.
+  private taaModule: GPUShaderModule;
+  private taaBindLayout: GPUBindGroupLayout;
+  private taaParamsBuffer: GPUBuffer;
+  private taaA: GPUTexture | null = null;
+  private taaAView!: GPUTextureView;
+  private taaB: GPUTexture | null = null;
+  private taaBView!: GPUTextureView;
+  private taaFlip = false;
+  private taaHistoryValid = false;
 
   private width = 0;
   private height = 0;
@@ -114,6 +126,21 @@ export class PostProcessing {
     });
     // invProj(64) + proj(64) + params(16) = 144 bytes
     this.ssaoParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    // TAA resources
+    this.taaModule = device.createShaderModule({ code: TAA_SHADER, label: 'taa' });
+    this.taaBindLayout = device.createBindGroupLayout({
+      label: 'taa',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+    // prevViewProj(64) + invViewProj(64) + info(16) = 144 bytes
+    this.taaParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
 
   /** (Re)allocate size-dependent targets. `w`/`h` are device pixels. */
@@ -176,6 +203,15 @@ export class PostProcessing {
     this.ssaoAView = this.ssaoA.createView();
     this.ssaoB = attach(HDR_FORMAT, [w, h]);
     this.ssaoBView = this.ssaoB.createView();
+
+    // TAA history/output ping-pong (full-res HDR). Resizing invalidates history.
+    this.taaA?.destroy();
+    this.taaB?.destroy();
+    this.taaA = attach(HDR_FORMAT, [w, h]);
+    this.taaAView = this.taaA.createView();
+    this.taaB = attach(HDR_FORMAT, [w, h]);
+    this.taaBView = this.taaB.createView();
+    this.taaHistoryValid = false;
   }
 
   /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
@@ -341,8 +377,81 @@ export class PostProcessing {
     return p;
   }
 
-  /** Run the post chain from the HDR target into the swap-chain `output` view. */
-  run(encoder: GPUCommandEncoder, output: GPUTextureView, opts: PostOptions): void {
+  /**
+   * Temporal AA resolve: blend the (jittered) HDR scene with the reprojected
+   * history, writing the result into a ping-pong target whose view is returned —
+   * pass it to `run()` as the post-chain input.  Call AFTER the scene/OIT passes
+   * and BEFORE `run()`.  `depthView` must be a non-MSAA depth32float view.
+   * `prevViewProj`/`invViewProj` are 16-element column-major Float32Arrays;
+   * `jitterX`/`jitterY` are the NDC jitter baked into this frame's projection.
+   */
+  runTAA(
+    encoder: GPUCommandEncoder,
+    depthView: GPUTextureView,
+    prevViewProj: Float32Array,
+    invViewProj: Float32Array,
+    jitterX: number,
+    jitterY: number,
+    blend: number,
+  ): GPUTextureView {
+    const data = new Float32Array(36);
+    data.set(prevViewProj, 0);
+    data.set(invViewProj, 16);
+    data[32] = jitterX;
+    data[33] = jitterY;
+    data[34] = this.taaHistoryValid ? blend : 1.0; // first frame: take current as-is
+    this.device.queue.writeBuffer(this.taaParamsBuffer, 0, data);
+
+    const historyView = this.taaFlip ? this.taaBView : this.taaAView;
+    const outputView = this.taaFlip ? this.taaAView : this.taaBView;
+    const bg = this.device.createBindGroup({
+      layout: this.taaBindLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.taaParamsBuffer } },
+        { binding: 1, resource: this.hdrView },
+        { binding: 2, resource: historyView },
+        { binding: 3, resource: depthView },
+        { binding: 4, resource: this.sampler },
+      ],
+    });
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: outputView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+    });
+    pass.setPipeline(this.taaPipeline());
+    pass.setBindGroup(0, bg);
+    pass.draw(3);
+    pass.end();
+
+    this.taaFlip = !this.taaFlip;
+    this.taaHistoryValid = true;
+    return outputView;
+  }
+
+  /** Drop the TAA history (e.g. when TAA is toggled off) so re-enabling starts clean. */
+  invalidateTAAHistory(): void {
+    this.taaHistoryValid = false;
+  }
+
+  private taaPipeline(): GPURenderPipeline {
+    const key = 'taa';
+    let p = this.pipelines.get(key);
+    if (p) return p;
+    p = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.taaBindLayout] }),
+      vertex:   { module: this.taaModule, entryPoint: 'vs_main' },
+      fragment: { module: this.taaModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.pipelines.set(key, p);
+    return p;
+  }
+
+  /**
+   * Run the post chain from the HDR target (or `input`, e.g. the TAA output)
+   * into the swap-chain `output` view.
+   */
+  run(encoder: GPUCommandEncoder, output: GPUTextureView, opts: PostOptions, input: GPUTextureView = this.hdrView): void {
     // params0 = (1/width, 1/height, bloomThreshold, bloomIntensity)
     // params1 = (ssaoStrength, 0, 0, 0)
     this.device.queue.writeBuffer(this.paramsBuffer, 0, new Float32Array([
@@ -352,7 +461,7 @@ export class PostProcessing {
 
     let bloomView = this.dummyView;
     if (opts.bloom) {
-      this.pass(encoder, 'fs_threshold', HDR_FORMAT, this.hdrView, this.bloomAView);
+      this.pass(encoder, 'fs_threshold', HDR_FORMAT, input, this.bloomAView);
       this.pass(encoder, 'fs_blurH', HDR_FORMAT, this.bloomAView, this.bloomBView);
       this.pass(encoder, 'fs_blurV', HDR_FORMAT, this.bloomBView, this.bloomAView);
       bloomView = this.bloomAView;
@@ -361,10 +470,10 @@ export class PostProcessing {
     const ssaoView = opts.ssao ? this.ssaoAView : this.dummyWhiteView;
     const tonemapEntry = opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
     if (opts.fxaa) {
-      this.pass(encoder, tonemapEntry, LDR_FORMAT, this.hdrView, this.ldrView, bloomView, ssaoView);
+      this.pass(encoder, tonemapEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);
     } else {
-      this.pass(encoder, tonemapEntry, this.swapFormat, this.hdrView, output, bloomView, ssaoView);
+      this.pass(encoder, tonemapEntry, this.swapFormat, input, output, bloomView, ssaoView);
     }
   }
 

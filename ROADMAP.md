@@ -123,8 +123,16 @@ A post-processing stack and richer materials.
       projection, rotates the kernel per pixel via a hash-based noise vector, projects
       samples with a soft range-check, blurs the occlusion result with the existing
       Gaussian passes, then multiplies it into the HDR output before tonemap; intensity
-      tunable via `ssaoStrength`, `ssaoRadius`, `ssaoBias`. ⬜ Optional TAA with motion
-      vectors.
+      tunable via `ssaoStrength`, `ssaoRadius`, `ssaoBias`. ✅ **TAA**
+      (`renderer.taa`, requires `postProcessing = true` + `sampleCount = 1`): an
+      8-sample Halton(2,3) sub-pixel jitter is baked into the uploaded projection
+      matrix each frame; a resolve pass reconstructs world position from depth,
+      reprojects it through the previous frame's unjittered view-projection
+      (camera-motion reprojection — no per-object motion vectors), 3×3
+      neighborhood-clamps the bilinear history sample against the current frame to
+      limit ghosting, and blends history/current in HDR ping-pong targets before the
+      tonemap chain; blend weight tunable via `taaBlend`, history auto-invalidated on
+      resize or re-enable.
 - 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):

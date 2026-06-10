@@ -51,6 +51,22 @@ const SPOT_TILE_SIZE = 512;
 const MAX_SPOT_SHADOWS = 4; // tiles reserved for shadow-casting spot lights
 const SHADOW_TILE_STRIDE = 80; // bytes: mat4x4 (64) + vec4 (16)
 
+// TAA: 8-sample Halton(2,3) sub-pixel jitter pattern.
+const TAA_SAMPLES = 8;
+
+/** Radical-inverse Halton sequence value in [0, 1) for the given 1-based index. */
+function halton(index: number, base: number): number {
+  let f = 1;
+  let r = 0;
+  let i = index;
+  while (i > 0) {
+    f /= base;
+    r += f * (i % base);
+    i = Math.floor(i / base);
+  }
+  return r;
+}
+
 interface SkinnedResources {
   boneBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
@@ -157,6 +173,21 @@ export class WebGPURenderer {
   ssaoRadius = 0.5;
   ssaoBias = 0.025;
   ssaoStrength = 1.0;
+  /**
+   * Temporal anti-aliasing: a sub-pixel Halton jitter is baked into the
+   * projection matrix and a resolve pass blends the reprojected history
+   * (camera-motion only). Requires `postProcessing = true` and `sampleCount = 1`;
+   * otherwise silently disabled.
+   */
+  taa = false;
+  /** TAA blend factor: weight of the current frame (lower = smoother, more ghosting). */
+  taaBlend = 0.1;
+  private taaActive = false;     // was TAA running last frame (history validity)
+  private taaFrameIndex = 0;     // Halton sequence cursor
+  private _jitterX = 0;          // NDC jitter baked into this frame's projection
+  private _jitterY = 0;
+  private _prevViewProj = new Float32Array(16);
+  private _invViewProj = new Matrix4();
   /** Record the opaque draws into a render bundle to amortize encoding cost. */
   renderBundles = false;
   private opaqueBundle: GPURenderBundle | null = null;
@@ -453,6 +484,19 @@ export class WebGPURenderer {
     this._viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this._frustum.setFromProjectionMatrix(this._viewProjection);
 
+    // TAA: pick this frame's sub-pixel jitter (baked into the uploaded projection).
+    const useTAA = this.taa && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
+    if (useTAA) {
+      const i = (this.taaFrameIndex++ % TAA_SAMPLES) + 1;
+      this._jitterX = (halton(i, 2) * 2 - 1) / this.canvas.width;
+      this._jitterY = (halton(i, 3) * 2 - 1) / this.canvas.height;
+      if (!this.taaActive) this.post?.invalidateTAAHistory(); // just (re)enabled
+    } else {
+      this._jitterX = 0;
+      this._jitterY = 0;
+    }
+    this.taaActive = useTAA;
+
     this.collect(scene);
     this.prepareShadow();
     this.uploadFrame(scene, camera);
@@ -552,6 +596,21 @@ export class WebGPURenderer {
           this.ssaoBias,
         );
       }
+      // TAA resolve: blend reprojected history into a ping-pong target that
+      // replaces the HDR view as the post-chain input.
+      let postInput: GPUTextureView | undefined;
+      if (useTAA) {
+        this._invViewProj.copy(this._viewProjection).invert();
+        postInput = this.post.runTAA(
+          encoder,
+          this.depthSampleView!,
+          this._prevViewProj,
+          new Float32Array(this._invViewProj.elements),
+          this._jitterX,
+          this._jitterY,
+          this.taaBlend,
+        );
+      }
       this.post.run(encoder, swapView, {
         fxaa: this.fxaa,
         bloom: this.bloom,
@@ -559,8 +618,10 @@ export class WebGPURenderer {
         bloomIntensity: this.bloomIntensity,
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
-      });
+      }, postInput);
     }
+    // Save this frame's unjittered view-projection for next frame's reprojection.
+    this._prevViewProj.set(this._viewProjection.elements);
 
     this.device.queue.submit([encoder.finish()]);
   }
@@ -936,6 +997,20 @@ export class WebGPURenderer {
     const f = this.frameData;
     f.set(camera.matrixWorldInverse.elements, 0); // view  (0..15)
     f.set(camera.projectionMatrix.elements, 16); // proj  (16..31)
+
+    // TAA sub-pixel jitter: shift the projection so geometry moves by
+    // (_jitterX, _jitterY) in NDC.
+    if (this._jitterX !== 0 || this._jitterY !== 0) {
+      if (f[16 + 15] === 1) {
+        // Orthographic (w_clip = 1): jitter via the translation column.
+        f[16 + 12] += this._jitterX;
+        f[16 + 13] += this._jitterY;
+      } else {
+        // Perspective (w_clip = -z_view): NDC shift is -e[8] / -e[9].
+        f[16 + 8] -= this._jitterX;
+        f[16 + 9] -= this._jitterY;
+      }
+    }
 
     camera.getWorldPosition(this._camPos);
     f[32] = this._camPos.x;
