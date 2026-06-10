@@ -27,7 +27,7 @@ The minimum viable engine: scene graph, PBR forward renderer, glTF viewer.
 
 ---
 
-## v0.2 — Animation & scene fidelity ⬜
+## v0.2 — Animation & scene fidelity ✅
 
 Make loaded models move and sit in believable lighting.
 
@@ -77,7 +77,7 @@ Make loaded models move and sit in believable lighting.
 
 ---
 
-## v0.3 — Performance & scale ⬜
+## v0.3 — Performance & scale ✅
 
 Push toward "thousands of objects at 120 fps."
 
@@ -111,7 +111,7 @@ Push toward "thousands of objects at 120 fps."
 
 ---
 
-## v0.4 — Visual quality ⬜
+## v0.4 — Visual quality ✅
 
 A post-processing stack and richer materials.
 
@@ -119,7 +119,7 @@ A post-processing stack and richer materials.
       to an HDR (`rgba16float`) offscreen target (MSAA-resolved), then a chain of fullscreen
       triangle passes resolves to the swap chain. The material/line shaders skip their
       in-shader tonemap when a "linear output" frame flag is set.
-- 🚧 **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader),
+- ✅ **Post effects** — ✅ a tone-mapping pass (ACES moved out of the material shader),
       ✅ **FXAA** (`renderer.fxaa`), and ✅ **bloom** (`renderer.bloom`: bright-pass +
       half-res separable-Gaussian blur, added before tonemap). ✅ **SSAO**
       (`renderer.ssao`, requires `postProcessing = true` + `sampleCount = 1`): an
@@ -138,7 +138,7 @@ A post-processing stack and richer materials.
       limit ghosting, and blends history/current in HDR ping-pong targets before the
       tonemap chain; blend weight tunable via `taaBlend`, history auto-invalidated on
       resize or re-enable.
-- 🚧 **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
+- ✅ **Material extensions** — ✅ **vertex colors** (glTF `COLOR_0`, VEC3/VEC4): an
       always-present per-vertex color stream (white default) multiplies base color in every
       vertex variant, so no new pipeline is needed. ✅ **`KHR_materials_clearcoat`** (factors):
       a second GGX specular lobe over the base, attenuating it by the coat's Fresnel; the
@@ -166,7 +166,7 @@ A post-processing stack and richer materials.
 
 ---
 
-## v0.5 — Assets & ecosystem ⬜
+## v0.5 — Assets & ecosystem ✅
 
 Faster loads, broader inputs, and ergonomics.
 
