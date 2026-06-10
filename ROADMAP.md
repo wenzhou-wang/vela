@@ -211,8 +211,6 @@ Faster loads, broader inputs, and ergonomics.
 
 ## Backlog / under consideration ⬜
 
-- Optional **WebGL2 fallback** behind the same scene-graph API (only if demand warrants
-  the cost — it cuts against the project's modern-first thesis).
 - ✅ **Clustered forward+** lighting (`renderer.clusteredLighting`) — a compute pass
   divides the view frustum into a 16×9×24 grid (screen tiles × logarithmic depth
   slices), computes each cluster's view-space AABB by scaling unprojected near-plane
@@ -234,7 +232,6 @@ Faster loads, broader inputs, and ergonomics.
   graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
   `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved
   across load. Verified by a serialize→stringify→parse→deserialize round-trip.
-- **WebXR** session support.
 - A small **node-based material** graph compiling to WGSL.
 
 ---
