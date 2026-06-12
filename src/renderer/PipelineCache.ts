@@ -3,6 +3,7 @@ import type { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { DEPTH_FORMAT, SHADOW_DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT, VERTEX_BUFFER_LAYOUT, SKINNED_VERTEX_BUFFER_LAYOUT } from './constants';
 import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
 import { SHADOW_VERTEX_BUFFER_LAYOUT } from './shaders/shadow.wgsl';
+import { SKY_SHADER } from './shaders/sky.wgsl';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
@@ -23,6 +24,9 @@ export class PipelineCache {
   readonly shadowPipeline: GPURenderPipeline;
   /** Group-2 layout for ShaderMaterial: one auto-packed uniform buffer. */
   readonly customUniformLayout: GPUBindGroupLayout;
+  /** Skybox pass layout: frame uniform + raw equirect env texture/sampler. */
+  readonly skyLayout: GPUBindGroupLayout;
+  private skyModule: GPUShaderModule | null = null;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private customLayouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
@@ -140,6 +144,17 @@ export class PipelineCache {
         bindGroupLayouts: [this.frameLayout, this.modelLayout, this.materialLayout, this.morphLayout],
       }),
     };
+
+    // Skybox pass: frame uniform + raw env (frame binding 4 may hold the
+    // low-res IBL-prefiltered map instead, so the sky binds the raw texture).
+    this.skyLayout = device.createBindGroupLayout({
+      label: 'sky',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
 
     // ShaderMaterial pipeline layouts: same shape, custom group 2.
     this.customUniformLayout = device.createBindGroupLayout({
@@ -363,6 +378,29 @@ export class PipelineCache {
         multisample: { count: this.sampleCount },
       });
     }
+    this.cache.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * Skybox pipeline: fullscreen triangle at depth 1, depth-tested (less-equal)
+   * but not written, drawn inside the scene pass after the opaques.
+   */
+  getSky(format: GPUTextureFormat): GPURenderPipeline {
+    const key = `sky|${format}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    this.skyModule ??= this.device.createShaderModule({ code: SKY_SHADER, label: 'sky' });
+    pipeline = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.skyLayout] }),
+      vertex: { module: this.skyModule, entryPoint: 'vs_sky' },
+      fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
+      multisample: { count: this.sampleCount },
+    });
     this.cache.set(key, pipeline);
     return pipeline;
   }

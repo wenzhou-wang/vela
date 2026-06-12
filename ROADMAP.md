@@ -253,13 +253,16 @@ Faster loads, broader inputs, and ergonomics.
 What a game needs from its renderer beyond a lit model viewer. Everything stays
 declarative: an object literal to set up, no builder chains, no hidden update flags.
 
-- ⬜ **Skybox & procedural sky** — draw `scene.environment` as the background: a
-      fullscreen-triangle pass at `depth = 1` (depthCompare `less-equal`, no depth write)
-      that inverts the view ray and samples the equirectangular map with the existing
-      `sampleEnv`, run after opaques to get early-z rejection. `scene.backgroundBlur`
-      picks a prefiltered mip. Plus a procedural option (`scene.sky = { sunDirection,
-      turbidity, ... }`): a small analytic sky (Preetham/Hosek-style fit) evaluated in
-      the same pass and fed into the IBL prefilter so lighting matches the visuals.
+- 🚧 **Skybox & procedural sky** — ✅ **skybox** (`scene.skybox = true`): a
+      fullscreen-triangle pass at `depth = 1` (depthCompare `less-equal`, no depth
+      write) drawn after the opaques and before transparents; the vertex stage
+      reconstructs world rays from the projection diagonal + transposed view rotation
+      and the fragment samples the raw equirect environment (its own bind group —
+      frame binding 4 holds the low-res prefiltered map when IBL is active).
+      `scene.backgroundBlur` (0..1, via `clusterParams.w`) picks a mip. ⬜ Procedural
+      sky (`scene.sky = { sunDirection, turbidity, ... }`): a small analytic sky
+      (Preetham/Hosek-style fit) generated into an equirect texture and fed into the
+      IBL prefilter so lighting matches the visuals.
 - ⬜ **Fog** — `scene.fog = { color, near, far }` (linear) or `{ color, density }`
       (exponential), plus optional height falloff. Implemented in `SHADE_HELPERS` as a
       final `applyFog(color, worldPos)` mix using view distance, so StandardMaterial,

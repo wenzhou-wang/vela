@@ -11,8 +11,9 @@
  * (PBR_INSTANCED_SHADER), and morph-target (PBR_MORPH_SHADER).
  */
 
-// Shared: constants, uniform/storage layout, varyings.
-export const HEADER = /* wgsl */ `
+// Frame-level constants and struct definitions, shared by every pass that
+// reads the frame uniform (PBR, ShaderMaterial, sky, ...).
+export const FRAME_DEFS = /* wgsl */ `
 const PI = 3.141592653589793;
 const LIGHT_DIRECTIONAL = 0u;
 const LIGHT_POINT = 1u;
@@ -32,7 +33,7 @@ struct Frame {
   lightViewProj : mat4x4<f32>, // directional shadow caster's view-projection
   shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
   envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = flags (bit0=linearOut,bit1=IBL)
-  clusterParams : vec4<f32>,   // x = clustered enabled, y = near, z = far, w = unused
+  clusterParams : vec4<f32>,   // x = clustered enabled, y = near, z = far, w = skybox background blur
   clusterDims : vec4<f32>,     // xy = cluster tile size in pixels, z = elapsed seconds, w = unused
 };
 
@@ -47,7 +48,10 @@ struct ShadowTile {
   viewProj : mat4x4<f32>,
   region   : vec4<f32>,  // xy = UV offset in atlas, z = UV scale, w = texel step (1/atlasSize)
 };
+`;
 
+// Shared: frame defs + group-0 bindings + varyings (the mesh-shading header).
+export const HEADER = FRAME_DEFS + /* wgsl */ `
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var<storage, read> lights : array<Light>;
 @group(0) @binding(2) var shadowMap : texture_depth_2d;

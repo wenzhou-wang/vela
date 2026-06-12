@@ -16,6 +16,10 @@ export class Scene extends Object3D {
   environment: Texture | null = null;
   /** Multiplier on the environment's contribution. */
   environmentIntensity = 1;
+  /** Draw `environment` as the background (requires `environment` to be set). */
+  skybox = false;
+  /** Blur the skybox background: 0 = sharp, 1 = fully blurred (mip-based). */
+  backgroundBlur = 0;
 
   constructor() {
     super();

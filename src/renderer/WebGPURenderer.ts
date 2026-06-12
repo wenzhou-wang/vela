@@ -289,6 +289,9 @@ export class WebGPURenderer {
 
   private materialResources = new WeakMap<Material, MaterialResources>();
   private shaderMaterialResources = new WeakMap<ShaderMaterial, ShaderMaterialResources>();
+  // Skybox: frame uniform + raw env view (rebuilt when the environment changes).
+  private skyBindGroup: GPUBindGroup | null = null;
+  private skyBindGroupKey = '';
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
@@ -623,6 +626,26 @@ export class WebGPURenderer {
       pass.executeBundles([this.getOpaqueBundle()]);
     } else {
       for (const mesh of this.opaque) this.drawMesh(pass, mesh);
+    }
+
+    // Skybox: draws the environment where depth is still 1 (after opaques, so
+    // covered pixels are rejected; before transparents, so it sits behind them).
+    if (scene.skybox && this.envEnabled) {
+      if (!this.skyBindGroup || this.skyBindGroupKey !== this.envKey) {
+        this.skyBindGroup = this.device.createBindGroup({
+          layout: this.pipelines.skyLayout,
+          entries: [
+            { binding: 0, resource: { buffer: this.frameBuffer } },
+            { binding: 1, resource: this.envView },
+            { binding: 2, resource: this.envSampler },
+          ],
+        });
+        this.skyBindGroupKey = this.envKey;
+      }
+      pass.setPipeline(this.pipelines.getSky(this.sceneTargetFormat));
+      pass.setBindGroup(0, this.skyBindGroup);
+      pass.draw(3);
+      pass.setBindGroup(0, this.frameBindGroup); // restore for transparent draws
     }
 
     const useOIT = this.oit && this.postProcessing && this.transparent.length > 0;
@@ -1270,7 +1293,7 @@ export class WebGPURenderer {
     f[64] = this.clusteredLighting ? 1 : 0;
     f[65] = Math.max(cam.near ?? 0.1, 0.001);
     f[66] = cam.far ?? 2000;
-    f[67] = 0;
+    f[67] = scene.backgroundBlur; // skybox blur (0 = sharp, 1 = max mip)
     f[68] = this.canvas.width / CLUSTER_X;  // tile size in pixels
     f[69] = this.canvas.height / CLUSTER_Y;
     f[70] = (performance.now() - this.clockStart) / 1000; // elapsed seconds (shader elapsedTime())
