@@ -63,8 +63,9 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
-  if (frame.envParams.w >= 0.5) {
-    return vec4<f32>(in.color.rgb, in.color.a); // linear output for the post pipeline
+  // envParams.w is a bit field; bit 0 = linear output (post pipeline tonemaps later).
+  if ((u32(frame.envParams.w) & 1u) != 0u) {
+    return vec4<f32>(in.color.rgb, in.color.a);
   }
   return vec4<f32>(linearToSRGB(in.color.rgb), in.color.a);
 }

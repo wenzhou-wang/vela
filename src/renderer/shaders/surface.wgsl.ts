@@ -81,6 +81,7 @@ fn smShade(in : VSOut, frontFacing : bool) -> vec4<f32> {
 
   color = color + indirectLight(N, V, NoV, roughness, f0, diffuseColor, clamp(s.occlusion, 0.0, 1.0));
   color = color + s.emissive;
+  color = applyFog(color, in.worldPos);
   return vec4<f32>(color, clamp(s.alpha, 0.0, 1.0));
 }
 

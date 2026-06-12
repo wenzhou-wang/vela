@@ -35,6 +35,8 @@ struct Frame {
   envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = flags (bit0=linearOut,bit1=IBL)
   clusterParams : vec4<f32>,   // x = clustered enabled, y = near, z = far, w = skybox background blur
   clusterDims : vec4<f32>,     // xy = cluster tile size in pixels, z = elapsed seconds, w = unused
+  fogColor : vec4<f32>,        // rgb = fog color (linear), w = mode (0 none, 1 linear, 2 exp2)
+  fogParams : vec4<f32>,       // x = near (linear) or density (exp2), y = far, z = height falloff
 };
 
 struct Light {
@@ -464,6 +466,26 @@ fn evaluateLight(i : u32, worldPos : vec3<f32>, N : vec3<f32>) -> LightContrib {
   return out;
 }
 
+// Distance fog: mix toward fogColor by view distance (linear or exp2 mode),
+// optionally thinning with the fragment's altitude. No-op when mode is 0.
+fn applyFog(color : vec3<f32>, worldPos : vec3<f32>) -> vec3<f32> {
+  let mode = u32(frame.fogColor.w);
+  if (mode == 0u) { return color; }
+  let dist = distance(worldPos, frame.cameraPos.xyz);
+  var amount : f32;
+  if (mode == 1u) {
+    amount = clamp((dist - frame.fogParams.x) / max(frame.fogParams.y - frame.fogParams.x, 1e-4), 0.0, 1.0);
+  } else {
+    let dd = frame.fogParams.x * dist;
+    amount = 1.0 - exp(-dd * dd);
+  }
+  let falloff = frame.fogParams.z;
+  if (falloff > 0.0) {
+    amount = amount * exp(-falloff * max(worldPos.y, 0.0));
+  }
+  return mix(color, frame.fogColor.rgb, clamp(amount, 0.0, 1.0));
+}
+
 // Indirect light: image-based when an environment is bound, flat ambient otherwise.
 fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
                  f0 : vec3<f32>, diffuseColor : vec3<f32>, ao : f32) -> vec3<f32> {
@@ -623,6 +645,7 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     color = mix(color, transmitted, transmissionFactor);
   }
 
+  color = applyFog(color, in.worldPos);
   return vec4<f32>(color, alpha);
 }
 

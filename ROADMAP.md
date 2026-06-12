@@ -268,11 +268,14 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
       by value each frame (no flags); mutating `sunDirection` animates day/night and
       re-convolves IBL automatically. `scene.environment` takes precedence when both
       are set.
-- ⬜ **Fog** — `scene.fog = { color, near, far }` (linear) or `{ color, density }`
-      (exponential), plus optional height falloff. Implemented in `SHADE_HELPERS` as a
-      final `applyFog(color, worldPos)` mix using view distance, so StandardMaterial,
-      ShaderMaterial, and the line path all pick it up; frame uniform gains a fog vec4
-      pair (spare `clusterParams.w` + a new slot).
+- ✅ **Fog** — `scene.fog = { color, near, far }` (linear) or `{ color, density }`
+      (exponential-squared), plus optional `heightFalloff` (fog thins with altitude).
+      Implemented in `SHADE_HELPERS` as a final `applyFog(color, worldPos)` mix on
+      view distance, so StandardMaterial and ShaderMaterial both pick it up; the frame
+      uniform grew to 320 bytes with `fogColor` (rgb + mode) and `fogParams` vec4s.
+      Debug helpers (the line path) deliberately stay unfogged so grids/gizmos remain
+      readable. Also fixed the line shader's linear-out check to test bit 0 of the
+      `envParams.w` bit field instead of `>= 0.5` (it misfired whenever IBL was active).
 - ⬜ **GPU particles** — `ParticleSystem` with a declarative emitter config (rate,
       lifetime, velocity/spread, gravity, size/color-over-life as gradient stops, world
       or local space). A compute pass integrates a fixed-capacity particle pool in a

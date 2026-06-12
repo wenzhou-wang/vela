@@ -41,7 +41,7 @@ type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
 const MAX_LIGHTS = 256;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
-const FRAME_SIZE = 288; // bytes (view/proj/lightViewProj mat4s + cameraPos..clusterDims vec4s)
+const FRAME_SIZE = 320; // bytes (view/proj/lightViewProj mat4s + cameraPos..fogParams vec4s)
 const MODEL_SIZE = 128;
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
@@ -1386,6 +1386,21 @@ export class WebGPURenderer {
     f[69] = this.canvas.height / CLUSTER_Y;
     f[70] = (performance.now() - this.clockStart) / 1000; // elapsed seconds (shader elapsedTime())
     f[71] = 0;
+
+    // fogColor (72..75) + fogParams (76..79)
+    const fog = scene.fog;
+    if (fog) {
+      const exp2 = fog.density !== undefined;
+      f[72] = fog.color.r;
+      f[73] = fog.color.g;
+      f[74] = fog.color.b;
+      f[75] = exp2 ? 2 : 1; // mode
+      f[76] = exp2 ? fog.density! : (fog.near ?? 1);
+      f[77] = exp2 ? 0 : (fog.far ?? 100);
+      f[78] = fog.heightFalloff ?? 0;
+    } else {
+      f[75] = 0; // mode = none
+    }
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {

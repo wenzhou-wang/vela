@@ -3,6 +3,23 @@ import { Color } from '../math/Color';
 import type { Texture } from '../textures/Texture';
 import type { Vector3 } from '../math/Vector3';
 
+/**
+ * Distance fog. Provide `density` for exponential-squared fog, or `near`/`far`
+ * for linear fog (density takes precedence when both are set).
+ */
+export interface FogOptions {
+  /** Fog color (linear); usually matched to the sky/background. */
+  color: Color;
+  /** Linear fog: distance where fog starts. Default 1. */
+  near?: number;
+  /** Linear fog: distance of full fog. Default 100. */
+  far?: number;
+  /** Exponential-squared fog density (e.g. 0.02). */
+  density?: number;
+  /** Fog thins with altitude when > 0 (e.g. 0.1); 0 = uniform. */
+  heightFalloff?: number;
+}
+
 /** Procedural daylight sky (Preetham analytic model). */
 export interface SkyOptions {
   /** Direction TOWARD the sun (world space; will be normalized). */
@@ -34,6 +51,11 @@ export class Scene extends Object3D {
   sky: SkyOptions | null = null;
   /** Draw the environment (or procedural sky) as the background. */
   skybox = false;
+  /**
+   * Distance fog applied to all lit materials (PBR and ShaderMaterial).
+   * Debug helpers (lines) stay unfogged so they remain readable.
+   */
+  fog: FogOptions | null = null;
   /** Blur the skybox background: 0 = sharp, 1 = fully blurred (mip-based). */
   backgroundBlur = 0;
 
