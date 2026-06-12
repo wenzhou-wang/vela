@@ -11,6 +11,7 @@ export { Raycaster } from './core/Raycaster';
 export type { Intersection } from './core/Raycaster';
 export { BVH } from './core/BVH';
 export { Scene } from './core/Scene';
+export type { SkyOptions } from './core/Scene';
 export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
 export { OrthographicCamera } from './core/OrthographicCamera';

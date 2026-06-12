@@ -32,6 +32,7 @@ import { PostProcessing } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
+import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
@@ -78,6 +79,10 @@ const POINT_FACE_UPS = [UNIT_Y, UNIT_Y, UNIT_Z, UNIT_Z, UNIT_Y, UNIT_Y];
 
 // TAA: 8-sample Halton(2,3) sub-pixel jitter pattern.
 const TAA_SAMPLES = 8;
+
+// Procedural sky: equirect texture size (workgroup 8x8 must divide both).
+const SKY_TEX_WIDTH = 256;
+const SKY_TEX_HEIGHT = 128;
 
 /** Radical-inverse Halton sequence value in [0, 1) for the given 1-based index. */
 function halton(index: number, base: number): number {
@@ -292,6 +297,12 @@ export class WebGPURenderer {
   // Skybox: frame uniform + raw env view (rebuilt when the environment changes).
   private skyBindGroup: GPUBindGroup | null = null;
   private skyBindGroupKey = '';
+  // Procedural sky generation (lazy; reused across regenerations).
+  private skyGenPipeline: GPUComputePipeline | null = null;
+  private skyGenParamsBuffer: GPUBuffer | null = null;
+  private skyGenBindGroup: GPUBindGroup | null = null;
+  private skyGenView: GPUTextureView | null = null;
+  private skyGenSampler: GPUSampler | null = null;
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
@@ -889,6 +900,8 @@ export class WebGPURenderer {
       this.envIntensity = scene.environmentIntensity;
       // When IBL is active the specular map has IBL_MIP_LEVELS mip levels.
       this.envMaxMip = this.iblActive ? IBL_MIP_LEVELS - 1 : Math.max(0, entry.texture.mipLevelCount - 1);
+    } else if (scene.sky) {
+      this.prepareProceduralSky(scene, encoder);
     } else {
       if (this.envKey !== '') {
         this.envView = this.textures.defaultWhiteView;
@@ -899,6 +912,81 @@ export class WebGPURenderer {
       }
       this.envEnabled = false;
     }
+  }
+
+  /**
+   * Generate the Preetham procedural sky into an equirect rgba16float texture
+   * (when its parameters changed) and route it through the standard env path:
+   * IBL prefilter + skybox. Param changes are detected by value, so mutating
+   * `scene.sky` regenerates automatically — no flags.
+   */
+  private prepareProceduralSky(scene: Scene, encoder: GPUCommandEncoder): void {
+    const sky = scene.sky!;
+    const sd = sky.sunDirection;
+    const turbidity = sky.turbidity ?? 4;
+    const key = `sky:${sd.x.toFixed(4)},${sd.y.toFixed(4)},${sd.z.toFixed(4)},${turbidity}`;
+    if (key !== this.envKey) {
+      this.ensureSkyGenResources();
+      const len = Math.hypot(sd.x, sd.y, sd.z) || 1;
+      this.device.queue.writeBuffer(this.skyGenParamsBuffer!, 0,
+        new Float32Array([sd.x / len, sd.y / len, sd.z / len, turbidity]));
+      const pass = encoder.beginComputePass({ label: 'sky-gen' });
+      pass.setPipeline(this.skyGenPipeline!);
+      pass.setBindGroup(0, this.skyGenBindGroup!);
+      pass.dispatchWorkgroups(SKY_TEX_WIDTH / 8, SKY_TEX_HEIGHT / 8);
+      pass.end();
+
+      this.envView = this.skyGenView!;
+      this.envSampler = this.skyGenSampler!;
+      this.envKey = key;
+      // Re-convolve IBL from the fresh sky (encoded after sky-gen → ordered).
+      this.ibl.convolve(encoder, this.skyGenView!);
+      this.iblEnvKey = key;
+      this.iblActive = true;
+      this.buildFrameBindGroup();
+    }
+    this.envEnabled = true;
+    this.envIntensity = scene.environmentIntensity;
+    this.envMaxMip = IBL_MIP_LEVELS - 1;
+  }
+
+  private ensureSkyGenResources(): void {
+    if (this.skyGenPipeline) return;
+    const module = this.device.createShaderModule({ code: SKYGEN_SHADER, label: 'sky-gen' });
+    const layout = this.device.createBindGroupLayout({
+      label: 'sky-gen',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: 'rgba16float', viewDimension: '2d', access: 'write-only' } },
+      ],
+    });
+    this.skyGenPipeline = this.device.createComputePipeline({
+      label: 'sky-gen',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+      compute: { module, entryPoint: 'cs_sky' },
+    });
+    this.skyGenParamsBuffer = this.device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const tex = this.device.createTexture({
+      label: 'procedural-sky',
+      size: [SKY_TEX_WIDTH, SKY_TEX_HEIGHT],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.skyGenView = tex.createView();
+    this.skyGenSampler = this.device.createSampler({
+      magFilter: 'linear', minFilter: 'linear',
+      addressModeU: 'repeat', addressModeV: 'clamp-to-edge',
+    });
+    this.skyGenBindGroup = this.device.createBindGroup({
+      layout,
+      entries: [
+        { binding: 0, resource: { buffer: this.skyGenParamsBuffer } },
+        { binding: 1, resource: this.skyGenView },
+      ],
+    });
   }
 
   private renderShadowPass(encoder: GPUCommandEncoder): void {

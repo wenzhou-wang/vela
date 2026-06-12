@@ -253,16 +253,21 @@ Faster loads, broader inputs, and ergonomics.
 What a game needs from its renderer beyond a lit model viewer. Everything stays
 declarative: an object literal to set up, no builder chains, no hidden update flags.
 
-- 🚧 **Skybox & procedural sky** — ✅ **skybox** (`scene.skybox = true`): a
+- ✅ **Skybox & procedural sky** — ✅ **skybox** (`scene.skybox = true`): a
       fullscreen-triangle pass at `depth = 1` (depthCompare `less-equal`, no depth
       write) drawn after the opaques and before transparents; the vertex stage
       reconstructs world rays from the projection diagonal + transposed view rotation
       and the fragment samples the raw equirect environment (its own bind group —
       frame binding 4 holds the low-res prefiltered map when IBL is active).
-      `scene.backgroundBlur` (0..1, via `clusterParams.w`) picks a mip. ⬜ Procedural
-      sky (`scene.sky = { sunDirection, turbidity, ... }`): a small analytic sky
-      (Preetham/Hosek-style fit) generated into an equirect texture and fed into the
-      IBL prefilter so lighting matches the visuals.
+      `scene.backgroundBlur` (0..1, via `clusterParams.w`) picks a mip. ✅ **Procedural
+      sky** (`scene.sky = { sunDirection, turbidity? }`): a compute pass evaluates the
+      Preetham analytic daylight model (Perez distributions for Y/x/y, zenith fits,
+      xyY→linear sRGB, soft sun disc, ground fade) into a 256×128 equirect
+      `rgba16float` storage texture, which routes through the standard env path — IBL
+      prefilter + skybox — so lighting matches the visuals. Param changes are detected
+      by value each frame (no flags); mutating `sunDirection` animates day/night and
+      re-convolves IBL automatically. `scene.environment` takes precedence when both
+      are set.
 - ⬜ **Fog** — `scene.fog = { color, near, far }` (linear) or `{ color, density }`
       (exponential), plus optional height falloff. Implemented in `SHADE_HELPERS` as a
       final `applyFog(color, worldPos)` mix using view distance, so StandardMaterial,
