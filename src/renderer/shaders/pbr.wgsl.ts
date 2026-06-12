@@ -12,7 +12,7 @@
  */
 
 // Shared: constants, uniform/storage layout, varyings.
-const HEADER = /* wgsl */ `
+export const HEADER = /* wgsl */ `
 const PI = 3.141592653589793;
 const LIGHT_DIRECTIONAL = 0u;
 const LIGHT_POINT = 1u;
@@ -33,7 +33,7 @@ struct Frame {
   shadowParams : vec4<f32>,    // x = enabled, y = map size, z = normal bias, w = caster light index
   envParams : vec4<f32>,       // x = enabled, y = intensity, z = max mip level, w = flags (bit0=linearOut,bit1=IBL)
   clusterParams : vec4<f32>,   // x = clustered enabled, y = near, z = far, w = unused
-  clusterDims : vec4<f32>,     // xy = tile size in pixels, zw = unused
+  clusterDims : vec4<f32>,     // xy = cluster tile size in pixels, z = elapsed seconds, w = unused
 };
 
 struct Light {
@@ -46,18 +46,6 @@ struct Light {
 struct ShadowTile {
   viewProj : mat4x4<f32>,
   region   : vec4<f32>,  // xy = UV offset in atlas, z = UV scale, w = texel step (1/atlasSize)
-};
-
-struct MaterialU {
-  baseColor : vec4<f32>,
-  emissive : vec4<f32>,
-  params : vec4<f32>,
-  misc : vec4<f32>,
-  specular : vec4<f32>,  // rgb = specular color factor, w = specular factor
-  extra : vec4<f32>,     // x = ior
-  sheen : vec4<f32>,     // rgb = sheen color factor, w = sheen roughness
-  transmission : vec4<f32>, // x = factor, y = thickness, z = attenuation distance
-  attenuation : vec4<f32>,  // rgb = attenuation color
 };
 
 @group(0) @binding(0) var<uniform> frame : Frame;
@@ -75,22 +63,6 @@ struct MaterialU {
 @group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
 @group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for SSR
 @group(0) @binding(14) var<storage, read> clusterLights : array<u32>; // per-cluster light counts + indices
-
-@group(2) @binding(0) var<uniform> material : MaterialU;
-@group(2) @binding(1) var baseColorTex : texture_2d<f32>;
-@group(2) @binding(2) var baseColorSmp : sampler;
-@group(2) @binding(3) var normalTex : texture_2d<f32>;
-@group(2) @binding(4) var normalSmp : sampler;
-@group(2) @binding(5) var mrTex : texture_2d<f32>;
-@group(2) @binding(6) var mrSmp : sampler;
-@group(2) @binding(7) var emissiveTex : texture_2d<f32>;
-@group(2) @binding(8) var emissiveSmp : sampler;
-@group(2) @binding(9) var occlusionTex : texture_2d<f32>;
-@group(2) @binding(10) var occlusionSmp : sampler;
-@group(2) @binding(11) var clearcoatTex : texture_2d<f32>;
-@group(2) @binding(12) var clearcoatSmp : sampler;
-@group(2) @binding(13) var clearcoatRoughnessTex : texture_2d<f32>;
-@group(2) @binding(14) var clearcoatRoughnessSmp : sampler;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -111,8 +83,40 @@ struct VSIn {
 };
 `;
 
+// StandardMaterial bind group (group 2): factors uniform + texture/sampler pairs.
+// Kept separate from HEADER so ShaderMaterial modules can bind their own group 2.
+export const MATERIAL_BINDINGS = /* wgsl */ `
+struct MaterialU {
+  baseColor : vec4<f32>,
+  emissive : vec4<f32>,
+  params : vec4<f32>,
+  misc : vec4<f32>,
+  specular : vec4<f32>,  // rgb = specular color factor, w = specular factor
+  extra : vec4<f32>,     // x = ior
+  sheen : vec4<f32>,     // rgb = sheen color factor, w = sheen roughness
+  transmission : vec4<f32>, // x = factor, y = thickness, z = attenuation distance
+  attenuation : vec4<f32>,  // rgb = attenuation color
+};
+
+@group(2) @binding(0) var<uniform> material : MaterialU;
+@group(2) @binding(1) var baseColorTex : texture_2d<f32>;
+@group(2) @binding(2) var baseColorSmp : sampler;
+@group(2) @binding(3) var normalTex : texture_2d<f32>;
+@group(2) @binding(4) var normalSmp : sampler;
+@group(2) @binding(5) var mrTex : texture_2d<f32>;
+@group(2) @binding(6) var mrSmp : sampler;
+@group(2) @binding(7) var emissiveTex : texture_2d<f32>;
+@group(2) @binding(8) var emissiveSmp : sampler;
+@group(2) @binding(9) var occlusionTex : texture_2d<f32>;
+@group(2) @binding(10) var occlusionSmp : sampler;
+@group(2) @binding(11) var clearcoatTex : texture_2d<f32>;
+@group(2) @binding(12) var clearcoatSmp : sampler;
+@group(2) @binding(13) var clearcoatRoughnessTex : texture_2d<f32>;
+@group(2) @binding(14) var clearcoatRoughnessSmp : sampler;
+`;
+
 // Static vertex stage: transform by the per-object model matrix.
-const VERTEX_STATIC = /* wgsl */ `
+export const VERTEX_STATIC = /* wgsl */ `
 struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
@@ -137,7 +141,7 @@ fn vs_main(in : VSIn) -> VSOut {
 
 // Instanced vertex stage: per-instance model matrix from a storage array,
 // indexed by instance_index. Normals assume uniform per-instance scale.
-const VERTEX_INSTANCED = /* wgsl */ `
+export const VERTEX_INSTANCED = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> instances : array<mat4x4<f32>>;
 
 @vertex
@@ -159,7 +163,7 @@ fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
 
 // Skinned vertex stage: blend joint matrices, ignoring the mesh node transform
 // (per the glTF skinning spec — joint matrices are already world-space).
-const VERTEX_SKINNED = /* wgsl */ `
+export const VERTEX_SKINNED = /* wgsl */ `
 @group(3) @binding(0) var<storage, read> bones : array<mat4x4<f32>>;
 
 struct VSInSkinned {
@@ -197,7 +201,7 @@ fn vs_main(in : VSInSkinned) -> VSOut {
 // Morph vertex stage: accumulate weighted POSITION/NORMAL deltas (stored as flat
 // f32 arrays indexed [target * vertexCount + vertexId]) onto the base attributes,
 // then transform by the per-object model matrix like the static path.
-const VERTEX_MORPH = /* wgsl */ `
+export const VERTEX_MORPH = /* wgsl */ `
 struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
@@ -243,8 +247,10 @@ fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
 }
 `;
 
-// Shared fragment stage: PBR shading, tonemap, sRGB encode.
-const FRAGMENT = /* wgsl */ `
+// Shared shading helpers: BRDF lobes, tonemap/sRGB encode, env + shadow
+// sampling, clustered light lookup, and per-light evaluation. Exported so
+// generated ShaderMaterial fragments reuse the engine lighting verbatim.
+export const SHADE_HELPERS = /* wgsl */ `
 fn distributionGGX(NoH : f32, roughness : f32) -> f32 {
   let a = roughness * roughness;
   let a2 = a * a;
@@ -356,6 +362,132 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   return mix(lo, hi, cutoff);
 }
 
+// Clustered forward+ light list for a fragment. Returns x = light count and
+// y = the cluster's base offset into clusterLights (light indices start at
+// y + 1); y == 0xffffffffu means clustering is off and j indexes lights directly.
+fn lightList(clipXY : vec2<f32>, worldPos : vec3<f32>) -> vec2<u32> {
+  if (frame.clusterParams.x < 0.5) {
+    return vec2<u32>(u32(frame.cameraPos.w), 0xffffffffu);
+  }
+  let tx = min(u32(clipXY.x / frame.clusterDims.x), CLUSTER_X - 1u);
+  let ty = min(u32(clipXY.y / frame.clusterDims.y), CLUSTER_Y - 1u);
+  let near = frame.clusterParams.y;
+  let far = frame.clusterParams.z;
+  let viewZ = max(-(frame.view * vec4<f32>(worldPos, 1.0)).z, near);
+  let slice = min(u32(log(viewZ / near) / log(far / near) * f32(CLUSTER_Z)), CLUSTER_Z - 1u);
+  let base = (tx + ty * CLUSTER_X + slice * CLUSTER_X * CLUSTER_Y) * (MAX_PER_CLUSTER + 1u);
+  return vec2<u32>(min(clusterLights[base], MAX_PER_CLUSTER), base);
+}
+
+fn lightIndex(list : vec2<u32>, j : u32) -> u32 {
+  if (list.y == 0xffffffffu) { return j; }
+  return clusterLights[list.y + 1u + j];
+}
+
+// Direction + shadowed/attenuated radiance of packed light i at a surface point.
+struct LightContrib {
+  L : vec3<f32>,
+  radiance : vec3<f32>,
+};
+
+fn evaluateLight(i : u32, worldPos : vec3<f32>, N : vec3<f32>) -> LightContrib {
+  let light = lights[i];
+  let kind = u32(light.positionKind.w);
+
+  var out : LightContrib;
+  var attenuation = 1.0;
+  var radiance = light.colorDecay.xyz;
+
+  if (kind == LIGHT_POINT) {
+    let toLight = light.positionKind.xyz - worldPos;
+    let dist = length(toLight);
+    out.L = toLight / max(dist, 1e-4);
+    let decay = light.colorDecay.w;
+    attenuation = 1.0 / max(pow(dist, decay), 1e-4);
+    let range = light.directionRange.w;
+    if (range > 0.0) {
+      let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+      attenuation = attenuation * f * f;
+    }
+    // Cube-face shadow: spotParams.z holds the first of 6 consecutive atlas
+    // tiles (+X,-X,+Y,-Y,+Z,-Z); pick the face on the dominant axis of the
+    // light→fragment direction.
+    let tileIdx = i32(light.spotParams.z);
+    if (tileIdx >= 0) {
+      let d = -toLight;
+      let ad = abs(d);
+      var face = 0u;
+      if (ad.x >= ad.y && ad.x >= ad.z) {
+        face = select(1u, 0u, d.x > 0.0);
+      } else if (ad.y >= ad.z) {
+        face = select(3u, 2u, d.y > 0.0);
+      } else {
+        face = select(5u, 4u, d.z > 0.0);
+      }
+      radiance = radiance * sampleSpotShadow(u32(tileIdx) + face, worldPos, N, frame.shadowParams.z);
+    }
+  } else if (kind == LIGHT_SPOT) {
+    let toLight = light.positionKind.xyz - worldPos;
+    let dist = length(toLight);
+    out.L = toLight / max(dist, 1e-4);
+    let decay = light.colorDecay.w;
+    attenuation = 1.0 / max(pow(dist, decay), 1e-4);
+    let range = light.directionRange.w;
+    if (range > 0.0) {
+      let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+      attenuation = attenuation * f * f;
+    }
+    // Angular falloff between inner and outer cone.
+    let cosTheta = dot(-out.L, normalize(light.directionRange.xyz));
+    let angleFactor = clamp(
+      (cosTheta - light.spotParams.y) / max(light.spotParams.x - light.spotParams.y, 1e-4),
+      0.0, 1.0);
+    attenuation = attenuation * angleFactor * angleFactor;
+    // Spot shadow atlas.
+    let tileIdx = i32(light.spotParams.z);
+    if (tileIdx >= 0) {
+      radiance = radiance * sampleSpotShadow(u32(tileIdx), worldPos, N, frame.shadowParams.z);
+    }
+  } else {
+    out.L = -light.directionRange.xyz;
+    // The designated directional caster is attenuated by the shadow map.
+    if (i == u32(frame.shadowParams.w)) {
+      radiance = radiance * sampleShadow(worldPos, N);
+    }
+  }
+
+  out.radiance = radiance * attenuation;
+  return out;
+}
+
+// Indirect light: image-based when an environment is bound, flat ambient otherwise.
+fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
+                 f0 : vec3<f32>, diffuseColor : vec3<f32>, ao : f32) -> vec3<f32> {
+  if (frame.envParams.x > 0.5) {
+    let maxMip = frame.envParams.z;
+    let R = reflect(-V, N);
+    let prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
+    let useIBL = (u32(frame.envParams.w) & 2u) != 0u;
+    var diffuseIBL : vec3<f32>;
+    var ab          : vec2<f32>;
+    if (useIBL) {
+      // True GGX IBL: cosine-convolved irradiance map + split-sum BRDF LUT.
+      diffuseIBL = textureSampleLevel(irrMap, irrSampler, dirToEquirectUv(N), 0.0).rgb;
+      ab = textureSampleLevel(brdfLUT, brdfSampler, clamp(vec2<f32>(NoV, roughness), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rg;
+    } else {
+      // Fallback: mip-chain approximation + Karis analytic BRDF.
+      diffuseIBL = sampleEnv(N, maxMip);
+      ab = envBRDFApprox(roughness, NoV);
+    }
+    let specularIBL = prefiltered * (f0 * ab.x + ab.y);
+    return (diffuseIBL * diffuseColor + specularIBL) * ao * frame.envParams.y;
+  }
+  return frame.ambient.rgb * diffuseColor * ao;
+}
+`;
+
+// PBR fragment stage: decode StandardMaterial inputs, shade, tonemap.
+const FRAGMENT = SHADE_HELPERS + /* wgsl */ `
 // Shared shading: returns linear HDR color (before exposure/tonemap) + alpha.
 fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   let flags = u32(material.misc.y);
@@ -409,91 +541,12 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
 
   var color = vec3<f32>(0.0);
 
-  // Clustered forward+: when enabled, shade only the lights binned into this
-  // fragment's cluster (screen tile + logarithmic depth slice).
-  let clustered = frame.clusterParams.x > 0.5;
-  var numLights = u32(frame.cameraPos.w);
-  var clusterBase = 0u;
-  if (clustered) {
-    let tx = min(u32(in.clipPosition.x / frame.clusterDims.x), CLUSTER_X - 1u);
-    let ty = min(u32(in.clipPosition.y / frame.clusterDims.y), CLUSTER_Y - 1u);
-    let near = frame.clusterParams.y;
-    let far = frame.clusterParams.z;
-    let viewZ = max(-(frame.view * vec4<f32>(in.worldPos, 1.0)).z, near);
-    let slice = min(u32(log(viewZ / near) / log(far / near) * f32(CLUSTER_Z)), CLUSTER_Z - 1u);
-    clusterBase = (tx + ty * CLUSTER_X + slice * CLUSTER_X * CLUSTER_Y) * (MAX_PER_CLUSTER + 1u);
-    numLights = min(clusterLights[clusterBase], MAX_PER_CLUSTER);
-  }
-
-  for (var j = 0u; j < numLights; j = j + 1u) {
-    var i = j;
-    if (clustered) {
-      i = clusterLights[clusterBase + 1u + j];
-    }
-    let light = lights[i];
-    let kind = u32(light.positionKind.w);
-
-    var L : vec3<f32>;
-    var attenuation = 1.0;
-    var radiance = light.colorDecay.xyz;
-
-    if (kind == LIGHT_POINT) {
-      let toLight = light.positionKind.xyz - in.worldPos;
-      let dist = length(toLight);
-      L = toLight / max(dist, 1e-4);
-      let decay = light.colorDecay.w;
-      attenuation = 1.0 / max(pow(dist, decay), 1e-4);
-      let range = light.directionRange.w;
-      if (range > 0.0) {
-        let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-        attenuation = attenuation * f * f;
-      }
-      // Cube-face shadow: spotParams.z holds the first of 6 consecutive atlas
-      // tiles (+X,-X,+Y,-Y,+Z,-Z); pick the face on the dominant axis of the
-      // light→fragment direction.
-      let tileIdx = i32(light.spotParams.z);
-      if (tileIdx >= 0) {
-        let d = -toLight;
-        let ad = abs(d);
-        var face = 0u;
-        if (ad.x >= ad.y && ad.x >= ad.z) {
-          face = select(1u, 0u, d.x > 0.0);
-        } else if (ad.y >= ad.z) {
-          face = select(3u, 2u, d.y > 0.0);
-        } else {
-          face = select(5u, 4u, d.z > 0.0);
-        }
-        radiance = radiance * sampleSpotShadow(u32(tileIdx) + face, in.worldPos, N, frame.shadowParams.z);
-      }
-    } else if (kind == LIGHT_SPOT) {
-      let toLight = light.positionKind.xyz - in.worldPos;
-      let dist = length(toLight);
-      L = toLight / max(dist, 1e-4);
-      let decay = light.colorDecay.w;
-      attenuation = 1.0 / max(pow(dist, decay), 1e-4);
-      let range = light.directionRange.w;
-      if (range > 0.0) {
-        let f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-        attenuation = attenuation * f * f;
-      }
-      // Angular falloff between inner and outer cone.
-      let cosTheta = dot(-L, normalize(light.directionRange.xyz));
-      let angleFactor = clamp(
-        (cosTheta - light.spotParams.y) / max(light.spotParams.x - light.spotParams.y, 1e-4),
-        0.0, 1.0);
-      attenuation = attenuation * angleFactor * angleFactor;
-      // Spot shadow atlas.
-      let tileIdx = i32(light.spotParams.z);
-      if (tileIdx >= 0) {
-        radiance = radiance * sampleSpotShadow(u32(tileIdx), in.worldPos, N, frame.shadowParams.z);
-      }
-    } else {
-      L = -light.directionRange.xyz;
-      // The designated directional caster is attenuated by the shadow map.
-      if (i == u32(frame.shadowParams.w)) {
-        radiance = radiance * sampleShadow(in.worldPos, N);
-      }
-    }
+  // Direct light: clustered forward+ when enabled, all lights otherwise.
+  let list = lightList(in.clipPosition.xy, in.worldPos);
+  for (var j = 0u; j < list.x; j = j + 1u) {
+    let i = lightIndex(list, j);
+    let lc = evaluateLight(i, in.worldPos, N);
+    let L = lc.L;
 
     let H = normalize(V + L);
     let NoL = max(dot(N, L), 0.0);
@@ -525,35 +578,13 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
       lit = lit * (1.0 - Fc) + vec3<f32>(Dc * Vc * Fc);
     }
 
-    radiance = radiance * attenuation * NoL;
-    color = color + lit * radiance;
+    color = color + lit * lc.radiance * NoL;
   }
 
   let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;
   let ao = mix(1.0, aoSample, material.params.w);
 
-  // Indirect light: image-based when an environment is bound, else flat ambient.
-  if (frame.envParams.x > 0.5) {
-    let maxMip = frame.envParams.z;
-    let R = reflect(-V, N);
-    let prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
-    let useIBL = (u32(frame.envParams.w) & 2u) != 0u;
-    var diffuseIBL : vec3<f32>;
-    var ab          : vec2<f32>;
-    if (useIBL) {
-      // True GGX IBL: cosine-convolved irradiance map + split-sum BRDF LUT.
-      diffuseIBL = textureSampleLevel(irrMap, irrSampler, dirToEquirectUv(N), 0.0).rgb;
-      ab = textureSample(brdfLUT, brdfSampler, clamp(vec2<f32>(NoV, roughness), vec2<f32>(0.0), vec2<f32>(1.0))).rg;
-    } else {
-      // Fallback: mip-chain approximation + Karis analytic BRDF.
-      diffuseIBL = sampleEnv(N, maxMip);
-      ab = envBRDFApprox(roughness, NoV);
-    }
-    let specularIBL = prefiltered * (f0 * ab.x + ab.y);
-    color = color + (diffuseIBL * diffuseColor + specularIBL) * ao * frame.envParams.y;
-  } else {
-    color = color + frame.ambient.rgb * diffuseColor * ao;
-  }
+  color = color + indirectLight(N, V, NoV, roughness, f0, diffuseColor, ao);
 
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
@@ -624,7 +655,7 @@ fn fs_oit(in : VSOut, @builtin(front_facing) frontFacing : bool) -> OITOut {
 }
 `;
 
-export const PBR_SHADER = HEADER + VERTEX_STATIC + FRAGMENT;
-export const PBR_SKINNED_SHADER = HEADER + VERTEX_SKINNED + FRAGMENT;
-export const PBR_INSTANCED_SHADER = HEADER + VERTEX_INSTANCED + FRAGMENT;
-export const PBR_MORPH_SHADER = HEADER + VERTEX_MORPH + FRAGMENT;
+export const PBR_SHADER = HEADER + MATERIAL_BINDINGS + VERTEX_STATIC + FRAGMENT;
+export const PBR_SKINNED_SHADER = HEADER + MATERIAL_BINDINGS + VERTEX_SKINNED + FRAGMENT;
+export const PBR_INSTANCED_SHADER = HEADER + MATERIAL_BINDINGS + VERTEX_INSTANCED + FRAGMENT;
+export const PBR_MORPH_SHADER = HEADER + MATERIAL_BINDINGS + VERTEX_MORPH + FRAGMENT;

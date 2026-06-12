@@ -21,8 +21,12 @@ export class PipelineCache {
   readonly lineMaterialLayout: GPUBindGroupLayout;
   readonly shadowLightLayout: GPUBindGroupLayout;
   readonly shadowPipeline: GPURenderPipeline;
+  /** Group-2 layout for ShaderMaterial: one auto-packed uniform buffer. */
+  readonly customUniformLayout: GPUBindGroupLayout;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
+  private customLayouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
+  private customModules = new Map<string, GPUShaderModule>();
   private lineLayout: GPUPipelineLayout;
   private lineModule: GPUShaderModule;
   private cache = new Map<string, GPURenderPipeline>();
@@ -137,6 +141,26 @@ export class PipelineCache {
       }),
     };
 
+    // ShaderMaterial pipeline layouts: same shape, custom group 2.
+    this.customUniformLayout = device.createBindGroupLayout({
+      label: 'shader-material',
+      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+    });
+    this.customLayouts = {
+      static: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout],
+      }),
+      skinned: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout, this.bonesLayout],
+      }),
+      instanced: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.instanceLayout, this.customUniformLayout],
+      }),
+      morph: device.createPipelineLayout({
+        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout, this.morphLayout],
+      }),
+    };
+
     // Unlit line path: frame + model + a small line-material uniform.
     this.lineMaterialLayout = device.createBindGroupLayout({
       label: 'line-material',
@@ -165,15 +189,15 @@ export class PipelineCache {
   }
 
   /** Compile/cache the `line-list` pipeline for a line material's render state. */
-  getLine(material: LineBasicMaterial): GPURenderPipeline {
+  getLine(material: LineBasicMaterial, format: GPUTextureFormat = this.format): GPURenderPipeline {
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
     const depthTest = material.depthTest ? 'dt1' : 'dt0';
-    const key = `line|${blend}|${depthWrite}|${depthTest}`;
+    const key = `line|${blend}|${depthWrite}|${depthTest}|${format}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
-    const target: GPUColorTargetState = { format: this.format };
+    const target: GPUColorTargetState = { format };
     if (blend === 'blend') {
       target.blend = {
         color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -242,21 +266,139 @@ export class PipelineCache {
     return pipeline;
   }
 
-  private keyFor(material: StandardMaterial, variant: PipelineVariant): string {
+  /**
+   * Pipeline for a ShaderMaterial. `cacheKey` must change whenever the
+   * generated WGSL would (material id + version + uniform shape); `buildCode`
+   * is only invoked when the module isn't cached yet. Pass the actual scene
+   * color format (`rgba16float` under post-processing).
+   */
+  getCustom(
+    cacheKey: string,
+    variant: PipelineVariant,
+    material: { side: string; transparent: boolean; depthWrite: boolean },
+    format: GPUTextureFormat,
+    oit: boolean,
+    oitSampleCount: number,
+    buildCode: () => string,
+    label = 'ShaderMaterial',
+  ): GPURenderPipeline {
     const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
-    return `${variant}|${cull}|${blend}|${depthWrite}`;
+    const key = oit
+      ? `cust|${cacheKey}|${variant}|${cull}|oit|sc${oitSampleCount}`
+      : `cust|${cacheKey}|${variant}|${cull}|${blend}|${depthWrite}|${format}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    const moduleKey = `${cacheKey}|${variant}`;
+    let module = this.customModules.get(moduleKey);
+    if (!module) {
+      // Evict modules/pipelines from older versions of this material (the
+      // cacheKey prefix up to the version segment identifies the material).
+      const prefix = cacheKey.slice(0, cacheKey.indexOf(':v') + 2);
+      for (const k of this.customModules.keys()) {
+        if (k.startsWith(prefix) && !k.startsWith(cacheKey)) this.customModules.delete(k);
+      }
+      for (const k of this.cache.keys()) {
+        if (k.startsWith(`cust|${prefix}`) && !k.startsWith(`cust|${cacheKey}`)) this.cache.delete(k);
+      }
+      const code = buildCode();
+      module = this.device.createShaderModule({ code, label: `shader-material:${label}` });
+      this.logCompilationErrors(module, code, label);
+      this.customModules.set(moduleKey, module);
+    }
+
+    if (oit) {
+      const accum: GPUColorTargetState = {
+        format: OIT_ACCUM_FORMAT,
+        blend: {
+          color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        },
+      };
+      const reveal: GPUColorTargetState = {
+        format: OIT_REVEAL_FORMAT,
+        blend: {
+          color: { srcFactor: 'zero', dstFactor: 'one-minus-src', operation: 'add' },
+          alpha: { srcFactor: 'zero', dstFactor: 'one-minus-src', operation: 'add' },
+        },
+      };
+      pipeline = this.device.createRenderPipeline({
+        label: key,
+        layout: this.customLayouts[variant],
+        vertex: {
+          module,
+          entryPoint: 'vs_main',
+          buffers: variant === 'skinned' ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
+        },
+        fragment: { module, entryPoint: 'fs_oit', targets: [accum, reveal] },
+        primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
+        multisample: { count: oitSampleCount },
+      });
+    } else {
+      const target: GPUColorTargetState = { format };
+      if (blend === 'blend') {
+        target.blend = {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        };
+      }
+      pipeline = this.device.createRenderPipeline({
+        label: key,
+        layout: this.customLayouts[variant],
+        vertex: {
+          module,
+          entryPoint: 'vs_main',
+          buffers: variant === 'skinned' ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
+        },
+        fragment: { module, entryPoint: 'fs_main', targets: [target] },
+        primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
+        depthStencil: {
+          format: DEPTH_FORMAT,
+          depthWriteEnabled: depthWrite === 'dw1',
+          depthCompare: 'less',
+        },
+        multisample: { count: this.sampleCount },
+      });
+    }
+    this.cache.set(key, pipeline);
+    return pipeline;
   }
 
-  get(material: StandardMaterial, variant: PipelineVariant = 'static'): GPURenderPipeline {
-    const key = this.keyFor(material, variant);
+  /** Print WGSL compile errors with the offending source lines (async, fire-and-forget). */
+  private logCompilationErrors(module: GPUShaderModule, code: string, label: string): void {
+    module.getCompilationInfo().then((info) => {
+      const problems = info.messages.filter((m) => m.type === 'error');
+      if (problems.length === 0) return;
+      const lines = code.split('\n');
+      let report = `[vela] ShaderMaterial "${label}" failed to compile:\n`;
+      for (const m of problems) {
+        report += `  :${m.lineNum}:${m.linePos} ${m.message}\n`;
+        const src = lines[m.lineNum - 1];
+        if (src !== undefined) report += `    ${m.lineNum} | ${src}\n`;
+      }
+      report += 'Fix the `surface` WGSL (signature: fn surface(in : VSOut) -> Surface).';
+      console.error(report);
+    });
+  }
+
+  private keyFor(material: StandardMaterial, variant: PipelineVariant, format: GPUTextureFormat): string {
+    const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
+    const blend = material.transparent ? 'blend' : 'opaque';
+    const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
+    return `${variant}|${cull}|${blend}|${depthWrite}|${format}`;
+  }
+
+  get(material: StandardMaterial, variant: PipelineVariant = 'static', format: GPUTextureFormat = this.format): GPURenderPipeline {
+    const key = this.keyFor(material, variant, format);
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
     const [, cull, blend, depthWrite] = key.split('|');
 
-    const target: GPUColorTargetState = { format: this.format };
+    const target: GPUColorTargetState = { format };
     if (blend === 'blend') {
       target.blend = {
         color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },

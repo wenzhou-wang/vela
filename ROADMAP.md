@@ -232,7 +232,19 @@ Faster loads, broader inputs, and ergonomics.
   graph (`Object3D`/`Mesh`/`LineSegments`/lights, transforms, `BufferGeometry` attributes,
   `StandardMaterial`/`LineBasicMaterial`), with geometry/material de-duplication preserved
   across load. Verified by a serialize→stringify→parse→deserialize round-trip.
-- A small **node-based material** graph compiling to WGSL.
+- ✅ **`ShaderMaterial`** (chosen over a node-based material graph — vela is AI-first,
+  and AI agents write WGSL directly; no visual editor is planned). The user supplies
+  one WGSL function `fn surface(in : VSOut) -> Surface` (albedo/alpha/metalness/
+  roughness/emissive/normal/occlusion, seeded by `defaultSurface(in)`); the engine
+  wraps it with the shared vertex variants and the full PBR lighting path (all light
+  kinds, directional/spot/point shadows, IBL, clustered lighting, OIT, tonemap flags)
+  extracted into a reusable `SHADE_HELPERS` WGSL chunk. Custom uniforms are a plain
+  JS object auto-packed per WGSL layout rules into one group-2 uniform buffer
+  (`u.<name>`), re-uploaded every frame with no dirty flags; shape changes recompile
+  automatically. `elapsedTime()` is built in. WGSL compile errors print with the
+  offending generated-source line. See docs/SHADER_MATERIAL.md. Also fixed: material/
+  line pipelines now key on the actual scene color format, so they are valid against
+  the HDR (`rgba16float`) target when `postProcessing` is enabled.
 
 ---
 

@@ -34,6 +34,8 @@ export { StandardMaterial } from './materials/StandardMaterial';
 export type { StandardMaterialParams } from './materials/StandardMaterial';
 export { LineBasicMaterial } from './materials/LineBasicMaterial';
 export type { LineBasicMaterialParams } from './materials/LineBasicMaterial';
+export { ShaderMaterial } from './materials/ShaderMaterial';
+export type { ShaderMaterialOptions, UniformValue } from './materials/ShaderMaterial';
 
 // helpers
 export { GridHelper } from './helpers/GridHelper';

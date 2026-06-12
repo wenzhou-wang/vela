@@ -12,6 +12,8 @@ import { InstancedMesh } from '../core/InstancedMesh';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
+import { ShaderMaterial, computeUniformLayout, packUniforms } from '../materials/ShaderMaterial';
+import type { UniformLayout } from '../materials/ShaderMaterial';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
 import { Matrix4 } from '../math/Matrix4';
@@ -30,6 +32,7 @@ import { PostProcessing } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
+import { buildSurfaceShader } from './shaders/surface.wgsl';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
 type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
@@ -113,6 +116,15 @@ interface MorphResources {
   weightBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   count: number;
+}
+
+interface ShaderMaterialResources {
+  buffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
+  data: Float32Array<ArrayBuffer>;
+  layout: UniformLayout;
+  shapeKey: string;       // uniform names+kinds; a change rebuilds buffer + shader
+  uploadedFrame: number;  // last frameNumber the uniform values were written
 }
 
 export interface RendererOptions {
@@ -276,6 +288,11 @@ export class WebGPURenderer {
   private nextMeshSlot = 0;
 
   private materialResources = new WeakMap<Material, MaterialResources>();
+  private shaderMaterialResources = new WeakMap<ShaderMaterial, ShaderMaterialResources>();
+  // Scene color format for this frame's pipelines (HDR under post-processing).
+  private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
+  private frameNumber = 0;
+  private readonly clockStart = performance.now();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
   private morphResources = new WeakMap<Mesh, MorphResources>();
@@ -522,6 +539,10 @@ export class WebGPURenderer {
   render(scene: Scene, camera: Camera): void {
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
+    this.frameNumber++;
+    // The scene pass renders into the HDR target when post-processing is on,
+    // so material pipelines must target that format.
+    this.sceneTargetFormat = this.postProcessing ? 'rgba16float' : this.format;
 
     // Build the view frustum for culling (projection * view).
     this._viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -1252,7 +1273,7 @@ export class WebGPURenderer {
     f[67] = 0;
     f[68] = this.canvas.width / CLUSTER_X;  // tile size in pixels
     f[69] = this.canvas.height / CLUSTER_Y;
-    f[70] = 0;
+    f[70] = (performance.now() - this.clockStart) / 1000; // elapsed seconds (shader elapsedTime())
     f[71] = 0;
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
@@ -1269,7 +1290,8 @@ export class WebGPURenderer {
       if (!oit) this.drawLine(pass, mesh, material); // lines aren't part of the OIT pass
       return;
     }
-    if (!(material instanceof StandardMaterial)) return;
+    const isShader = material instanceof ShaderMaterial;
+    if (!isShader && !(material instanceof StandardMaterial)) return;
     const geometry = this.geometries.get(mesh.geometry);
 
     const instanced = mesh instanceof InstancedMesh;
@@ -1281,7 +1303,23 @@ export class WebGPURenderer {
     const variant = instanced ? 'instanced' : skinned ? 'skinned' : morphed ? 'morph' : 'static';
 
     const oitSampleCount = oit ? this.sampleCount : 1;
-    pass.setPipeline(oit ? this.pipelines.getOIT(material, variant, oitSampleCount) : this.pipelines.get(material, variant));
+    if (isShader) {
+      const sm = material as ShaderMaterial;
+      const res = this.getShaderMaterialResources(sm);
+      const cacheKey = `sm:${sm.id}:v${sm.version}:${res.shapeKey}`;
+      pass.setPipeline(this.pipelines.getCustom(
+        cacheKey, variant, sm, this.sceneTargetFormat, oit, oitSampleCount,
+        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode),
+        sm.name || sm.type,
+      ));
+      pass.setBindGroup(2, res.bindGroup);
+    } else {
+      const std = material as StandardMaterial;
+      pass.setPipeline(oit
+        ? this.pipelines.getOIT(std, variant, oitSampleCount)
+        : this.pipelines.get(std, variant, this.sceneTargetFormat));
+      pass.setBindGroup(2, this.getMaterialResources(std).bindGroup);
+    }
 
     // Group 1: model uniform (static/skinned/morph) or instance storage (instanced)
     if (instanced) {
@@ -1289,7 +1327,6 @@ export class WebGPURenderer {
     } else {
       pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
     }
-    pass.setBindGroup(2, this.getMaterialResources(material).bindGroup);
 
     pass.setVertexBuffer(0, geometry.position);
     pass.setVertexBuffer(1, geometry.normal);
@@ -1326,7 +1363,7 @@ export class WebGPURenderer {
     // The color stream is always present (white default), so lines need no setup.
     const geometry = this.geometries.get(mesh.geometry);
 
-    pass.setPipeline(this.pipelines.getLine(material));
+    pass.setPipeline(this.pipelines.getLine(material, this.sceneTargetFormat));
     pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
     pass.setBindGroup(2, this.getLineResources(material).bindGroup);
     pass.setVertexBuffer(0, geometry.position);
@@ -1346,7 +1383,10 @@ export class WebGPURenderer {
     let key = `${colorFormat}|${this.frameBindGroupVersion}|`;
     for (const mesh of this.opaque) {
       const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      key += `${mesh.id},${mesh.geometry.id},${(m as Material).id};`;
+      key += `${mesh.id},${mesh.geometry.id},${(m as Material).id}`;
+      // ShaderMaterial recompiles invalidate the recorded pipeline.
+      if (m instanceof ShaderMaterial) key += `v${m.version}`;
+      key += ';';
     }
     if (this.opaqueBundle && key === this.bundleKey) return this.opaqueBundle;
 
@@ -1371,10 +1411,12 @@ export class WebGPURenderer {
         this.getLineResources(material);
         continue;
       }
-      if (!(material instanceof StandardMaterial)) continue;
+      const isShader = material instanceof ShaderMaterial;
+      if (!isShader && !(material instanceof StandardMaterial)) continue;
       if (mesh instanceof InstancedMesh) this.getInstancedResources(mesh);
       else this.getMeshSlot(mesh);
-      this.getMaterialResources(material);
+      if (isShader) this.getShaderMaterialResources(material as ShaderMaterial);
+      else this.getMaterialResources(material as StandardMaterial);
       const geometry = this.geometries.get(mesh.geometry);
       if (!(mesh instanceof InstancedMesh) && mesh instanceof SkinnedMesh &&
           geometry.joints !== null && geometry.weights !== null) {
@@ -1642,6 +1684,37 @@ export class WebGPURenderer {
       .join('|');
   }
 
+  /**
+   * Uniform buffer + bind group for a ShaderMaterial. Recreated when the
+   * uniforms object's shape (names/types) changes — which also changes the
+   * pipeline cache key, recompiling the shader to match. Values are packed
+   * and uploaded once per frame.
+   */
+  private getShaderMaterialResources(material: ShaderMaterial): ShaderMaterialResources {
+    const layout = computeUniformLayout(material.uniforms);
+    const shapeKey = layout.fields.map((f) => `${f.name}:${f.kind}`).join(',');
+    let res = this.shaderMaterialResources.get(material);
+    if (!res || res.shapeKey !== shapeKey) {
+      res?.buffer.destroy();
+      const buffer = this.device.createBuffer({
+        size: layout.size,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.customUniformLayout,
+        entries: [{ binding: 0, resource: { buffer } }],
+      });
+      res = { buffer, bindGroup, data: new Float32Array(layout.size / 4), layout, shapeKey, uploadedFrame: -1 };
+      this.shaderMaterialResources.set(material, res);
+    }
+    if (res.uploadedFrame !== this.frameNumber) {
+      packUniforms(material.uniforms, res.layout, res.data);
+      this.device.queue.writeBuffer(res.buffer, 0, res.data);
+      res.uploadedFrame = this.frameNumber;
+    }
+    return res;
+  }
+
   // ---------------------------------------------------------------------------
   // GPU id-buffer picking
   // ---------------------------------------------------------------------------
@@ -1737,7 +1810,7 @@ export class WebGPURenderer {
     scene.traverseVisible((obj: Object3D) => {
       if (obj instanceof Mesh && !(obj instanceof InstancedMesh)) {
         const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-        if (mat instanceof StandardMaterial) meshList.push(obj);
+        if (mat instanceof StandardMaterial || mat instanceof ShaderMaterial) meshList.push(obj);
       }
     });
 
