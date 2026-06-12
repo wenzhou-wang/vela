@@ -209,7 +209,7 @@ Faster loads, broader inputs, and ergonomics.
 
 ---
 
-## Backlog / under consideration ⬜
+## Backlog / under consideration ✅ (all resolved)
 
 - ✅ **Clustered forward+** lighting (`renderer.clusteredLighting`) — a compute pass
   divides the view frustum into a 16×9×24 grid (screen tiles × logarithmic depth
@@ -248,6 +248,124 @@ Faster loads, broader inputs, and ergonomics.
 
 ---
 
+## v0.6 — Game-visual table stakes ⬜
+
+What a game needs from its renderer beyond a lit model viewer. Everything stays
+declarative: an object literal to set up, no builder chains, no hidden update flags.
+
+- ⬜ **Skybox & procedural sky** — draw `scene.environment` as the background: a
+      fullscreen-triangle pass at `depth = 1` (depthCompare `less-equal`, no depth write)
+      that inverts the view ray and samples the equirectangular map with the existing
+      `sampleEnv`, run after opaques to get early-z rejection. `scene.backgroundBlur`
+      picks a prefiltered mip. Plus a procedural option (`scene.sky = { sunDirection,
+      turbidity, ... }`): a small analytic sky (Preetham/Hosek-style fit) evaluated in
+      the same pass and fed into the IBL prefilter so lighting matches the visuals.
+- ⬜ **Fog** — `scene.fog = { color, near, far }` (linear) or `{ color, density }`
+      (exponential), plus optional height falloff. Implemented in `SHADE_HELPERS` as a
+      final `applyFog(color, worldPos)` mix using view distance, so StandardMaterial,
+      ShaderMaterial, and the line path all pick it up; frame uniform gains a fog vec4
+      pair (spare `clusterParams.w` + a new slot).
+- ⬜ **GPU particles** — `ParticleSystem` with a declarative emitter config (rate,
+      lifetime, velocity/spread, gravity, size/color-over-life as gradient stops, world
+      or local space). A compute pass integrates a fixed-capacity particle pool in a
+      storage buffer (dead particles recycled via an atomic freelist); rendering is one
+      instanced quad draw reading the pool, depth-tested but unsorted (additive) or
+      OIT-composited (alpha). No per-particle JS objects — the hot path never allocates.
+- ⬜ **Sprites & SDF text** — billboarded quads (`Sprite`) batched into one instanced
+      draw per texture; `TextMesh` renders strings via a runtime-generated SDF atlas
+      (`OffscreenCanvas` rasterization → distance transform, cached per font), one quad
+      per glyph in the same batcher. Both work in world space and as screen-space
+      overlays (HUD: `sprite.screenSpace = true`, sized in CSS pixels).
+- ⬜ **Render-to-texture** — `const rt = new RenderTarget(w, h)` +
+      `renderer.render(scene, camera, rt)`: renders the full pipeline (including post)
+      into an offscreen color texture usable as any material map (mirrors, portals,
+      minimaps, security cams). Depth/MSAA resources sized per target and cached;
+      `rt.texture` plugs into `StandardMaterial.map` or a future ShaderMaterial texture
+      uniform.
+
+---
+
+## v0.7 — The agent feedback loop ⬜
+
+vela's developers are AI agents: they cannot see the canvas, and they iterate through
+text. This tier makes rendering results readable, diffable, and explainable without a
+human looking at pixels — the core AI-first differentiator.
+
+- ⬜ **Pixel readback & screenshots** — `renderer.readPixels(x?, y?, w?, h?)` →
+      `Uint8ClampedArray` and `renderer.screenshot()` → PNG blob/data-URL, implemented
+      with a `COPY_SRC` hook on the final target + a mapped read-back buffer (reuses the
+      id-picking machinery). Works headless via `OffscreenCanvas`.
+- ⬜ **Deterministic mode** — `renderer.deterministic = true`: TAA jitter sequence
+      restarts from a fixed seed, `elapsedTime()` is driven by a settable
+      `renderer.time` instead of the wall clock, and any future stochastic effects key
+      off one seed — so the same scene always produces the same pixels.
+- ⬜ **Golden-image testing** — `vela/test` helper: `await expectFrame(renderer, scene,
+      camera, 'golden/lava.png', { tolerance })` renders deterministically, compares
+      with a perceptual diff (per-channel + SSIM-lite), writes the actual + diff images
+      on failure. Makes "verify the change visually" a unit test an agent can run.
+- ⬜ **`renderer.diagnose(scene, camera)`** — structured triage of the classic
+      black-screen causes, returned as `{ severity, code, message, fix }[]`: no
+      lights/zero intensity, camera frustum missing the scene bounds (with the actual
+      distance and a suggested position), NaN/zero-scale transforms, model scale outliers
+      (>1000× scene median), `transparent` without alpha < 1, `oit`/`ssao`/`taa` flags
+      whose prerequisites (postProcessing, sampleCount) aren't met, materials referencing
+      destroyed textures. Every message names the offending object and the one-line fix.
+- ⬜ **`scene.describe()` / `renderer.report()`** — JSON introspection an LLM can
+      reason over: node hierarchy summary (counts by type, named nodes), world bounds,
+      material/light/texture inventories, last-frame stats (draw calls, triangles,
+      culled counts, GPU buffer/texture memory estimates), and per-mesh visibility
+      (in-frustum? culled by what?).
+- ⬜ **`llms.txt` + generated API reference** — a single context-window-friendly page
+      of the whole public API (signatures + one-line docs, generated from the `.d.ts`
+      surface by a script in `scripts/`), published at the repo root and `docs/llms.txt`
+      per the llms.txt convention.
+
+---
+
+## v0.8 — AI-extensible pipeline ⬜
+
+Extend the ShaderMaterial pattern — "write one WGSL function, the engine does the
+rest" — to the remaining programmable surfaces.
+
+- ⬜ **ShaderMaterial v2** — texture uniforms (`uniforms: { noise: texture }` →
+      auto-bound `t_noise`/`s_noise` pair on group 2, layout regenerated on shape change
+      like scalar uniforms) and an optional vertex hook (`fn displace(pos : vec3<f32>,
+      in : VSIn) -> vec3<f32>`) spliced into all four vertex variants for displacement
+      and wind effects.
+- ⬜ **ShaderPass** — custom fullscreen post effects: `renderer.passes.push(new
+      ShaderPass({ fragment, uniforms }))` with the same auto-packed uniform object;
+      the pass receives the previous stage's HDR view + depth and is inserted into the
+      PostProcessing chain before tonemap. Compile errors report exactly like
+      ShaderMaterial.
+- ⬜ **Compute API** — `new ComputeTask({ code, workgroups, buffers: { particles:
+      storage(...), params: uniform({...}) } })` with declarative buffer/uniform
+      bindings (auto layout, same packing rules), `task.dispatch(encoder?)`, and
+      `task.read('buffer')` for results — GPU sims (boids, erosion, procedural
+      geometry) without touching raw WebGPU.
+
+---
+
+## v0.9 — Scale & robustness ⬜
+
+- ⬜ **LOD** — `LOD` node with distance-banded children (hysteresis to avoid popping);
+      selection happens in `collect()` against the camera distance already computed for
+      transparency sorting.
+- ⬜ **GPU occlusion culling** — two-phase: render last frame's visible set, build a
+      hi-Z mip pyramid from depth, then test the remaining bounds against it in the
+      existing GPU-cull compute pass (extends the indirect-draw path).
+- ⬜ **Performance advisor** — `renderer.report()` grows actionable suggestions with
+      the same `{ code, message, fix }` shape as `diagnose()`: "412 draws share one
+      geometry+material — use InstancedMesh", "shadow map re-rendered but no caster
+      moved", "postProcessing off but bloom set". An agent has no perf intuition; the
+      engine lends it some.
+- ⬜ **Lifecycle hardening** — device-lost recovery (re-init device, rebuild all cached
+      GPU resources from their CPU-side sources, which the cache design already keeps),
+      a `dispose()` audit across geometry/texture/material/render-target paths, and a
+      debug allocation tracker (`renderer.resources()`) so long-running agent sessions
+      don't leak.
+
+---
+
 ## Design principles (don't regress these)
 
 1. **One modern path.** No `#ifdef`-style capability forks; target WebGPU's baseline.
@@ -258,3 +376,8 @@ Faster loads, broader inputs, and ergonomics.
 4. **Verifiable offline.** Math and shader-interface invariants (bind-group indices,
    struct sizes) stay testable without a GPU. See the Verification section of the README.
 5. **Stay lean.** Track bundle size; a feature that doubles the footprint needs to earn it.
+6. **Every feature must be usable blind.** vela's developers are AI agents that cannot
+   see the canvas: each feature is declarative to set up, introspectable as data
+   (`describe()`/`report()`), and verifiable without a human looking at pixels
+   (deterministic rendering + readback). Error messages name the offending object and
+   the one-line fix.
