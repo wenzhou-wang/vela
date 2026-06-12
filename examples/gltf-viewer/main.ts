@@ -32,7 +32,8 @@ if (!WebGPURenderer.isSupported()) {
   throw new Error('WebGPU not supported');
 }
 
-const renderer = new WebGPURenderer({ canvas, sampleCount: 4 });
+// Single-sample depth is required by the cel outline pass; FXAA handles final edges.
+const renderer = new WebGPURenderer({ canvas, sampleCount: 1 });
 await renderer.init();
 
 const scene = new Scene();
@@ -161,11 +162,12 @@ const loader = new GLTFLoader();
 const status = (msg: string) => { statusMsg = msg; };
 let statusMsg = '';
 
-async function loadFromURL(url: string): Promise<void> {
+async function loadFromURL(url: string, isBitmoji = false): Promise<void> {
+  setBitmojiSelected(false);
   status('Loading…');
   try {
     const result = await loader.load(url);
-    onLoaded(result);
+    onLoaded(result, isBitmoji);
   } catch (e) {
     console.error(e);
     status(`Error: ${(e as Error).message}`);
@@ -179,6 +181,7 @@ async function loadFromFiles(files: File[]): Promise<void> {
   const main = files.find((f) => /\.(glb|gltf)$/i.test(f.name));
   if (!main) { status('No .glb/.gltf in drop'); return; }
 
+  setBitmojiSelected(false);
   status('Loading…');
   try {
     if (/\.glb$/i.test(main.name)) {
@@ -211,8 +214,9 @@ async function loadFromFiles(files: File[]): Promise<void> {
 let mixer: AnimationMixer | null = null;
 let clips: GLTFResult['animations'] = [];
 
-function onLoaded(result: GLTFResult): void {
+function onLoaded(result: GLTFResult, isBitmoji = false): void {
   setModel(result.scene, result.boundingBox);
+  setBitmojiSelected(isBitmoji, isBitmoji);
   setupAnimations(result.animations);
   const extra = result.animations.length ? ` · ${result.animations.length} anim` : '';
   status(`Loaded · ${result.materials.length} materials${extra}`);
@@ -249,12 +253,33 @@ exposureEl.addEventListener('input', () => { renderer.exposure = parseFloat(expo
 const lightEl = document.getElementById('lightIntensity') as HTMLInputElement;
 lightEl.addEventListener('input', () => { key.intensity = parseFloat(lightEl.value); });
 
+const celEl = document.getElementById('celShading') as HTMLInputElement;
+const outlineEl = document.getElementById('outlineThickness') as HTMLInputElement;
+const celRow = document.getElementById('celRow') as HTMLLabelElement;
+const outlineRow = document.getElementById('outlineRow') as HTMLLabelElement;
+function setCelShading(enabled: boolean): void {
+  renderer.celShading = enabled;
+  renderer.postProcessing = enabled;
+  outlineEl.disabled = !enabled;
+}
+function setBitmojiSelected(selected: boolean, enableCel = false): void {
+  celRow.style.display = selected ? 'flex' : 'none';
+  outlineRow.style.display = selected ? 'flex' : 'none';
+  celEl.disabled = !selected;
+  celEl.checked = selected && enableCel;
+  setCelShading(celEl.checked);
+}
+celEl.addEventListener('change', () => setCelShading(celEl.checked));
+outlineEl.addEventListener('input', () => {
+  renderer.outlineThickness = parseFloat(outlineEl.value);
+});
+
 const autoEl = document.getElementById('autorotate') as HTMLInputElement;
 autoEl.addEventListener('change', () => { controls.autoRotate = autoEl.checked; });
 
-const bgEl = document.getElementById('darkbg') as HTMLInputElement;
-bgEl.addEventListener('change', () => {
-  scene.background!.setHex(bgEl.checked ? 0x10131a : 0x8894a8);
+const backgroundEl = document.getElementById('backgroundMode') as HTMLSelectElement;
+backgroundEl.addEventListener('change', () => {
+  scene.background!.setHex(backgroundEl.value === 'light' ? 0xe8edf5 : 0x10131a);
 });
 
 document.getElementById('reset')!.addEventListener('click', () => {
@@ -279,11 +304,14 @@ fileInput.addEventListener('change', () => {
 });
 
 document.querySelectorAll<HTMLButtonElement>('.sample').forEach((btn) => {
-  btn.addEventListener('click', () => loadFromURL(btn.dataset.url!));
+  btn.addEventListener('click', () => {
+    loadFromURL(btn.dataset.url!, btn.dataset.cel === 'true');
+  });
 });
 
 // Instancing demo: a rippling field of cubes drawn in a single draw call.
 document.getElementById('instDemo')!.addEventListener('click', () => {
+  setBitmojiSelected(false);
   setupAnimations([]);
   const side = 40;
   const n = side * side;

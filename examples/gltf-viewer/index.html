@@ -41,6 +41,7 @@
       #controls { top: 16px; right: 16px; width: 230px; }
       #controls label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); }
       #controls input[type="range"] { width: 110px; accent-color: var(--accent); }
+      #controls select { max-width: 120px; background: rgba(0,0,0,0.25); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 2px 4px; }
       #controls .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
       button {
         background: rgba(91, 157, 255, 0.14);
@@ -88,10 +89,17 @@
       <div id="controls" class="panel">
         <label>Exposure <input id="exposure" type="range" min="0.2" max="3" step="0.01" value="1" /></label>
         <label>Light <input id="lightIntensity" type="range" min="0" max="6" step="0.05" value="3" /></label>
+        <label id="celRow" style="display:none">Cel shading <input id="celShading" type="checkbox" disabled /></label>
+        <label id="outlineRow" style="display:none">Outline <input id="outlineThickness" type="range" min="0.75" max="4" step="0.05" value="2" disabled /></label>
         <label>Auto-rotate <input id="autorotate" type="checkbox" /></label>
-        <label>Wireframe bg <input id="darkbg" type="checkbox" checked /></label>
+        <label>Background
+          <select id="backgroundMode">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
         <label id="animRow" style="display:none">Animation
-          <select id="animSelect" style="max-width:120px;background:rgba(0,0,0,0.25);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:2px 4px"></select>
+          <select id="animSelect"></select>
         </label>
         <div class="row">
           <button id="loadFile">Open file…</button>
@@ -104,7 +112,7 @@
           <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/BoomBox/glTF-Binary/BoomBox.glb">BoomBox</button>
           <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/Fox/glTF-Binary/Fox.glb">Fox 🦊</button>
           <button class="sample" data-url="https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/main/2.0/BoxAnimated/glTF-Binary/BoxAnimated.glb">BoxAnim</button>
-          <button class="sample" data-url="/models/bitmoji.glb">Bitmoji</button>
+          <button class="sample" data-url="/models/bitmoji.glb" data-cel="true">Bitmoji</button>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
-import { OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
+import { DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
 
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 const LDR_FORMAT: GPUTextureFormat = 'rgba8unorm';
@@ -13,6 +13,9 @@ export interface PostOptions {
   bloomIntensity: number;
   ssao: boolean;
   ssaoStrength: number;
+  celShading: boolean;
+  outlineThickness: number;
+  outlineStrength: number;
 }
 
 /**
@@ -29,6 +32,7 @@ export class PostProcessing {
   private pipelines = new Map<string, GPURenderPipeline>();
   private dummyView: GPUTextureView;
   private dummyWhiteView: GPUTextureView;
+  private dummyDepthView: GPUTextureView;
 
   // SSAO resources
   private ssaoModule: GPUShaderModule;
@@ -57,6 +61,8 @@ export class PostProcessing {
   private hdrView!: GPUTextureView;
   private ldrPing!: GPUTexture;
   private ldrView!: GPUTextureView;
+  private ldrPong!: GPUTexture;
+  private ldrPongView!: GPUTextureView;
   private bloomA!: GPUTexture;
   private bloomAView!: GPUTextureView;
   private bloomB!: GPUTexture;
@@ -86,11 +92,12 @@ export class PostProcessing {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
       ],
     });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    // 32 bytes: (1/w, 1/h, bloomThr, bloomInt) + (ssaoStrength, 0, 0, 0)
-    this.paramsBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // 128 bytes: four vec4 parameter blocks + inverse projection matrix.
+    this.paramsBuffer = device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const dummy = device.createTexture({
       size: [1, 1], format: HDR_FORMAT,
@@ -106,6 +113,24 @@ export class PostProcessing {
     device.queue.writeTexture({ texture: whiteTex }, new Uint8Array([255, 255, 255, 255]),
       { bytesPerRow: 4 }, [1, 1]);
     this.dummyWhiteView = whiteTex.createView();
+
+    const dummyDepth = device.createTexture({
+      size: [1, 1], format: DEPTH_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.dummyDepthView = dummyDepth.createView({ aspect: 'depth-only' });
+    const depthEncoder = device.createCommandEncoder();
+    const depthPass = depthEncoder.beginRenderPass({
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: this.dummyDepthView,
+        depthClearValue: 1,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    depthPass.end();
+    device.queue.submit([depthEncoder.finish()]);
 
     // Dummy scene-capture (1×1) — replaced by ensureSize(); keeps sceneCaptureView valid.
     const capDummy = device.createTexture({
@@ -151,6 +176,7 @@ export class PostProcessing {
     this.hdrMSAA?.destroy();
     this.hdrResolve?.destroy();
     this.ldrPing?.destroy();
+    this.ldrPong?.destroy();
     this.bloomA?.destroy();
     this.bloomB?.destroy();
 
@@ -177,6 +203,8 @@ export class PostProcessing {
     this._sceneCaptureView = this.sceneCapture.createView();
     this.ldrPing = attach(LDR_FORMAT, [w, h]);
     this.ldrView = this.ldrPing.createView();
+    this.ldrPong = attach(LDR_FORMAT, [w, h]);
+    this.ldrPongView = this.ldrPong.createView();
     // Half-resolution bloom targets (cheaper, naturally softer).
     const bw = Math.max(1, w >> 1), bh = Math.max(1, h >> 1);
     this.bloomA = attach(HDR_FORMAT, [bw, bh]);
@@ -268,6 +296,7 @@ export class PostProcessing {
         { binding: 2, resource: { buffer: this.paramsBuffer } },
         { binding: 3, resource: this.oitRevealView },
         { binding: 4, resource: this.dummyWhiteView },
+        { binding: 5, resource: this.dummyDepthView },
       ],
     });
     const pass = encoder.beginRenderPass({
@@ -451,13 +480,28 @@ export class PostProcessing {
    * Run the post chain from the HDR target (or `input`, e.g. the TAA output)
    * into the swap-chain `output` view.
    */
-  run(encoder: GPUCommandEncoder, output: GPUTextureView, opts: PostOptions, input: GPUTextureView = this.hdrView): void {
+  run(
+    encoder: GPUCommandEncoder,
+    output: GPUTextureView,
+    opts: PostOptions,
+    input: GPUTextureView = this.hdrView,
+    depthView: GPUTextureView = this.dummyDepthView,
+    invProj?: Float32Array,
+  ): void {
     // params0 = (1/width, 1/height, bloomThreshold, bloomIntensity)
-    // params1 = (ssaoStrength, 0, 0, 0)
-    this.device.queue.writeBuffer(this.paramsBuffer, 0, new Float32Array([
+    // params1 = (ssaoStrength, unused, outlineThickness, outlineStrength)
+    // params2 = (depthThreshold, normalThreshold, colorThreshold, outerWidthScale)
+    const params = new Float32Array(32);
+    params.set([
       1 / this.width, 1 / this.height, opts.bloomThreshold, opts.bloomIntensity,
-      opts.ssao ? opts.ssaoStrength : 0, 0, 0, 0,
-    ]));
+      opts.ssao ? opts.ssaoStrength : 0,
+      0, opts.outlineThickness, opts.outlineStrength,
+      0.012, 0.2, 0.12, 1.5,
+      0.035, 0.025, 0.03, opts.celShading ? 1 : 0,
+    ]);
+    if (invProj) params.set(invProj, 16);
+    else params[16] = params[21] = params[26] = params[31] = 1;
+    this.device.queue.writeBuffer(this.paramsBuffer, 0, params);
 
     let bloomView = this.dummyView;
     if (opts.bloom) {
@@ -468,8 +512,18 @@ export class PostProcessing {
     }
 
     const ssaoView = opts.ssao ? this.ssaoAView : this.dummyWhiteView;
-    const tonemapEntry = opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
-    if (opts.fxaa) {
+    const tonemapEntry = opts.celShading ? 'fs_diffuse' : opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
+    if (opts.celShading) {
+      this.pass(encoder, tonemapEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView, depthView);
+      if (opts.fxaa) {
+        this.pass(encoder, 'fs_cel', LDR_FORMAT, this.ldrView, this.ldrPongView,
+          this.dummyView, this.dummyWhiteView, depthView);
+        this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrPongView, output);
+      } else {
+        this.pass(encoder, 'fs_cel', this.swapFormat, this.ldrView, output,
+          this.dummyView, this.dummyWhiteView, depthView);
+      }
+    } else if (opts.fxaa) {
       this.pass(encoder, tonemapEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);
     } else {
@@ -485,6 +539,7 @@ export class PostProcessing {
     output: GPUTextureView,
     bloomInput: GPUTextureView = this.dummyView,
     ssaoInput: GPUTextureView = this.dummyWhiteView,
+    depthInput: GPUTextureView = this.dummyDepthView,
   ): void {
     const bindGroup = this.device.createBindGroup({
       layout: this.bindLayout,
@@ -494,6 +549,7 @@ export class PostProcessing {
         { binding: 2, resource: { buffer: this.paramsBuffer } },
         { binding: 3, resource: bloomInput },
         { binding: 4, resource: ssaoInput },
+        { binding: 5, resource: depthInput },
       ],
     });
     const pass = encoder.beginRenderPass({

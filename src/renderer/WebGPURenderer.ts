@@ -200,6 +200,15 @@ export class WebGPURenderer {
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
   /**
+   * Unlit diffuse rendering with depth, normal, and color-derived outlines.
+   * Requires `postProcessing = true` and `sampleCount = 1`.
+   */
+  celShading = false;
+  /** Screen-space outline radius in device pixels. */
+  outlineThickness = 2.0;
+  /** Blend strength for outer silhouettes and interior feature lines. */
+  outlineStrength = 1.0;
+  /**
    * Order-independent transparency (weighted-blended). Requires `postProcessing`
    * and sampleCount 1; otherwise transparent meshes fall back to sorted blending.
    */
@@ -684,6 +693,7 @@ export class WebGPURenderer {
     }
 
     const useSSAO = this.ssao && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
+    const useCelShading = this.celShading && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
     // Resolve the HDR target through the post chain into the swap chain.
     if (this.postProcessing) {
       if (useSSAO) {
@@ -718,7 +728,11 @@ export class WebGPURenderer {
         bloomIntensity: this.bloomIntensity,
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
-      }, postInput);
+        celShading: useCelShading,
+        outlineThickness: this.outlineThickness,
+        outlineStrength: this.outlineStrength,
+      }, postInput, useCelShading ? this.depthSampleView! : undefined,
+      useCelShading ? new Float32Array(camera.projectionMatrixInverse.elements) : undefined);
     }
     // Save this frame's unjittered view-projection for next frame's reprojection.
     this._prevViewProj.set(this._viewProjection.elements);
@@ -1004,7 +1018,8 @@ export class WebGPURenderer {
     for (const mesh of this.opaque) {
       if (mesh instanceof InstancedMesh) continue; // instanced casters unsupported in v1
       const geometry = this.geometries.get(mesh.geometry);
-      pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+      const slot = this.getMeshSlot(mesh);
+      pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
       pass.setVertexBuffer(0, geometry.position);
       if (geometry.index) {
         pass.setIndexBuffer(geometry.index, geometry.indexFormat);
@@ -1039,7 +1054,8 @@ export class WebGPURenderer {
       for (const mesh of this.opaque) {
         if (mesh instanceof InstancedMesh) continue;
         const geometry = this.geometries.get(mesh.geometry);
-        pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+        const slot = this.getMeshSlot(mesh);
+        pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
         pass.setVertexBuffer(0, geometry.position);
         if (geometry.index) {
           pass.setIndexBuffer(geometry.index, geometry.indexFormat);
@@ -1215,6 +1231,7 @@ export class WebGPURenderer {
   private clearColor(scene: Scene): GPUColor {
     const bg = scene.background;
     if (!bg) return { r: 0.05, g: 0.05, b: 0.06, a: 1 };
+    if (this.postProcessing) return { r: bg.r, g: bg.g, b: bg.b, a: 1 };
     // background is linear; encode to sRGB-ish for the non-srgb target
     const enc = (c: number) => (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
     return { r: enc(bg.r), g: enc(bg.g), b: enc(bg.b), a: 1 };
@@ -1373,8 +1390,11 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    // Bit 0: linear output; bit 1: IBL active; bit 2: screen-space refraction available.
-    f[63] = (this.postProcessing ? 1 : 0) | (this.iblActive ? 2 : 0) | (this.postProcessing ? 4 : 0);
+    // Bit 0: linear output; bit 1: IBL; bit 2: SSR; bit 3: unlit diffuse cel preview.
+    f[63] = (this.postProcessing ? 1 : 0) |
+      (this.iblActive ? 2 : 0) |
+      (this.postProcessing ? 4 : 0) |
+      (this.celShading && this.postProcessing && this.sampleCount === 1 ? 8 : 0);
 
     // clusterParams (64..67) + clusterDims (68..71)
     const cam = camera as unknown as { near?: number; far?: number };
@@ -1451,7 +1471,8 @@ export class WebGPURenderer {
     if (instanced) {
       pass.setBindGroup(1, this.getInstancedResources(mesh as InstancedMesh).bindGroup);
     } else {
-      pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+      const slot = this.getMeshSlot(mesh);
+      pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
     }
 
     pass.setVertexBuffer(0, geometry.position);
@@ -1490,7 +1511,8 @@ export class WebGPURenderer {
     const geometry = this.geometries.get(mesh.geometry);
 
     pass.setPipeline(this.pipelines.getLine(material, this.sceneTargetFormat));
-    pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+    const slot = this.getMeshSlot(mesh);
+    pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
     pass.setBindGroup(2, this.getLineResources(material).bindGroup);
     pass.setVertexBuffer(0, geometry.position);
     pass.setVertexBuffer(1, geometry.color);
@@ -1989,7 +2011,8 @@ export class WebGPURenderer {
 
   private drawMeshId(pass: GPURenderPassEncoder, mesh: Mesh, index: number): void {
     const geometry = this.geometries.get(mesh.geometry);
-    pass.setBindGroup(1, this.modelPoolBindGroup!, [this.getMeshSlot(mesh) * 256]);
+    const slot = this.getMeshSlot(mesh);
+    pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
     pass.setBindGroup(2, this.idBindGroup!, [index * 256]);
     pass.setVertexBuffer(0, geometry.position);
     if (geometry.index) {

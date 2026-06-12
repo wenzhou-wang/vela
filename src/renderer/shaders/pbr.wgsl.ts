@@ -528,6 +528,12 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     discard;
   }
 
+  // Cel-preview mode uses the authored diffuse/base-color texture as-is and
+  // bypasses direct lights, IBL, specular, normal maps, AO, and transmission.
+  if ((u32(frame.envParams.w) & 8u) != 0u) {
+    return vec4<f32>(baseColor, alpha);
+  }
+
   let mrSample = textureSample(mrTex, mrSmp, in.uv);
   let metalness = clamp(material.params.x * mrSample.b, 0.0, 1.0);
   var roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
@@ -652,7 +658,8 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
 @fragment
 fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
   let s = shadeSurface(in, frontFacing);
-  var color = s.rgb * frame.ambient.w; // exposure
+  let unlitDiffuse = (u32(frame.envParams.w) & 8u) != 0u;
+  var color = s.rgb * select(frame.ambient.w, 1.0, unlitDiffuse);
   // envParams.w bit 0: linear output (post pipeline tonemaps later).
   if ((u32(frame.envParams.w) & 1u) == 0u) {
     color = acesFilmic(color);
@@ -671,7 +678,8 @@ struct OITOut {
 @fragment
 fn fs_oit(in : VSOut, @builtin(front_facing) frontFacing : bool) -> OITOut {
   let s = shadeSurface(in, frontFacing);
-  let color = s.rgb * frame.ambient.w; // exposure (stays linear; tonemapped after composite)
+  let unlitDiffuse = (u32(frame.envParams.w) & 8u) != 0u;
+  let color = s.rgb * select(frame.ambient.w, 1.0, unlitDiffuse);
   let a = clamp(s.a, 0.0, 1.0);
   let viewZ = abs((frame.view * vec4<f32>(in.worldPos, 1.0)).z);
   let weight = a * clamp(0.03 / (1e-5 + pow(viewZ / 200.0, 4.0)), 1e-2, 3e3);

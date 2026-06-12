@@ -43,7 +43,9 @@ fn posFromDepth(uv : vec2<f32>, d : f32) -> vec3<f32> {
 }
 
 fn sampleDepth(uv : vec2<f32>) -> f32 {
-  return textureSampleLevel(depthTex, samp, uv, 0.0);
+  let size = vec2<i32>(textureDimensions(depthTex));
+  let coord = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
+  return textureLoad(depthTex, coord, 0);
 }
 
 // 8 hemisphere sample directions (roughly uniform, biased toward the pole).
