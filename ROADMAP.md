@@ -338,10 +338,15 @@ human looking at pixels — the core AI-first differentiator.
       from a settable `renderer.time` (advance it manually, e.g. `+= 1/60`) instead
       of the wall clock, and the TAA jitter sequence + history restart from a fixed
       point on enable — so the same scene + time always produces the same pixels.
-- ⬜ **Golden-image testing** — `vela/test` helper: `await expectFrame(renderer, scene,
-      camera, 'golden/lava.png', { tolerance })` renders deterministically, compares
-      with a perceptual diff (per-channel + SSIM-lite), writes the actual + diff images
-      on failure. Makes "verify the change visually" a unit test an agent can run.
+- ✅ **Golden-image testing** — `await expectFrame(renderer, scene, camera,
+      'golden/lava.png', { frames, channelTolerance, maxDiffRatio })` renders
+      deterministically (warmup frames + fixed time), captures via `readPixels()`,
+      and compares per-channel with a differing-pixel ratio budget; on mismatch it
+      throws `FrameMismatchError` carrying metrics plus the actual and red-highlighted
+      diff frames as PNG blobs (object URLs logged for instant viewing, and the
+      message says how to bless a new golden). `comparePixels` is pure and
+      offline-verified (identical/1-px/noise/size-mismatch cases); `captureFrame`,
+      `loadPixels`, `pixelsToPNG` are exported separately for custom harnesses.
 - ⬜ **`renderer.diagnose(scene, camera)`** — structured triage of the classic
       black-screen causes, returned as `{ severity, code, message, fix }[]`: no
       lights/zero intensity, camera frustum missing the scene bounds (with the actual

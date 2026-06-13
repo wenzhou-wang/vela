@@ -68,6 +68,10 @@ export { SpotLight } from './lights/SpotLight';
 export { WebGPURenderer } from './renderer/WebGPURenderer';
 export type { RendererOptions, PixelData } from './renderer/WebGPURenderer';
 
+// golden-image testing helpers (deterministic capture + perceptual compare)
+export { captureFrame, comparePixels, loadPixels, pixelsToPNG, expectFrame, FrameMismatchError } from './test';
+export type { CaptureOptions, CompareOptions, CompareResult } from './test';
+
 // controls
 export { OrbitControls } from './controls/OrbitControls';
 export { FlyControls } from './controls/FlyControls';
