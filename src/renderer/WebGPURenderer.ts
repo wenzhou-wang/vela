@@ -39,6 +39,7 @@ import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
+import { HIZ_COPY_SHADER, HIZ_DOWN_SHADER } from './shaders/hiz.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
 import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
@@ -57,7 +58,9 @@ const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
 
 // GPU-driven culling: indirect draw + compute-shader sphere cull.
-const CULL_PARAMS_SIZE = 112;   // 6×vec4 planes (96) + u32 drawCount + 12 pad
+// 6×vec4 planes (96) + prevViewProj mat4 (64) + drawCount/occlusion/hizMips/pad
+// (16) + hizSize vec2 + pad (16) = 192.
+const CULL_PARAMS_SIZE = 192;
 const INDIRECT_STRIDE  = 20;    // GPUDrawIndexedIndirectParameters: 5 × u32
 
 // Clustered forward+ grid (must match clusters.wgsl / pbr.wgsl).
@@ -352,6 +355,16 @@ export class WebGPURenderer {
    */
   gpuCulling = false;
   /**
+   * Hi-Z occlusion culling (opt-in, builds on `gpuCulling`). Each frame a
+   * max-depth pyramid is built from the scene depth; the next frame's GPU cull
+   * tests each bounding sphere's screen footprint against it and skips meshes
+   * fully behind closer geometry. Requires `gpuCulling = true` and
+   * `sampleCount = 1` (the depth must be sampleable); silently inactive
+   * otherwise. Conservative max-reduction, but uses the previous frame's depth,
+   * so objects revealed by fast camera motion can pop in one frame late.
+   */
+  occlusionCulling = false;
+  /**
    * Clustered forward+ lighting: a compute shader bins light bounding spheres
    * into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade
    * only the lights in their cluster (up to 32), so hundreds of ranged lights
@@ -372,6 +385,20 @@ export class WebGPURenderer {
   private gpuIndirectBuffer: GPUBuffer | null = null;
   private gpuCullBindGroup: GPUBindGroup | null = null;
   private gpuCullCapacity = 0;
+  // Hi-Z occlusion: max-depth pyramid built each frame, used the next.
+  private hizTexture: GPUTexture | null = null;
+  private hizMipViews: GPUTextureView[] = []; // per-mip render-attachment views
+  private hizSampleView: GPUTextureView | null = null; // full-chain sampling view
+  private hizSampler: GPUSampler | null = null;
+  private hizDummyView: GPUTextureView | null = null; // 1×1, bound when no pyramid yet
+  private hizCopyPipeline: GPURenderPipeline | null = null;
+  private hizDownPipeline: GPURenderPipeline | null = null;
+  private hizCopyLayout: GPUBindGroupLayout | null = null;
+  private hizDownLayout: GPUBindGroupLayout | null = null;
+  private hizMipCount = 0;
+  private hizValid = false; // a pyramid from a prior frame is available
+  private _boundHizView: GPUTextureView | null = null;
+  private _prevHizViewProj = new Float32Array(16); // viewProj that built the bound hi-Z
   private bundleKey = '';
   private frameBindGroupVersion = 0;
   private post!: PostProcessing;
@@ -566,6 +593,11 @@ export class WebGPURenderer {
     this.gpuCullPipeline = null; this.gpuCullLayout = null; this.gpuCullParamsBuffer = null;
     this.gpuSphereBuffer = null; this.gpuIndirectBuffer = null; this.gpuCullBindGroup = null;
     this.gpuCullCapacity = 0;
+    this.hizTexture = null; this.hizMipViews = []; this.hizSampleView = null;
+    this.hizSampler = null; this.hizDummyView = null;
+    this.hizCopyPipeline = null; this.hizDownPipeline = null;
+    this.hizCopyLayout = null; this.hizDownLayout = null;
+    this.hizMipCount = 0; this.hizValid = false; this._boundHizView = null;
     this.modelPoolBuffer = null; this.modelPoolBindGroup = null; this.modelPoolCapacity = 0;
     this.skyBindGroup = null; this.skyBindGroupKey = '';
     this.skyGenPipeline = null; this.skyGenParamsBuffer = null; this.skyGenBindGroup = null;
@@ -1037,6 +1069,12 @@ export class WebGPURenderer {
     // Save this frame's unjittered view-projection for next frame's TAA
     // reprojection (canvas renders only — offscreen cameras must not pollute it).
     if (!rt) this._prevViewProj.set(this._viewProjection.elements);
+
+    // Build the hi-Z pyramid from this frame's depth for next frame's occlusion
+    // cull (canvas renders only; needs sampleable depth → sampleCount 1).
+    if (!rt && this.gpuCulling && this.occlusionCulling && this.sampleCount === 1 && this.depthSampleView) {
+      this.buildHiZ(encoder);
+    }
 
     // Pending readPixels(): copy the final frame into a mappable buffer before
     // the swap texture is presented.
@@ -1989,6 +2027,8 @@ export class WebGPURenderer {
           { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
           { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
           { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+          { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+          { binding: 4, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
         ],
       });
       this.gpuCullPipeline = this.device.createComputePipeline({
@@ -2050,7 +2090,12 @@ export class WebGPURenderer {
       }
     }
 
-    // Upload frustum planes + draw count.
+    // Occlusion is active only when opted in, MSAA is off, and a prior-frame
+    // pyramid exists. The hi-Z and its matching viewProj come from last frame.
+    const occlusion = this.occlusionCulling && this.sampleCount === 1 && this.hizValid && !!this.hizSampleView;
+    this.ensureHizDummy();
+
+    // Upload frustum planes + prev viewProj + draw count + hi-Z params.
     const paramsBuf = new ArrayBuffer(CULL_PARAMS_SIZE);
     const pf = new Float32Array(paramsBuf);
     const pu = new Uint32Array(paramsBuf);
@@ -2061,19 +2106,28 @@ export class WebGPURenderer {
       pf[i * 4 + 2] = pl.normal.z;
       pf[i * 4 + 3] = pl.constant;
     }
-    pu[24] = this.nextMeshSlot; // drawCount at byte 96
+    pf.set(this._prevHizViewProj, 24);  // prevViewProj at byte 96 (float 24)
+    pu[40] = this.nextMeshSlot;          // drawCount at byte 160
+    pu[41] = occlusion ? 1 : 0;          // occlusion flag
+    pu[42] = this.hizMipCount;           // hizMips
+    pf[44] = this.canvas.width;          // hizSize.x at byte 176
+    pf[45] = this.canvas.height;         // hizSize.y
     this.device.queue.writeBuffer(this.gpuCullParamsBuffer!, 0, paramsBuf);
 
-    // Rebuild bind group if buffers were (re)created.
-    if (!this.gpuCullBindGroup) {
+    // Rebuild bind group when buffers or the bound hi-Z view change.
+    const hizView = occlusion ? this.hizSampleView! : this.hizDummyView!;
+    if (!this.gpuCullBindGroup || this._boundHizView !== hizView) {
       this.gpuCullBindGroup = this.device.createBindGroup({
         layout: this.gpuCullLayout!,
         entries: [
           { binding: 0, resource: { buffer: this.gpuCullParamsBuffer! } },
           { binding: 1, resource: { buffer: this.gpuSphereBuffer! } },
           { binding: 2, resource: { buffer: this.gpuIndirectBuffer! } },
+          { binding: 3, resource: hizView },
+          { binding: 4, resource: this.hizSampler! },
         ],
       });
+      this._boundHizView = hizView;
     }
 
     const pass = encoder.beginComputePass({ label: 'frustum-cull' });
@@ -2081,6 +2135,118 @@ export class WebGPURenderer {
     pass.setBindGroup(0, this.gpuCullBindGroup);
     pass.dispatchWorkgroups(Math.ceil(this.nextMeshSlot / 64));
     pass.end();
+  }
+
+  /** Lazily create the 1×1 dummy hi-Z (bound when no real pyramid is active). */
+  private ensureHizDummy(): void {
+    if (!this.hizSampler) {
+      this.hizSampler = this.device.createSampler({ label: 'hiz', magFilter: 'nearest', minFilter: 'nearest' });
+    }
+    if (!this.hizDummyView) {
+      const tex = this.device.createTexture({
+        label: 'hiz-dummy', size: [1, 1], format: 'r32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.hizDummyView = tex.createView();
+    }
+  }
+
+  /** (Re)allocate the hi-Z pyramid for the current canvas size + its pipelines. */
+  private ensureHizResources(): void {
+    const w = this.canvas.width, h = this.canvas.height;
+    const mips = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
+    if (this.hizTexture && this.hizMipCount === mips &&
+        this.hizTexture.width === w && this.hizTexture.height === h) {
+      return;
+    }
+    this.hizTexture?.destroy();
+    this.hizTexture = this.device.createTexture({
+      label: 'hiz',
+      size: [w, h],
+      format: 'r32float',
+      mipLevelCount: mips,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.hizMipViews = [];
+    for (let i = 0; i < mips; i++) {
+      this.hizMipViews.push(this.hizTexture.createView({ baseMipLevel: i, mipLevelCount: 1 }));
+    }
+    this.hizSampleView = this.hizTexture.createView(); // full chain, for cull sampling
+    this.hizMipCount = mips;
+    this.hizValid = false; // stale until rebuilt
+    this._boundHizView = null;
+
+    if (!this.hizCopyPipeline) {
+      const copyModule = this.device.createShaderModule({ code: HIZ_COPY_SHADER, label: 'hiz-copy' });
+      const downModule = this.device.createShaderModule({ code: HIZ_DOWN_SHADER, label: 'hiz-down' });
+      this.hizCopyLayout = this.device.createBindGroupLayout({
+        label: 'hiz-copy',
+        entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } }],
+      });
+      this.hizDownLayout = this.device.createBindGroupLayout({
+        label: 'hiz-down',
+        entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } }],
+      });
+      this.hizCopyPipeline = this.device.createRenderPipeline({
+        label: 'hiz-copy',
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.hizCopyLayout] }),
+        vertex: { module: copyModule, entryPoint: 'vs_main' },
+        fragment: { module: copyModule, entryPoint: 'fs_main', targets: [{ format: 'r32float' }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      this.hizDownPipeline = this.device.createRenderPipeline({
+        label: 'hiz-down',
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.hizDownLayout] }),
+        vertex: { module: downModule, entryPoint: 'vs_main' },
+        fragment: { module: downModule, entryPoint: 'fs_main', targets: [{ format: 'r32float' }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    }
+  }
+
+  /**
+   * Build the hi-Z max-depth pyramid from this frame's depth (mip 0 = copy of
+   * depth, each finer→coarser mip = 2×2 max). Runs after the main pass; the
+   * result is consumed by next frame's cull. Records the viewProj it was built
+   * with so the cull can reproject against it.
+   */
+  private buildHiZ(encoder: GPUCommandEncoder): void {
+    if (this.sampleCount !== 1 || !this.depthSampleView) return;
+    this.ensureHizResources();
+    this.ensureHizDummy();
+
+    // Mip 0: copy scene depth.
+    const copyBind = this.device.createBindGroup({
+      layout: this.hizCopyLayout!,
+      entries: [{ binding: 0, resource: this.depthSampleView }],
+    });
+    let p = encoder.beginRenderPass({
+      colorAttachments: [{ view: this.hizMipViews[0], loadOp: 'clear', storeOp: 'store', clearValue: { r: 1, g: 0, b: 0, a: 1 } }],
+    });
+    p.setPipeline(this.hizCopyPipeline!);
+    p.setBindGroup(0, copyBind);
+    p.draw(3);
+    p.end();
+
+    // Coarser mips: 2×2 max-reduce the previous level.
+    for (let i = 1; i < this.hizMipCount; i++) {
+      const downBind = this.device.createBindGroup({
+        layout: this.hizDownLayout!,
+        entries: [{ binding: 0, resource: this.hizMipViews[i - 1] }],
+      });
+      const dp = encoder.beginRenderPass({
+        colorAttachments: [{ view: this.hizMipViews[i], loadOp: 'clear', storeOp: 'store', clearValue: { r: 1, g: 0, b: 0, a: 1 } }],
+      });
+      dp.setPipeline(this.hizDownPipeline!);
+      dp.setBindGroup(0, downBind);
+      dp.draw(3);
+      dp.end();
+    }
+
+    // This pyramid matches the current frame's viewProj; the cull next frame
+    // reads it as "prev".
+    this._prevHizViewProj.set(this._viewProjection.elements);
+    this.hizValid = true;
   }
 
   private clearColor(scene: Scene): GPUColor {

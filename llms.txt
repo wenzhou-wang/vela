@@ -480,6 +480,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - time: number — Scene time in seconds; only advances when you set it (`deterministic = true`).
 - renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
 - gpuCulling: boolean — GPU-driven frustum culling: a compute shader tests bounding spheres against the camera frustum and writes instanceCount 0/1 into an indirect draw buffer.
+- occlusionCulling: boolean — Hi-Z occlusion culling (opt-in, builds on `gpuCulling`).
 - clusteredLighting: boolean — Clustered forward+ lighting: a compute shader bins light bounding spheres into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade only the lights in their cluster (up to 32), so hundreds of ranged lights stay cheap.
 - onDeviceLost: ((info: GPUDeviceLostInfo) => void) | undefined — Called when the GPU device is lost unexpectedly; call `restoreContext()` to recover.
 - frustumCulling: boolean — Skip meshes whose bounding sphere is outside the camera frustum.

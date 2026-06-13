@@ -422,7 +422,7 @@ rest" — to the remaining programmable surfaces.
 
 ---
 
-## v0.9 — Scale & robustness ⬜
+## v0.9 — Scale & robustness ✅
 
 - ✅ **LOD** — `LOD extends Object3D` with `addLevel(object, distance, hysteresis?)`
       (levels auto-sorted by distance). Before `collect()`, the renderer walks the
@@ -432,9 +432,18 @@ rest" — to the remaining programmable surfaces.
       bidirectional deadband — switch up only past `distance + hysteresis`, down only
       below `distance - hysteresis` — eliminating boundary flicker. `autoUpdate = false`
       hands control to manual `update()` calls. Selection + hysteresis offline-verified.
-- ⬜ **GPU occlusion culling** — two-phase: render last frame's visible set, build a
-      hi-Z mip pyramid from depth, then test the remaining bounds against it in the
-      existing GPU-cull compute pass (extends the indirect-draw path).
+- ✅ **GPU occlusion culling** (opt-in `renderer.occlusionCulling`, builds on
+      `gpuCulling`, needs `sampleCount = 1`) — single-phase previous-frame hi-Z. Each
+      frame, after the scene pass, a max-depth pyramid is built from the depth buffer
+      (mip 0 = a depth copy, each coarser mip = a 2×2 max-reduce fullscreen pass into
+      an `r32float` mip chain). Next frame the cull compute shader projects each
+      bounding sphere through the pyramid's matching view-projection, picks the mip
+      whose texel covers the sphere's screen AABB, and culls it only if its nearest
+      depth is behind the max occluder depth (conservative). The cull bind group gains
+      the hi-Z texture+sampler (a 1×1 dummy when inactive); a flag in `CullParams`
+      keeps the frustum-only path identical when occlusion is off. **Caveat:** uses the
+      prior frame's depth, so geometry revealed by fast camera motion can pop one frame
+      late; verified offline (WGSL parse + struct offsets) but not yet on GPU hardware.
 - ✅ **Performance advisor** — `renderer.report().suggestions` is a list of
       `{ code, message, fix }` items (same shape as `diagnose()`) computed from the
       last frame: an instancing opportunity (≥16 meshes sharing one geometry+material
