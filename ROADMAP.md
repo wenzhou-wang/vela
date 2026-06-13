@@ -371,10 +371,14 @@ human looking at pixels — the core AI-first differentiator.
       count, particle pool capacity, sprite batches/instances, shadow re-draw cost,
       estimated GPU texture memory (tracked by the TextureManager incl. mip
       overhead), and active feature flags.
-- ⬜ **`llms.txt` + generated API reference** — a single context-window-friendly page
-      of the whole public API (signatures + one-line docs, generated from the `.d.ts`
-      surface by a script in `scripts/`), published at the repo root and `docs/llms.txt`
-      per the llms.txt convention.
+- ✅ **`llms.txt` + generated API reference** — `npm run docs:llms`
+      (`scripts/generate-llms.mjs`) extracts the entire public API from
+      `src/index.ts` via the TypeScript checker — classes with own members +
+      one-line docs (inherited members listed once on the base), function
+      signatures, and interfaces/type aliases verbatim — and emits a single
+      ~50 KB context-window-friendly page (quick-start example + the
+      stuck-agent toolkit pointers) at the repo root and `docs/llms.txt` per
+      the llms.txt convention.
 
 ---
 

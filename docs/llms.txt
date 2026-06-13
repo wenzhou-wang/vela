@@ -1,0 +1,1183 @@
+# vela
+
+> A WebGPU-first 3D rendering engine written from scratch in TypeScript — built to explore what a modern engine looks like without the weight of legacy WebGL paths or old-browser support. PBR shading, a glTF loader, and an interactive viewer in ~3k lines.
+
+vela is a WebGPU-only 3D rendering engine designed for AI agents building games:
+declarative APIs, no hidden update flags, actionable error messages, deterministic
+rendering, pixel readback, and built-in scene diagnostics. TypeScript, zero runtime
+dependencies.
+
+Quick start:
+
+```ts
+import { WebGPURenderer, Scene, PerspectiveCamera, Mesh, BoxGeometry,
+         StandardMaterial, DirectionalLight, Vector3 } from 'vela';
+
+const renderer = new WebGPURenderer({ canvas });
+await renderer.init();
+const scene = new Scene();
+scene.sky = { sunDirection: new Vector3(0.4, 0.7, 0.2) };  // procedural daylight + IBL
+scene.skybox = true;
+scene.add(new Mesh(new BoxGeometry(), new StandardMaterial({ color: 0x6699ff })));
+const light = new DirectionalLight(0xffffff, 3);
+scene.add(light, light.target);
+const camera = new PerspectiveCamera(45, canvas.width / canvas.height, 0.1, 100);
+camera.position.set(3, 2, 5); camera.lookAt(new Vector3(0, 0, 0));
+function frame() { requestAnimationFrame(frame); renderer.render(scene, camera); }
+frame();
+```
+
+Stuck? `renderer.diagnose(scene, camera)` explains black screens with fixes;
+`describeScene(scene, camera)` and `renderer.report()` return JSON state;
+`await renderer.screenshot()` shows you the frame; `expectFrame(...)` turns
+visuals into assertions. Docs: docs/GETTING_STARTED.md, docs/ARCHITECTURE.md,
+docs/SHADER_MATERIAL.md, ROADMAP.md.
+
+## Classes
+
+### class Object3D
+Base node of the scene graph: a transform with a parent and children.
+- id: string
+- isObject3D: true
+- name: string
+- type: string
+- parent: Object3D | null
+- children: Object3D[]
+- position: Vector3
+- rotation: Euler
+- quaternion: Quaternion
+- scale: Vector3
+- matrix: Matrix4
+- matrixWorld: Matrix4
+- matrixAutoUpdate: boolean — When true, local matrix is recomposed from position/quaternion/scale each update.
+- matrixWorldNeedsUpdate: boolean
+- visible: boolean
+- frustumCulled: boolean — When true, the renderer may skip this object if its bounds are off-screen.
+- add(objects: Object3D[]): Object3D
+- remove(objects: Object3D[]): Object3D
+- removeFromParent(): Object3D
+- traverse(callback: (object: Object3D) => void): void — Depth-first traversal including self.
+- traverseVisible(callback: (object: Object3D) => void): void
+- getWorldPosition(target: Vector3): Vector3
+- lookAt(x: number | Vector3, y?: number | undefined, z?: number | undefined): void — Orient this object so its -Z axis points toward the target (world space).
+- up: Vector3
+- updateMatrix(): void
+- updateMatrixWorld(force?: boolean): void — Recompute world matrices for this subtree.
+- updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void — Update world matrix of this node, optionally walking up parents and/or down children.
+
+### class Raycaster
+Picks meshes along a ray. A bounding-sphere test rejects far-away meshes cheaply; survivors are tested per-triangle in the mesh's local space, so hits carry an exact point, the triangle index, and an interpolated UV.
+- ray: Ray
+- near: number
+- far: number
+- precise: boolean — When false, the per-triangle pass is skipped and meshes are picked at the bounding-sphere level (faster, coarser).
+- bvhThreshold: number — Triangle count at or above which a cached BVH accelerates the precise pass instead of a linear scan.
+- setFromCamera(ndcX: number, ndcY: number, camera: Camera): Raycaster — Build the ray from normalized device coords (x, y in [-1, 1]).
+- intersect(root: Object3D, recursive?: boolean): Intersection[] — Intersect a subtree; returns hits sorted nearest-first.
+
+### class BVH
+A median-split bounding-volume hierarchy over a geometry's triangles, used to skip the per-triangle linear scan when raycasting dense meshes. Built once and cached on the geometry; traversal prunes subtrees whose AABB the ray misses.
+- new BVH(triangles: Uint32Array<ArrayBufferLike>, root: BVHNode)
+- triangles: Uint32Array<ArrayBufferLike> — Triangle indices in leaf order (triangle `t` spans vertices 3t..3t+2).
+- intersect(ray: Ray, visit: (triangleIndex: number) => void): void — Visit every triangle whose leaf AABB the ray may cross.
+
+### class Scene extends Object3D
+Root of a renderable scene graph, with optional background and ambient fill.
+- isScene: true
+- background: Color | null
+- ambientColor: Color — Flat ambient irradiance applied to all PBR materials.
+- ambientIntensity: number
+- environment: Texture | null — Equirectangular environment map for image-based lighting.
+- environmentIntensity: number — Multiplier on the environment's contribution.
+- sky: SkyOptions | null — Procedural daylight sky.
+- skybox: boolean — Draw the environment (or procedural sky) as the background.
+- fog: FogOptions | null — Distance fog applied to all lit materials (PBR and ShaderMaterial).
+- backgroundBlur: number — Blur the skybox background: 0 = sharp, 1 = fully blurred (mip-based).
+
+### class Camera extends Object3D
+Base camera: holds projection and the inverse-world (view) matrix.
+- isCamera: true
+- projectionMatrix: Matrix4
+- projectionMatrixInverse: Matrix4
+- matrixWorldInverse: Matrix4 — View matrix = inverse(world matrix).
+- updateMatrixWorld(force?: boolean | undefined): void — Recompute world matrices for this subtree.
+- updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void — Update world matrix of this node, optionally walking up parents and/or down children.
+
+### class PerspectiveCamera extends Camera
+- new PerspectiveCamera(fov: number, aspect: number, near: number, far: number)
+- isPerspectiveCamera: true
+- fov: number — Vertical field of view in degrees.
+- aspect: number
+- near: number
+- far: number
+- updateProjectionMatrix(): void
+
+### class OrthographicCamera extends Camera
+Orthographic projection camera (no perspective foreshortening). Useful for CAD-style views, 2D overlays, and shadow-map light cameras.
+- new OrthographicCamera(left: number, right: number, top: number, bottom: number, near: number, far: number)
+- isOrthographicCamera: true
+- left: number
+- right: number
+- top: number
+- bottom: number
+- near: number
+- far: number
+- zoom: number — Uniform scale on the frustum half-extents.
+- updateProjectionMatrix(): void
+
+### class Mesh extends Object3D
+A renderable: geometry paired with one (or more) materials.
+- new Mesh(geometry: BufferGeometry, material: Material | Material[])
+- isMesh: true
+- geometry: BufferGeometry
+- material: Material | Material[]
+- morphTargetInfluences: number[] — Per-morph-target blend weights, parallel to `geometry.morphAttributes.position`.
+- morphTargetDictionary: Record<string, number> | null — Optional name → target-index map (from glTF `mesh.extras.targetNames`).
+
+### class LineSegments extends Mesh
+A set of disconnected line segments: the position attribute is read in pairs (0-1, 2-3, …) and drawn with `line-list` topology. Reuses the scene-graph and culling machinery of {@link Mesh}; the renderer routes it to the line pipeline.
+- new LineSegments(geometry: BufferGeometry, material: LineBasicMaterial)
+- isLineSegments: true
+
+### class SkinnedMesh extends Mesh
+A mesh deformed on the GPU by a skeleton. The geometry must carry `joints` (vec4 uint) and `weights` (vec4 float) attributes; the renderer uploads the skeleton's bone matrices and uses the skinned pipeline variant.
+- new SkinnedMesh(geometry: BufferGeometry, material: Material | Material[], skeleton: Skeleton)
+- isSkinnedMesh: true
+- skeleton: Skeleton
+
+### class InstancedMesh extends Mesh
+Renders one geometry many times in a single draw call. Each instance has its own model matrix stored in `instanceMatrix` (16 floats per instance); the renderer uploads them to a storage buffer read by the instanced vertex shader.
+- new InstancedMesh(geometry: BufferGeometry, material: Material | Material[], count: number)
+- isInstancedMesh: true
+- count: number
+- instanceMatrix: Float32Array<ArrayBuffer>
+- version: number — Bump (or call `needsUpdate`) after editing matrices to re-upload.
+- setMatrixAt(index: number, matrix: Matrix4): void
+- getMatrixAt(index: number, target: Matrix4): void
+- needsUpdate(): void
+
+### class ParticleSystem extends Object3D
+A GPU-simulated particle emitter: a compute pass integrates a fixed-capacity pool (positions/velocities/age live only on the GPU; the hot path allocates nothing per particle), and one instanced draw renders camera-facing soft discs. Emission happens at this object's world position — move it like any Object3D to make trails.
+- new ParticleSystem(options: ParticleSystemOptions)
+- isParticleSystem: true
+- options: ParticleSystemOptions
+- emitting: boolean — Pause emission (existing particles keep simulating).
+
+### class Sprite extends Object3D
+A camera-facing textured quad. World-space by default (sized in world units, depth-tested against the scene — labels, pickups, billboards); set `screenSpace = true` for HUD elements sized in CSS pixels and drawn on top of everything.
+- new Sprite(texture: Texture | null)
+- isSprite: true
+- texture: Texture | null — Color texture (un-set = solid `color` quad).
+- color: Color — Tint multiplied with the texture.
+- opacity: number
+- size: Vector2 — Quad size: world units, or CSS pixels when `screenSpace`.
+- offset: Vector2 — Extra offset from the anchor point, in the same units as `size` (x right, y up).
+- screenSpace: boolean — Draw as a HUD overlay: no depth test, sized in CSS pixels.
+
+### class TextMesh extends Object3D
+Billboarded SDF text. Glyphs rasterize lazily into a per-font distance-field atlas and render through the sprite batcher — one instanced draw per font — so text stays crisp at any scale and cheap at any count. Supports `\n` for multiple lines. Mutate `text` (or any option) freely; everything re-reads each frame.
+- new TextMesh(text: string, options: TextMeshOptions)
+- isTextMesh: true
+- text: string
+- font: string
+- fontSize: number
+- color: Color
+- opacity: number
+- screenSpace: boolean
+- anchor: "left" | "center" | "right"
+
+### class RenderTarget
+An offscreen render destination: `renderer.render(scene, camera, rt)` draws into it, and `rt.texture` works anywhere a sampled texture does — mirrors, portals, minimaps, security monitors:
+- new RenderTarget(width: number, height: number)
+- isRenderTarget: true
+- width: number
+- height: number
+- texture: Texture — Sample this in any material (`map`, sprite texture, ...).
+
+### class Skeleton
+A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
+- new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
+- joints: Object3D[]
+- boneInverses: Matrix4[]
+- boneMatrices: Float32Array<ArrayBuffer> — Flat 16-floats-per-joint buffer uploaded to the GPU.
+- jointCount: number
+- update(): void — Recompute bone matrices from the joints' current world transforms.
+
+### class BufferGeometry
+Holds vertex attributes and an optional index buffer for a mesh.
+- id: string
+- isBufferGeometry: true
+- name: string
+- attributes: Record<string, BufferAttribute>
+- index: BufferAttribute | null
+- morphAttributes: { position?: BufferAttribute[] | undefined; normal?: BufferAttribute[] | undefined; } — Morph-target deltas.
+- boundingBox: Box3 | null
+- boundingSphere: Sphere | null
+- version: number — Incremented when buffers are structurally replaced (forces GPU re-create).
+- setAttribute(name: string, attribute: BufferAttribute): BufferGeometry
+- getAttribute(name: string): BufferAttribute | undefined
+- setIndex(index: BufferAttribute | TypedArray): BufferGeometry
+- getDrawCount(): number — Number of vertices to draw (index count if indexed, else position count).
+- computeBoundingBox(): void
+- computeBoundingSphere(): void
+- computeVertexNormals(): void — Generate smooth vertex normals from positions (indexed or non-indexed).
+
+### class BufferAttribute
+A view over interleaved or tightly-packed vertex data for one attribute.
+- new BufferAttribute(array: TypedArray, itemSize: number, normalized: boolean)
+- array: TypedArray
+- itemSize: number
+- normalized: boolean
+- version: number — Bumped when the data changes so the renderer can re-upload.
+- count: number
+- getX(i: number): number
+- getY(i: number): number
+- getZ(i: number): number
+- needsUpdate(): void
+
+### class BoxGeometry extends BufferGeometry
+A box centered at the origin.
+- new BoxGeometry(width: number, height: number, depth: number)
+
+### class SphereGeometry extends BufferGeometry
+A UV sphere centered at the origin.
+- new SphereGeometry(radius: number, widthSegments: number, heightSegments: number)
+
+### class PlaneGeometry extends BufferGeometry
+A flat plane on the XZ axes (normal +Y), centered at the origin.
+- new PlaneGeometry(width: number, depth: number)
+
+### class Material
+Base material: render-state common to all shading models.
+- id: string
+- isMaterial: true
+- name: string
+- type: string
+- side: Side
+- transparent: boolean
+- blending: Blending
+- opacity: number
+- depthTest: boolean
+- depthWrite: boolean
+- alphaTest: number — Alpha test cutoff; 0 disables.
+- needsPipelineRebuild: boolean — Identifies the pipeline variant.
+
+### class StandardMaterial extends Material
+Physically based metallic-roughness material (glTF 2.0 compatible). Cook-Torrance GGX specular + Lambertian diffuse, evaluated in the renderer's WGSL PBR shader.
+- new StandardMaterial(params: StandardMaterialParams)
+- type: "StandardMaterial"
+- color: Color
+- metalness: number
+- roughness: number
+- emissive: Color
+- emissiveIntensity: number
+- normalScale: number
+- occlusionStrength: number
+- clearcoat: number — Clear-coat layer (KHR_materials_clearcoat): a thin dielectric specular coat.
+- clearcoatRoughness: number
+- ior: number — Index of refraction (KHR_materials_ior); 1.5 → the default 0.04 dielectric F0.
+- specularIntensity: number — Dielectric specular strength and tint (KHR_materials_specular).
+- specularColor: Color
+- sheenColor: Color — Sheen layer (KHR_materials_sheen): a cloth-like retroreflective lobe.
+- sheenRoughness: number
+- transmission: number — Transmission factor (KHR_materials_transmission): glass-like refraction.
+- thickness: number — Volume thickness (KHR_materials_volume); 0 = thin-walled.
+- attenuationDistance: number — Distance light travels before attenuating to `attenuationColor`; 0 = none.
+- attenuationColor: Color
+- map: Texture | null
+- normalMap: Texture | null
+- metalnessRoughnessMap: Texture | null — glTF packs metalness in B, roughness in G.
+- emissiveMap: Texture | null
+- occlusionMap: Texture | null
+- clearcoatMap: Texture | null — Per-texel clearcoat factor (R channel).
+- clearcoatRoughnessMap: Texture | null — Per-texel clearcoat roughness (G channel).
+- getFeatureKey(): number — Bitmask describing which texture maps are present (drives shader variants).
+
+### class LineBasicMaterial extends Material
+Unlit line material: a flat color (optionally modulated by per-vertex colors), evaluated in the renderer's WGSL line shader. Used by the debug helpers.
+- new LineBasicMaterial(params: LineBasicMaterialParams)
+- type: "LineBasicMaterial"
+- color: Color
+- vertexColors: boolean
+
+### class ShaderMaterial extends Material
+A custom-surface material: you write one WGSL function that produces PBR surface inputs (albedo, roughness, emissive, normal, ...) and the engine supplies everything else — all light types, shadows, IBL, clustered lighting, OIT, post-processing and tonemapping behave exactly as they do for StandardMaterial.
+- new ShaderMaterial(options: ShaderMaterialOptions)
+- isShaderMaterial: true
+- type: "ShaderMaterial"
+- uniforms: Record<string, UniformValue> — Custom uniform values; mutate freely (uploaded every frame).
+- version: number — Bumped by setSurface(); part of the pipeline cache key.
+- surfaceCode: string
+- setSurface(code: string): void — Replace the surface function; the shader recompiles on next draw.
+
+### class GridHelper extends LineSegments
+A wireframe grid on the XZ plane, centered at the origin. The two center lines (the X and Z axes) use `centerColor`; the rest use `gridColor`.
+- new GridHelper(size: number, divisions: number, centerColor: number, gridColor: number)
+
+### class AxesHelper extends LineSegments
+Three lines from the origin: +X red, +Y green, +Z blue.
+- new AxesHelper(size: number)
+
+### class Box3Helper extends LineSegments
+A wireframe box outlining a {@link Box3}; call {@link update} to re-fit.
+- new Box3Helper(box: Box3, color: number)
+- update(box: Box3): void — Rebuild the edge positions from `box` (in the box's own coordinate space).
+
+### class DirectionalLightHelper extends LineSegments
+A square at the light's position plus a line pointing toward its target. Add it to the scene root and call {@link update} each frame to track the light.
+- new DirectionalLightHelper(light: DirectionalLight, size: number, color: number | undefined)
+- light: DirectionalLight
+- update(): void — Re-position/orient the gizmo from the light's current transform.
+
+### class PointLightHelper extends LineSegments
+A small octahedron wireframe at the point light's position.
+- new PointLightHelper(light: PointLight, size: number, color: number | undefined)
+- light: PointLight
+- update(): void — Re-position the gizmo at the light and refresh its color.
+
+### class Stats
+A tiny performance overlay: frames-per-second and frame time (ms), with a rolling bar graph. Call {@link begin} at the start of your frame and {@link end} at the end (or just {@link update} once per frame). The timing math is decoupled from the DOM so it can be verified without a browser.
+- new Stats(now: number)
+- dom: HTMLDivElement | null — The overlay element (null when constructed without a `document`).
+- historySize: 80 — Number of samples kept for the graph.
+- fps: number — Most recent frames-per-second (updated about once a second).
+- ms: number — Most recent measured frame time in milliseconds.
+- begin(now?: number): void — Mark the start of a frame.
+- end(now?: number): number — Mark the end of a frame; returns `now`.
+- update(now?: number): void — Convenience: `end()` then `begin()` for the next frame.
+- getHistory(): readonly number[] — Snapshot of recent per-second fps samples (oldest first).
+
+### class Texture
+A 2D texture backed by an ImageBitmap/canvas, uploaded lazily by the renderer.
+- new Texture(source: TextureSource | null, options: TextureOptions)
+- id: string
+- isTexture: true
+- name: string
+- source: TextureSource | null
+- wrapS: WrapMode
+- wrapT: WrapMode
+- magFilter: FilterMode
+- minFilter: FilterMode
+- generateMipmaps: boolean
+- colorSpace: "linear" | "srgb"
+- flipY: boolean
+- version: number — Bumped to force re-upload.
+- needsUpdate(): void
+
+### class DataTexture extends Texture
+A texture backed by raw pixel data (rather than an ImageBitmap). The renderer uploads `Float32Array` data as `rgba16float` (HDR environments) and `Uint8Array` data as `rgba8unorm`/`-srgb` (e.g. transcoded KTX2).
+- new DataTexture(data: Float32Array<ArrayBufferLike> | Uint8Array<ArrayBufferLike>, width: number, height: number, options: TextureOptions)
+- isDataTexture: true
+- data: Float32Array<ArrayBufferLike> | Uint8Array<ArrayBufferLike> — Interleaved RGBA data, length = width * height * 4.
+- width: number
+- height: number
+
+### class CompressedDataTexture extends DataTexture
+A GPU block-compressed texture (BC7 / ASTC 4×4 / ETC2). Uploaded directly to the GPU without a pixel-format conversion; no mipmap generation is performed.
+- new CompressedDataTexture(blocks: Uint8Array<ArrayBufferLike>, width: number, height: number, gpuFormat: string, options: TextureOptions)
+- isCompressedDataTexture: true
+- gpuFormat: string — The WebGPU texture format (e.g.
+
+### class Light extends Object3D
+Base light: a colored, intensity-scaled emitter in the scene graph.
+- new Light(color: number | Color, intensity: number)
+- isLight: true
+- color: Color
+- intensity: number
+
+### class AmbientLight extends Light
+Uniform ambient fill applied equally to all surfaces.
+- new AmbientLight(color: number | Color, intensity: number)
+- isAmbientLight: true
+
+### class DirectionalLight extends Light
+A light infinitely far away, casting parallel rays toward its target.
+- new DirectionalLight(color: number | Color, intensity: number)
+- isDirectionalLight: true
+- target: Object3D — Direction is from this object's world position toward the target.
+- castShadow: boolean — When true and `renderer.shadows` is on, this light casts a shadow map.
+
+### class PointLight extends Light
+An omnidirectional light with physically-based inverse-square falloff.
+- new PointLight(color: number | Color, intensity: number, distance: number, decay: number)
+- isPointLight: true
+- distance: number — Maximum range of influence; 0 = infinite.
+- decay: number — Additional falloff exponent (2 = physically correct).
+- castShadow: boolean — Render this light's shadow into the cube-face shadow atlas (requires `renderer.shadows`).
+
+### class SpotLight extends Light
+A cone-shaped light with perspective falloff, angular attenuation, and optional shadow mapping. Direction is from this object's world position toward `target`.
+- new SpotLight(color: number | Color, intensity: number, distance: number, angle: number, penumbra: number, decay: number)
+- isSpotLight: true
+- angle: number — Half-angle of the light cone in radians (default = 60° full → PI/3 half).
+- penumbra: number — Fraction of `angle` used for the penumbra (soft edge).
+- distance: number — Maximum illumination range; 0 = infinite.
+- decay: number — Falloff exponent (2 = physically correct inverse-square).
+- castShadow: boolean — When true and `renderer.shadows` is on, this light writes a shadow map tile.
+- target: Object3D — The spot aims from its world position toward this object.
+
+### class WebGPURenderer
+A WebGPU forward renderer with clustered-free multi-light PBR shading.
+- new WebGPURenderer(options: RendererOptions)
+- canvas: HTMLCanvasElement
+- device: GPUDevice
+- shadows: boolean — Enable directional shadow mapping for the first `castShadow` light.
+- shadowMapSize: number — Shadow map resolution (square).
+- shadowNormalBias: number — World-space normal offset applied before the depth comparison (reduces acne).
+- postProcessing: boolean — Route rendering through the HDR post pipeline (tonemap moves to a final pass).
+- fxaa: boolean — Apply FXAA in the post pipeline (only when `postProcessing` is on).
+- bloom: boolean — Apply bloom in the post pipeline (only when `postProcessing` is on).
+- bloomThreshold: number
+- bloomIntensity: number
+- celShading: boolean — Unlit diffuse rendering with depth, normal, and color-derived outlines.
+- outlineThickness: number — Screen-space outline radius in device pixels.
+- outlineStrength: number — Blend strength for outer silhouettes and interior feature lines.
+- oit: boolean — Order-independent transparency (weighted-blended).
+- ssao: boolean — Screen-space ambient occlusion.
+- ssaoRadius: number
+- ssaoBias: number
+- ssaoStrength: number
+- taa: boolean — Temporal anti-aliasing: a sub-pixel Halton jitter is baked into the projection matrix and a resolve pass blends the reprojected history (camera-motion only).
+- taaBlend: number — TAA blend factor: weight of the current frame (lower = smoother, more ghosting).
+- deterministic: boolean — Deterministic rendering: identical scenes produce identical pixels.
+- time: number — Scene time in seconds; only advances when you set it (`deterministic = true`).
+- renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
+- gpuCulling: boolean — GPU-driven frustum culling: a compute shader tests bounding spheres against the camera frustum and writes instanceCount 0/1 into an indirect draw buffer.
+- clusteredLighting: boolean — Clustered forward+ lighting: a compute shader bins light bounding spheres into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade only the lights in their cluster (up to 32), so hundreds of ranged lights stay cheap.
+- frustumCulling: boolean — Skip meshes whose bounding sphere is outside the camera frustum.
+- culledCount: number — Number of meshes culled in the last frame (diagnostics).
+- init(): Promise<void>
+- setPixelRatio(ratio: number): void
+- setSize(width: number, height: number): void — Resize backing store.
+- drawingBufferWidth: number
+- drawingBufferHeight: number
+- render(scene: Scene, camera: Camera, target?: RenderTarget | undefined): void
+- report(): RenderReport — Last-frame statistics as plain JSON: draw calls, triangles, culling results, memory estimates, and active feature flags.
+- diagnose(scene: Scene, camera: Camera): Diagnostic[] — Explain why a scene "renders but looks wrong" — especially black screens.
+- readPixels(target?: RenderTarget | undefined): Promise<PixelData> — Read back rendered pixels as RGBA8 (rows top-to-bottom).
+- screenshot(target?: RenderTarget | undefined): Promise<Blob> — Capture a PNG of the next canvas frame (or of a RenderTarget).
+- exposure: number
+- pickAt(cssX: number, cssY: number, scene: Scene, camera: Camera): Promise<Mesh | null> — Render an offscreen id-buffer pass and read back the pixel at (cssX, cssY) to identify which mesh lies under the cursor.
+
+### class FrameMismatchError extends Error
+Thrown by `expectFrame` on mismatch; carries inspectable artifacts.
+- new FrameMismatchError(message: string, result: CompareResult, actual: PixelData, actualPNG: Blob, diffPNG: Blob)
+- result: CompareResult
+- actual: PixelData — The frame that was actually rendered (save it to update the golden).
+- actualPNG: Blob — PNG of the rendered frame.
+- diffPNG: Blob — PNG visualizing the differences in red.
+
+### class OrbitControls
+Mouse/touch orbit-pan-zoom camera controls with inertial damping.
+- new OrbitControls(camera: PerspectiveCamera, domElement: HTMLElement)
+- enabled: boolean
+- target: Vector3
+- minDistance: number
+- maxDistance: number
+- minPolarAngle: number
+- maxPolarAngle: number
+- enableDamping: boolean
+- dampingFactor: number
+- rotateSpeed: number
+- zoomSpeed: number
+- panSpeed: number
+- autoRotate: boolean
+- autoRotateSpeed: number
+- dispose(): void
+- setTarget(center: Vector3, distance?: number | undefined): void — Frame an object/bounds: position the target at center and back off to fit.
+- update(): boolean
+
+### class FlyControls
+First-person / fly camera controls. WASD strafes in the camera plane, Q/E (or Space/Ctrl) move along the world up axis, and the mouse looks around — drag by default, or grab the pointer with {@link lock} for a true free-look.
+- new FlyControls(camera: Camera, domElement: HTMLElement)
+- enabled: boolean
+- movementSpeed: number — World units per second.
+- lookSpeed: number — Radians of rotation per pixel of mouse motion.
+- boostFactor: number — Multiplier applied while a boost key (Shift) is held.
+- maxPolarAngle: number — Clamp pitch to just under straight up/down to avoid gimbal flip.
+- verticalIsWorldUp: boolean — When true, vertical motion follows world up; when false, the camera's own up.
+- dispose(): void
+- lock(): void — Request pointer lock for continuous free-look (no dragging needed).
+- unlock(): void — Release a pointer lock acquired via {@link lock}.
+- update(delta: number): void — Integrate one frame of movement/rotation.
+
+### class GLTFLoader
+Loads glTF 2.0 (.gltf + .bin + images) and binary glTF (.glb). Supports node hierarchy, meshes/primitives, PBR metallic-roughness materials, textures/samplers, skinning, morph targets, keyframe animation (translation/rotation/scale/weights), and KHR_materials_emissive_strength.
+- setMeshoptDecoder(decoder: MeshoptDecoder): GLTFLoader — Provide a meshoptimizer decoder to enable `EXT_meshopt_compression`.
+- setKTX2Loader(loader: KTX2TextureLoader): GLTFLoader — Provide a KTX2 loader/transcoder to enable `KHR_texture_basisu`.
+- setDracoDecoder(decoder: DracoDecoder): GLTFLoader — Provide a Draco decoder to enable `KHR_draco_mesh_compression`.
+- load(url: string): Promise<GLTFResult> — Load from a URL (resolves relative buffers/images against it).
+- parse(data: ArrayBuffer, baseUrl?: string): Promise<GLTFResult> — Parse an ArrayBuffer that is either a .glb or a UTF-8 .gltf JSON.
+- buildFromPreloaded(json: GLTFRoot, buffers: ArrayBuffer[], images: (ImageBitmap | null)[]): Promise<GLTFResult> — Build a {@link GLTFResult} from pre-loaded resources (used by {@link WorkerGLTFLoader }).
+
+### class WorkerGLTFLoader
+A drop-in replacement for {@link GLTFLoader} that performs the I/O-heavy work (buffer fetching, image decoding via `createImageBitmap`) in a Web Worker, keeping the main thread free during loads. The final scene-graph construction (geometry, materials, Object3D hierarchy) still runs on the main thread.
+- setMeshoptDecoder(decoder: MeshoptDecoder): WorkerGLTFLoader
+- setDracoDecoder(decoder: DracoDecoder): WorkerGLTFLoader
+- setKTX2Loader(loader: KTX2TextureLoader): WorkerGLTFLoader
+- load(url: string): Promise<GLTFResult>
+- terminate(): void
+
+### class RGBELoader
+Loads Radiance `.hdr` (RGBE) equirectangular environment maps into a float {@link DataTexture}, suitable for `scene.environment`. Supports the new-format RLE scanlines and the flat/old fallback.
+- load(url: string, options?: TextureOptions | undefined): Promise<DataTexture>
+- parse(buffer: ArrayBuffer, options?: TextureOptions): DataTexture — Parse `.hdr` bytes into an RGBA Float32 {@link DataTexture}.
+
+### class KTX2Loader
+Loads KTX2 textures (for `KHR_texture_basisu`). Uncompressed RGBA8 payloads are uploaded directly; Basis-supercompressed payloads need a transcoder ({@link setTranscoder}) that yields RGBA8. When a GPUDevice is registered via {@link setDevice} and the transcoder implements `transcodeToCompressed`, the loader will transcode to BC7/ASTC/ETC2 (whichever the device prefers) instead of RGBA8.
+- setTranscoder(transcoder: BasisTranscoder): KTX2Loader
+- setDevice(device: GPUDevice): KTX2Loader — Provide the WebGPU device so the loader can query feature support and upload compressed textures using the preferred native format.
+- load(url: string, options?: TextureOptions | undefined): Promise<Texture>
+- parse(data: Uint8Array<ArrayBufferLike>, srgb?: boolean, options?: TextureOptions): Promise<Texture> — Parse + (if needed) transcode KTX2 bytes into a `DataTexture`.
+
+### class GLTFExporter
+Exports a scene-graph subtree to glTF 2.0 (binary `.glb`). Covers the round-trippable core: node hierarchy + TRS, mesh geometry (position / normal / uv / color / indices), `StandardMaterial` PBR factors + textures, clearcoat / ior / specular / sheen extensions, morph targets, skinning, and animations. All public methods are async to support texture encoding.
+- parse(root: Object3D, animations?: AnimationClip[]): Promise<GLTFExportResult>
+- parseGLB(root: Object3D, animations?: AnimationClip[]): Promise<ArrayBuffer> — Convenience: export just the `.glb` ArrayBuffer.
+- parseGLTF(root: Object3D, animations?: AnimationClip[]): Promise<Record<string, unknown>> — Export to a standalone `.gltf` JSON object with the binary embedded as a base64 data-URI buffer (re-loadable directly by `GLTFLoader`).
+
+### class SceneSerializer
+vela's native scene format: a compact, lossless-enough JSON round-trip for the scene graph — `Object3D`/`Mesh`/`LineSegments`/lights, their transforms, `BufferGeometry` attributes, and `StandardMaterial`/`LineBasicMaterial`. Geometries and materials are de-duplicated into shared tables. (Textures, skinning, morphs, and animation are not serialized.)
+
+### class AnimationClip
+A named set of keyframe tracks with a shared duration.
+- new AnimationClip(name: string, tracks: KeyframeTrack[], duration: number | undefined)
+- name: string
+- tracks: KeyframeTrack[]
+- duration: number
+
+### class AnimationMixer
+Plays one `AnimationClip` at a time, sampling its tracks into the target nodes each `update`. Lightweight by design — enough to drive glTF transform and skeletal animation in the viewer.
+- clip: AnimationClip | null
+- time: number
+- timeScale: number
+- loop: boolean
+- paused: boolean
+- play(clip: AnimationClip): AnimationMixer
+- stop(): AnimationMixer
+- setTime(time: number): AnimationMixer — Jump to an absolute time (seconds) and sample.
+- update(dt: number): void — Advance by `dt` seconds and sample all tracks.
+
+### class KeyframeTrack
+A single animated channel: keyframe `times` driving one transform `path` (translation/scale = vec3, rotation = quaternion) of a target node.
+- new KeyframeTrack(target: Object3D, path: TrackPath, times: Float32Array<ArrayBufferLike>, values: Float32Array<ArrayBufferLike>, interpolation: InterpolationMode, valueSize: number | undefined)
+- target: Object3D
+- path: TrackPath
+- times: Float32Array<ArrayBufferLike>
+- values: Float32Array<ArrayBufferLike>
+- interpolation: InterpolationMode
+- stride: number — Components per value: 3 for translation/scale, 4 for rotation, or the morph-target count for weights (supplied via `valueSize`).
+- duration: number
+- sample(time: number): void — Evaluate at `time` and write the result into the target transform.
+
+### class Vector2
+- new Vector2(x: number, y: number)
+- x: number
+- y: number
+- set(x: number, y: number): Vector2
+- copy(v: Vector2): Vector2
+- clone(): Vector2
+- fromArray(a: ArrayLike<number>, offset?: number): Vector2
+
+### class Vector3
+- new Vector3(x: number, y: number, z: number)
+- x: number
+- y: number
+- z: number
+- set(x: number, y: number, z: number): Vector3
+- setScalar(s: number): Vector3
+- copy(v: Vector3): Vector3
+- clone(): Vector3
+- add(v: Vector3): Vector3
+- addVectors(a: Vector3, b: Vector3): Vector3
+- addScaledVector(v: Vector3, s: number): Vector3
+- sub(v: Vector3): Vector3
+- subVectors(a: Vector3, b: Vector3): Vector3
+- multiply(v: Vector3): Vector3
+- multiplyScalar(s: number): Vector3
+- divideScalar(s: number): Vector3
+- dot(v: Vector3): number
+- cross(v: Vector3): Vector3
+- crossVectors(a: Vector3, b: Vector3): Vector3
+- lengthSq(): number
+- length(): number
+- distanceTo(v: Vector3): number
+- distanceToSquared(v: Vector3): number
+- normalize(): Vector3
+- setLength(l: number): Vector3
+- lerp(v: Vector3, t: number): Vector3
+- negate(): Vector3
+- min(v: Vector3): Vector3
+- max(v: Vector3): Vector3
+- setFromMatrixPosition(m: Matrix4): Vector3 — Sets this vector to the position component of a matrix.
+- applyMatrix4(m: Matrix4): Vector3
+- transformDirection(m: Matrix4): Vector3 — Transforms direction by the upper 3x3 (ignores translation), then normalizes.
+- applyQuaternion(q: Quaternion): Vector3
+- setFromSpherical(radius: number, phi: number, theta: number): Vector3
+- equals(v: Vector3): boolean
+- fromArray(a: ArrayLike<number>, offset?: number): Vector3
+- toArray(a?: number[], offset?: number): number[]
+
+### class Vector4
+- new Vector4(x: number, y: number, z: number, w: number)
+- x: number
+- y: number
+- z: number
+- w: number
+- set(x: number, y: number, z: number, w: number): Vector4
+- copy(v: Vector4): Vector4
+- clone(): Vector4
+- fromArray(a: ArrayLike<number>, offset?: number): Vector4
+
+### class Quaternion
+A unit quaternion representing a rotation in 3D space.
+- new Quaternion(x: number, y: number, z: number, w: number)
+- x: number
+- y: number
+- z: number
+- w: number
+- set(x: number, y: number, z: number, w: number): Quaternion
+- copy(q: Quaternion): Quaternion
+- clone(): Quaternion
+- identity(): Quaternion
+- setFromEuler(euler: Euler): Quaternion
+- setFromAxisAngle(axis: Vector3, angle: number): Quaternion
+- setFromRotationMatrix(m: Matrix4): Quaternion
+- setFromUnitVectors(from: Vector3, to: Vector3): Quaternion — Sets this quaternion to the rotation required to look along `forward` with `up`.
+- multiply(q: Quaternion): Quaternion
+- premultiply(q: Quaternion): Quaternion
+- multiplyQuaternions(a: Quaternion, b: Quaternion): Quaternion
+- invert(): Quaternion
+- length(): number
+- normalize(): Quaternion
+- slerp(qb: Quaternion, t: number): Quaternion
+- equals(q: Quaternion): boolean
+- fromArray(a: ArrayLike<number>, offset?: number): Quaternion
+
+### class Matrix3
+A 3x3 matrix (column-major), used mainly for normal matrices.
+- elements: Float32Array<ArrayBufferLike>
+- setFromMatrix4(m: Matrix4): Matrix3 — Extract the upper-left 3x3 of a Matrix4.
+- invert(): Matrix3
+- transpose(): Matrix3
+- getNormalMatrix(m: Matrix4): Matrix3 — Normal matrix = transpose(inverse(upper-left 3x3 of modelMatrix)).
+
+### class Matrix4
+A 4x4 matrix stored in column-major order (compatible with WGSL/GLSL). elements[0..3] = column 0, etc.
+- elements: Float32Array<ArrayBufferLike>
+- identity(): Matrix4
+- copy(m: Matrix4): Matrix4
+- clone(): Matrix4
+- fromArray(a: ArrayLike<number>, offset?: number): Matrix4
+- multiply(m: Matrix4): Matrix4
+- premultiply(m: Matrix4): Matrix4
+- multiplyMatrices(a: Matrix4, b: Matrix4): Matrix4
+- compose(position: Vector3, q: Quaternion, scale: Vector3): Matrix4
+- decompose(position: Vector3, quaternion: Quaternion, scale: Vector3): Matrix4
+- determinant(): number
+- invert(): Matrix4
+- transpose(): Matrix4
+- lookAt(eye: Vector3, target: Vector3, up: Vector3): Matrix4 — Builds a right-handed view matrix looking from `eye` toward `target`.
+- makePerspective(fovYRadians: number, aspect: number, near: number, far: number): Matrix4 — Right-handed perspective projection mapping z to [0, 1] (WebGPU NDC).
+- makeOrthographic(left: number, right: number, top: number, bottom: number, near: number, far: number): Matrix4 — Right-handed orthographic projection mapping z to [0, 1] (WebGPU NDC).
+- setPosition(v: Vector3): Matrix4
+- getMaxScaleOnAxis(): number — Largest scale factor among the three axis (column) vectors.
+- extractRotation(m: Matrix4): Matrix4
+
+### class Euler
+- new Euler(x: number, y: number, z: number, order: EulerOrder)
+- x: number
+- y: number
+- z: number
+- order: EulerOrder
+- onChange: () => void
+- set(x: number, y: number, z: number, order?: EulerOrder): Euler
+- copy(e: Euler): Euler
+
+### class Color
+A linear-space RGB color. Hex/CSS inputs are assumed sRGB and converted.
+- new Color(r: number, g: number, b: number)
+- r: number
+- g: number
+- b: number
+- set(r: number, g: number, b: number): Color
+- copy(c: Color): Color
+- clone(): Color
+- setHex(hex: number): Color — Set from a packed 0xRRGGBB integer (sRGB), converting to linear.
+- setRGB(r: number, g: number, b: number): Color — Set directly in linear space (no conversion).
+- getHex(): number
+- multiplyScalar(s: number): Color
+- fromArray(a: ArrayLike<number>, offset?: number): Color
+
+### class Spherical
+Spherical coordinates: radius, polar angle (phi from +Y), azimuth (theta).
+- new Spherical(radius: number, phi: number, theta: number)
+- radius: number
+- phi: number
+- theta: number
+- set(radius: number, phi: number, theta: number): Spherical
+- setFromVector3(v: Vector3): Spherical
+- makeSafe(): Spherical — Clamp phi to avoid the poles (gimbal flip).
+
+### class Box3
+An axis-aligned bounding box.
+- new Box3(min: Vector3, max: Vector3)
+- min: Vector3
+- max: Vector3
+- makeEmpty(): Box3
+- isEmpty(): boolean
+- expandByPoint(p: Vector3): Box3
+- setFromBufferArray(array: ArrayLike<number>): Box3 — Expand from a flat positions array (xyz triples).
+- union(box: Box3): Box3
+- getCenter(target: Vector3): Vector3
+- getSize(target: Vector3): Vector3
+- applyMatrix4(m: Matrix4): Box3 — Transform the 8 corners by a matrix and recompute the AABB.
+- copy(box: Box3): Box3
+- clone(): Box3
+
+### class Plane
+A plane in Hessian normal form: normal·x + constant = 0.
+- new Plane(normal: Vector3, constant: number)
+- normal: Vector3
+- constant: number
+- set(nx: number, ny: number, nz: number, constant: number): Plane
+- normalize(): Plane — Scale so the normal is unit length (keeps distances metric).
+- distanceToPoint(point: Vector3): number
+
+### class Sphere
+A bounding sphere.
+- new Sphere(center: Vector3, radius: number)
+- center: Vector3
+- radius: number
+- set(center: Vector3, radius: number): Sphere
+- copy(s: Sphere): Sphere
+- clone(): Sphere
+- isEmpty(): boolean
+- applyMatrix4(m: Matrix4): Sphere — Transform center by the matrix and scale radius by its max axis scale.
+
+### class Frustum
+A view frustum as six inward-facing planes, extracted from a view-projection matrix (Gribb-Hartmann) for WebGPU's [0, 1] clip depth.
+- planes: [Plane, Plane, Plane, Plane, Plane, Plane]
+- setFromProjectionMatrix(m: Matrix4): Frustum — Build from m = projection * view.
+- intersectsSphere(sphere: Sphere): boolean
+- intersectsBox(box: Box3): boolean
+
+### class Ray
+A ray with an origin and a normalized direction.
+- new Ray(origin: Vector3, direction: Vector3)
+- origin: Vector3
+- direction: Vector3
+- set(origin: Vector3, direction: Vector3): Ray
+- copy(ray: Ray): Ray
+- at(t: number, target: Vector3): Vector3
+- intersectSphere(sphere: Sphere): number | null — Distance along the ray to the first sphere intersection, or null.
+- intersectBox(box: Box3): number | null — Distance along the ray to the first AABB intersection, or null.
+- intersectTriangle(a: Vector3, b: Vector3, c: Vector3, backfaceCulling: boolean, target?: Vector3 | undefined): number | null — Distance along the ray to a triangle intersection, or null.
+- applyMatrix4(m: Matrix4): Ray — Transform the ray by a matrix (origin as a point, direction as a vector).
+
+## Functions
+
+### function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState): Diagnostic[]
+Triage why a scene "renders but looks wrong" — especially the classic black screen. Pure scene-graph math: runs without a GPU. Returns an empty array when nothing looks suspicious.
+
+### function describeScene(scene: Scene, camera?: Camera | undefined): SceneDescription
+Summarize a scene as plain JSON an agent can read: node/light/material inventories, world bounds, environment/fog state, named nodes, and (with a camera) per-mesh frustum visibility. Pure scene-graph math — no GPU.
+
+### function captureFrame(renderer: WebGPURenderer, scene: Scene, camera: Camera, options?: CaptureOptions): Promise<PixelData>
+Render deterministically and capture the final post-processed canvas frame.
+
+### function comparePixels(actual: PixelData, expected: PixelData, options?: CompareOptions): CompareResult
+Pure pixel comparison (usable offline / in node).
+
+### function loadPixels(source: string | Blob): Promise<PixelData>
+Decode a PNG/JPEG URL (or Blob) into pixels. Browser-only.
+
+### function pixelsToPNG(pixels: PixelData): Promise<Blob>
+Encode pixels as a PNG Blob. Browser-only.
+
+### function expectFrame(renderer: WebGPURenderer, scene: Scene, camera: Camera, golden: string | PixelData | Blob, options?: CaptureOptions & CompareOptions): Promise<CompareResult>
+Render deterministically and assert the frame matches a golden image. On mismatch, throws `FrameMismatchError` with metrics plus the actual and diff frames as PNG blobs (also logged as object URLs for quick viewing).
+
+### function clamp(value: number, min: number, max: number): number
+
+
+### function lerp(a: number, b: number, t: number): number
+
+
+### function degToRad(deg: number): number
+
+
+### function radToDeg(rad: number): number
+
+
+### function generateUUID(): string
+
+
+## Interfaces & types
+
+### Intersection
+```ts
+export interface Intersection {
+  object: Mesh;
+  distance: number;
+  point: Vector3;
+  faceIndex?: number;
+  uv?: Vector2;
+}
+```
+
+### SkyOptions
+Procedural daylight sky (Preetham analytic model).
+```ts
+export interface SkyOptions {
+  sunDirection: Vector3;
+  turbidity?: number;
+}
+```
+
+### FogOptions
+Distance fog. Provide `density` for exponential-squared fog, or `near`/`far` for linear fog (density takes precedence when both are set).
+```ts
+export interface FogOptions {
+  color: Color;
+  near?: number;
+  far?: number;
+  density?: number;
+  heightFalloff?: number;
+}
+```
+
+### ParticleSystemOptions
+Declarative GPU particle emitter config. All fields are plain values — mutate them freely; the renderer re-reads them every frame (no flags). `[start, end]` pairs interpolate linearly over each particle's life.
+```ts
+export interface ParticleSystemOptions {
+  capacity?: number;
+  rate?: number;
+  lifetime?: number | [number, number];
+  velocity?: Vector3;
+  spread?: number;
+  gravity?: Vector3;
+  size?: number | [number, number];
+  color?: Color | [Color, Color];
+  opacity?: number | [number, number];
+  blending?: 'additive' | 'alpha';
+}
+```
+
+### TextMeshOptions
+```ts
+export interface TextMeshOptions {
+  font?: string;
+  fontSize?: number;
+  color?: Color;
+  opacity?: number;
+  screenSpace?: boolean;
+  anchor?: 'left' | 'center' | 'right';
+}
+```
+
+### TypedArray
+```ts
+export type TypedArray =
+  | Float32Array
+  | Uint32Array
+  | Uint16Array
+  | Uint8Array
+  | Int16Array
+  | Int8Array;
+```
+
+### StandardMaterialParams
+```ts
+export interface StandardMaterialParams {
+  color?: Color | number;
+  metalness?: number;
+  roughness?: number;
+  emissive?: Color | number;
+  emissiveIntensity?: number;
+  map?: Texture | null;
+  normalMap?: Texture | null;
+  normalScale?: number;
+  metalnessRoughnessMap?: Texture | null;
+  emissiveMap?: Texture | null;
+  occlusionMap?: Texture | null;
+  occlusionStrength?: number;
+  side?: 'front' | 'back' | 'double';
+  transparent?: boolean;
+  opacity?: number;
+  alphaTest?: number;
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  clearcoatMap?: Texture | null;
+  clearcoatRoughnessMap?: Texture | null;
+  ior?: number;
+  specularIntensity?: number;
+  specularColor?: Color | number;
+  sheenColor?: Color | number;
+  sheenRoughness?: number;
+  transmission?: number;
+  thickness?: number;
+  attenuationDistance?: number;
+  attenuationColor?: Color | number;
+}
+```
+
+### LineBasicMaterialParams
+```ts
+export interface LineBasicMaterialParams {
+  color?: Color | number;
+  vertexColors?: boolean;
+  transparent?: boolean;
+  opacity?: number;
+  depthTest?: boolean;
+  depthWrite?: boolean;
+}
+```
+
+### ShaderMaterialOptions
+```ts
+export interface ShaderMaterialOptions {
+  surface: string;
+  uniforms?: Record<string, UniformValue>;
+  name?: string;
+  side?: Side;
+  transparent?: boolean;
+  opacity?: number;
+  depthTest?: boolean;
+  depthWrite?: boolean;
+}
+```
+
+### UniformValue
+Value types accepted in `ShaderMaterial.uniforms`.
+```ts
+export type UniformValue = number | Vector2 | Vector3 | Vector4 | Color;
+```
+
+### TextureOptions
+```ts
+export interface TextureOptions {
+  wrapS?: WrapMode;
+  wrapT?: WrapMode;
+  magFilter?: FilterMode;
+  minFilter?: FilterMode;
+  generateMipmaps?: boolean;
+  colorSpace?: 'srgb' | 'linear';
+  flipY?: boolean;
+}
+```
+
+### RendererOptions
+```ts
+export interface RendererOptions {
+  canvas: HTMLCanvasElement;
+  pixelRatio?: number;
+  sampleCount?: number;
+  powerPreference?: GPUPowerPreference;
+}
+```
+
+### PixelData
+RGBA8 pixel readback result (rows top-to-bottom).
+```ts
+export interface PixelData {
+  data: Uint8ClampedArray<ArrayBuffer>;
+  width: number;
+  height: number;
+}
+```
+
+### Diagnostic
+One finding from `renderer.diagnose()`: machine-matchable and human-fixable.
+```ts
+export interface Diagnostic {
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+  fix: string;
+}
+```
+
+### DiagnoseState
+Renderer state snapshot the checks need (kept GPU-free for offline testing).
+```ts
+export interface DiagnoseState {
+  postProcessing: boolean;
+  sampleCount: number;
+  oit: boolean;
+  ssao: boolean;
+  taa: boolean;
+  shadows: boolean;
+  canvasWidth: number;
+  canvasHeight: number;
+}
+```
+
+### SceneDescription
+```ts
+export interface SceneDescription {
+  counts: {
+    nodes: number;
+    meshes: number;
+    instancedMeshes: number;
+    skinnedMeshes: number;
+    particleSystems: number;
+    sprites: number;
+    texts: number;
+    lights: Record<string, number>;
+  };
+  bounds: { center: [number, number, number]; size: [number, number, number]; radius: number } | null;
+  materials: Array<{ type: string; name: string; users: number; transparent: boolean }>;
+  environment: 'texture' | 'procedural-sky' | 'none';
+  skybox: boolean;
+  fog: 'linear' | 'exp2' | 'none';
+  named: Array<{ name: string; type: string; position: [number, number, number]; inFrustum?: boolean }>;
+  visibility?: { meshesTested: number; inFrustum: number; outOfFrustum: number };
+}
+```
+
+### RenderReport
+Last-frame statistics from `renderer.report()` — JSON an agent can reason over.
+```ts
+export interface RenderReport {
+  frame: number;
+  drawCalls: number;
+  triangles: number;
+  meshes: { opaque: number; transparent: number; culled: number };
+  lights: number;
+  particles: { systems: number; poolCapacity: number };
+  sprites: { batches: number; instances: number };
+  shadowDraws: number;
+  textureMemoryBytes: number;
+  flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+}
+```
+
+### CaptureOptions
+Golden-image testing helpers: render deterministically, read pixels back, and compare against a reference with actionable failure artifacts. Built for agents — a visual change becomes a runnable assertion.
+```ts
+export interface CaptureOptions {
+  frames?: number;
+  timeStep?: number;
+  startTime?: number;
+}
+```
+
+### CompareOptions
+```ts
+export interface CompareOptions {
+  channelTolerance?: number;
+  maxDiffRatio?: number;
+}
+```
+
+### CompareResult
+```ts
+export interface CompareResult {
+  pass: boolean;
+  diffRatio: number;
+  meanDelta: number;
+  maxDelta: number;
+  diff: PixelData;
+}
+```
+
+### GLTFResult
+```ts
+export interface GLTFResult {
+  scene: Object3D;
+  scenes: Object3D[];
+  materials: StandardMaterial[];
+  animations: AnimationClip[];
+  boundingBox: Box3;
+}
+```
+
+### BasisTranscoder
+Transcodes a Basis-supercompressed KTX2 payload to RGBA8. Wrap the standard Basis/KTX2 transcoder (which can transcode to `RGBA32`) and plug it in via {@link KTX2Loader.setTranscoder}.
+```ts
+export interface BasisTranscoder {
+  ready?: Promise<void>;
+  transcodeToRGBA(ktx2: Uint8Array): KTX2Image | Promise<KTX2Image>;
+  transcodeToCompressed?(
+    ktx2: Uint8Array,
+    format: 'bc7-rgba-unorm' | 'astc-4x4-unorm' | 'etc2-rgba8unorm',
+  ): CompressedKTX2Image | Promise<CompressedKTX2Image>;
+}
+```
+
+### KTX2Image
+A decoded KTX2 level: tightly-packed RGBA8 pixels.
+```ts
+export interface KTX2Image {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+}
+```
+
+### MeshoptDecoder
+The subset of meshoptimizer's `MeshoptDecoder` that vela uses for `EXT_meshopt_compression`. Pass the standard module:
+```ts
+export interface MeshoptDecoder {
+  ready: Promise<void>;
+  decodeGltfBuffer(
+    target: Uint8Array,
+    count: number,
+    size: number,
+    source: Uint8Array,
+    mode: string,
+    filter?: string,
+  ): void;
+}
+```
+
+### KTX2TextureLoader
+Transcodes a KTX2 payload into a renderable {@link Texture} (used for `KHR_texture_basisu`). {@link KTX2Loader } implements this; Basis-supercompressed payloads need a transcoder plugged into it.
+```ts
+export interface KTX2TextureLoader {
+  parse(data: Uint8Array, srgb: boolean): Texture | Promise<Texture>;
+}
+```
+
+### DracoDecoder
+Minimal interface for a Draco mesh decoder (for `KHR_draco_mesh_compression`). Implement against the `draco3d` or `draco3dgltf` WASM module and pass an instance via {@link GLTFLoader.setDracoDecoder }.
+```ts
+export interface DracoDecoder {
+  ready?: Promise<void>;
+  decode(data: Uint8Array, attributeIds: Record<string, number>): DracoGeometry | Promise<DracoGeometry>;
+}
+```
+
+### DracoGeometry
+Decoded geometry from a Draco-compressed mesh primitive. The `attributes` map contains per-attribute typed arrays (Float32Array for float attributes, Uint32Array for integer attributes such as JOINTS_0).
+```ts
+export interface DracoGeometry {
+  indices: Uint32Array;
+  attributes: Record<string, { array: Float32Array | Uint32Array; itemSize: number }>;
+}
+```
+
+### GLTFExportResult
+Result of an export: the glTF JSON plus the packed binary (a `.glb`).
+```ts
+export interface GLTFExportResult {
+  json: Record<string, unknown>;
+  glb: ArrayBuffer;
+}
+```
+
+### InterpolationMode
+```ts
+export type InterpolationMode = 'STEP' | 'LINEAR' | 'CUBICSPLINE';
+```
+
+### TrackPath
+```ts
+export type TrackPath = 'translation' | 'rotation' | 'scale' | 'weights';
+```
+
+### EulerOrder
+```ts
+export type EulerOrder = 'XYZ' | 'YXZ' | 'ZXY' | 'ZYX' | 'YZX' | 'XZY';
+```
