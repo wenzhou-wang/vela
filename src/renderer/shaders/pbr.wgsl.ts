@@ -535,11 +535,11 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     return vec4<f32>(baseColor, alpha);
   }
 
-  // Anime/toon mode (bit 4): Genshin/Guilty-Gear-style NPR over the authored
-  // albedo — a crisp two-tone diffuse from the single dominant key light, a
-  // warm "fake SSS" band at the terminator, a hard stepped specular, and a
-  // Fresnel rim. One key light (not a sum of all lights) keeps the terminator
-  // clean. Skips PBR IBL/transmission.
+  // Anime/toon mode (bit 4): Arc System Works / Dragon Ball FighterZ-style flat
+  // cel shading over the authored albedo — a HARD near-1-bit shadow terminator
+  // (a crisp ink line via screen-space AA, not a gradient), two solid color
+  // tones, and a saturated punchy palette. Shaded from the single dominant key
+  // light. Deliberately flat: no soft rim/SSS gradients. Skips IBL/transmission.
   if ((u32(frame.envParams.w) & 16u) != 0u) {
     var Na = normalize(in.worldNormal);
     if (!frontFacing) { Na = -Na; }
@@ -553,7 +553,7 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     let Va = normalize(frame.cameraPos.xyz - in.worldPos);
     let lw = vec3<f32>(0.2126, 0.7152, 0.0722);
 
-    // Pick the brightest light as the key (anime reads best from one key).
+    // Pick the brightest light as the key (Arc characters are lit by one key).
     var keyL = vec3<f32>(0.0, 1.0, 0.0);
     var keyRad = vec3<f32>(0.0);
     var keyLum = 0.0;
@@ -565,40 +565,34 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
       if (lum > keyLum) { keyLum = lum; keyL = lc.L; keyRad = lc.radiance; }
     }
     let hasKey = keyLum > 1e-3;
-    // Hue of the key light, value-normalized so banding is about direction.
     let keyTint = select(vec3<f32>(1.0), keyRad / max(keyLum, 1e-4), hasKey);
 
+    // Hard terminator: a near-binary step at the half-lit line, antialiased to
+    // ~1px in screen space with fwidth so the boundary stays a clean ink line.
     let NoL = dot(Na, keyL);
-    // Tight-but-soft terminator a touch past the half-lit line; mostly-lit face.
-    let litMask = select(1.0, smoothstep(0.02, 0.16, NoL), hasKey);
+    let aa = fwidth(NoL) * 1.2 + 1e-4;
+    let litMask = select(1.0, smoothstep(-aa, aa, NoL - 0.02), hasKey);
 
-    // Two tones: lit = albedo warmed by the key hue; shadow = a cool, darker
-    // multiply (not black) so detail survives.
-    let litColor = baseColor * mix(vec3<f32>(1.0), keyTint, 0.35);
-    let shadowColor = baseColor * vec3<f32>(0.58, 0.56, 0.66);
+    // Two solid tones: lit albedo (barely tinted by the key) and a distinctly
+    // darker, cooler shadow — flat blocks, no gradient between them.
+    let litColor = baseColor * mix(vec3<f32>(1.0), keyTint, 0.2);
+    let shadowColor = baseColor * vec3<f32>(0.55, 0.57, 0.70);
     var animeColor = mix(shadowColor, litColor, litMask);
 
-    // Fake subsurface scatter: a warm reddish band right at the terminator.
-    let sss = clamp(1.0 - abs(NoL - 0.09) / 0.12, 0.0, 1.0);
-    animeColor += baseColor * vec3<f32>(0.28, 0.07, 0.04) * sss;
+    // Punchy saturated palette (anime colors are vivid); boost chroma around luma.
+    let luma = dot(animeColor, lw);
+    animeColor = max(mix(vec3<f32>(luma), animeColor, 1.25), vec3<f32>(0.0));
 
-    // Hard anime specular: a tight binary Blinn-Phong highlight, only on lit
-    // areas, attenuated on rough surfaces (eye/skin/hair shines).
+    // A single tight hard specular dot on smooth surfaces only (eyes/glasses);
+    // kept minimal so the look stays flat.
     let mrA = textureSample(mrTex, mrSmp, in.uv);
     let roughA = clamp(material.params.y * mrA.g, 0.04, 1.0);
     let H = normalize(keyL + Va);
-    let specPow = mix(8.0, 96.0, 1.0 - roughA);
-    let spec = pow(max(dot(Na, H), 0.0), specPow);
-    let specMask = smoothstep(0.5, 0.6, spec) * litMask * (1.0 - roughA) * 0.6;
-    animeColor += keyTint * specMask;
-
-    // Fresnel rim along the silhouette, brighter on the lit side (cool tint).
-    let fres = pow(1.0 - max(dot(Na, Va), 0.0), 4.0);
-    let rim = smoothstep(0.45, 1.0, fres) * (0.25 + 0.75 * litMask);
-    animeColor += vec3<f32>(0.6, 0.66, 0.8) * rim * 0.5;
+    let specRaw = pow(max(dot(Na, H), 0.0), mix(24.0, 140.0, 1.0 - roughA));
+    animeColor += keyTint * step(0.5, specRaw) * litMask * (1.0 - roughA) * 0.5;
 
     // Flat ambient floor so deep shadow keeps the base hue.
-    animeColor += baseColor * frame.ambient.rgb * 0.18;
+    animeColor += baseColor * frame.ambient.rgb * 0.10;
 
     let em = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
     animeColor += material.emissive.rgb * material.emissive.a * em;
