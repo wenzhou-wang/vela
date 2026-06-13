@@ -248,7 +248,7 @@ Faster loads, broader inputs, and ergonomics.
 
 ---
 
-## v0.6 — Game-visual table stakes ⬜
+## v0.6 — Game-visual table stakes ✅
 
 What a game needs from its renderer beyond a lit model viewer. Everything stays
 declarative: an object literal to set up, no builder chains, no hidden update flags.
@@ -320,7 +320,7 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
 
 ---
 
-## v0.7 — The agent feedback loop ⬜
+## v0.7 — The agent feedback loop ✅
 
 vela's developers are AI agents: they cannot see the canvas, and they iterate through
 text. This tier makes rendering results readable, diffable, and explainable without a
