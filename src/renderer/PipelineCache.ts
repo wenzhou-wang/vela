@@ -4,6 +4,7 @@ import { DEPTH_FORMAT, SHADOW_DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT,
 import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
 import { SHADOW_VERTEX_BUFFER_LAYOUT } from './shaders/shadow.wgsl';
 import { SKY_SHADER } from './shaders/sky.wgsl';
+import { PARTICLE_DRAW_SHADER } from './shaders/particles.wgsl';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
@@ -27,6 +28,9 @@ export class PipelineCache {
   /** Skybox pass layout: frame uniform + raw equirect env texture/sampler. */
   readonly skyLayout: GPUBindGroupLayout;
   private skyModule: GPUShaderModule | null = null;
+  /** Particle draw layout (group 1): particle pool + draw params. */
+  readonly particleLayout: GPUBindGroupLayout;
+  private particleModule: GPUShaderModule | null = null;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private customLayouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
@@ -153,6 +157,15 @@ export class PipelineCache {
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      ],
+    });
+
+    // Particle draw: group 0 reuses the frame layout; group 1 is pool + params.
+    this.particleLayout = device.createBindGroupLayout({
+      label: 'particles',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
       ],
     });
 
@@ -399,6 +412,39 @@ export class PipelineCache {
       fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: [{ format }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
+      multisample: { count: this.sampleCount },
+    });
+    this.cache.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * Particle billboard pipeline: 6 vertices per instance, depth-tested but not
+   * written, premultiplied blending — additive (one,one) or alpha
+   * (one, one-minus-src-alpha).
+   */
+  getParticles(format: GPUTextureFormat, additive: boolean): GPURenderPipeline {
+    const key = `particles|${format}|${additive ? 'add' : 'alpha'}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    this.particleModule ??= this.device.createShaderModule({ code: PARTICLE_DRAW_SHADER, label: 'particles' });
+    const blend: GPUBlendState = additive
+      ? {
+          color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        }
+      : {
+          color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        };
+    pipeline = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.particleLayout] }),
+      vertex: { module: this.particleModule, entryPoint: 'vs_main' },
+      fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: [{ format, blend }] },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
       multisample: { count: this.sampleCount },
     });
     this.cache.set(key, pipeline);

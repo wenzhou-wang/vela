@@ -9,6 +9,7 @@ import { PointLight } from '../lights/PointLight';
 import { SpotLight } from '../lights/SpotLight';
 import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
+import { ParticleSystem } from '../core/ParticleSystem';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
@@ -33,6 +34,7 @@ import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
+import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
@@ -130,6 +132,17 @@ interface ShaderMaterialResources {
   layout: UniformLayout;
   shapeKey: string;       // uniform names+kinds; a change rebuilds buffer + shader
   uploadedFrame: number;  // last frameNumber the uniform values were written
+}
+
+interface ParticleResources {
+  capacity: number;
+  stateBuffer: GPUBuffer;   // Particle[] pool (zeroed = all dead)
+  simParams: GPUBuffer;
+  simBindGroup: GPUBindGroup;
+  drawParams: GPUBuffer;
+  drawBindGroup: GPUBindGroup;
+  cursor: number;           // ring-buffer emission cursor
+  carry: number;            // fractional particles owed from previous frames
 }
 
 export interface RendererOptions {
@@ -312,6 +325,12 @@ export class WebGPURenderer {
   private skyGenBindGroup: GPUBindGroup | null = null;
   private skyGenView: GPUTextureView | null = null;
   private skyGenSampler: GPUSampler | null = null;
+  // GPU particles.
+  private particleSystems: ParticleSystem[] = [];
+  private particleResources = new WeakMap<ParticleSystem, ParticleResources>();
+  private particleSimPipeline: GPUComputePipeline | null = null;
+  private particleSimLayout: GPUBindGroupLayout | null = null;
+  private lastRenderTime = 0;
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
@@ -563,6 +582,9 @@ export class WebGPURenderer {
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
     this.frameNumber++;
+    const nowMs = performance.now();
+    const dt = this.lastRenderTime > 0 ? Math.min((nowMs - this.lastRenderTime) / 1000, 0.1) : 0;
+    this.lastRenderTime = nowMs;
     // The scene pass renders into the HDR target when post-processing is on,
     // so material pipelines must target that format.
     this.sceneTargetFormat = this.postProcessing ? 'rgba16float' : this.format;
@@ -609,6 +631,8 @@ export class WebGPURenderer {
     this.prepareGpuCull(encoder);
     // Clustered forward+: bin lights into the cluster grid.
     this.prepareClusters(encoder, camera);
+    // GPU particles: emit + integrate the pools.
+    this.prepareParticles(encoder, dt);
 
     const swapView = this.context.getCurrentTexture().createView();
     const clear = this.clearColor(scene);
@@ -672,6 +696,9 @@ export class WebGPURenderer {
     if (!useOIT) {
       for (const mesh of this.transparent) this.drawMesh(pass, mesh);
     }
+
+    // Particles: blended billboards, depth-tested against the opaque scene.
+    if (this.particleSystems.length > 0) this.drawParticles(pass);
 
     pass.end();
 
@@ -1125,6 +1152,137 @@ export class WebGPURenderer {
     pass.end();
   }
 
+  // Scratch buffers for per-frame particle uploads (no hot-loop allocation).
+  private _particleSimData = new Float32Array(20);
+  private _particleSimU32 = new Uint32Array(this._particleSimData.buffer);
+  private _particleDrawData = new Float32Array(12);
+
+  private ensureParticleSimResources(): void {
+    if (this.particleSimPipeline) return;
+    const module = this.device.createShaderModule({ code: PARTICLE_SIM_SHADER, label: 'particle-sim' });
+    this.particleSimLayout = this.device.createBindGroupLayout({
+      label: 'particle-sim',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+    this.particleSimPipeline = this.device.createComputePipeline({
+      label: 'particle-sim',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.particleSimLayout] }),
+      compute: { module, entryPoint: 'cs_sim' },
+    });
+  }
+
+  private getParticleResources(sys: ParticleSystem): ParticleResources {
+    const capacity = sys.options.capacity ?? 1000;
+    let res = this.particleResources.get(sys);
+    if (!res || res.capacity !== capacity) {
+      res?.stateBuffer.destroy();
+      res?.simParams.destroy();
+      res?.drawParams.destroy();
+      const stateBuffer = this.device.createBuffer({
+        size: capacity * 48, // Particle: 3 × vec4 (zero-initialized = all dead)
+        usage: GPUBufferUsage.STORAGE,
+      });
+      const simParams = this.device.createBuffer({
+        size: 80,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const drawParams = this.device.createBuffer({
+        size: 48,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const simBindGroup = this.device.createBindGroup({
+        layout: this.particleSimLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: simParams } },
+          { binding: 1, resource: { buffer: stateBuffer } },
+        ],
+      });
+      const drawBindGroup = this.device.createBindGroup({
+        layout: this.pipelines.particleLayout,
+        entries: [
+          { binding: 0, resource: { buffer: stateBuffer } },
+          { binding: 1, resource: { buffer: drawParams } },
+        ],
+      });
+      res = { capacity, stateBuffer, simParams, simBindGroup, drawParams, drawBindGroup, cursor: 0, carry: 0 };
+      this.particleResources.set(sys, res);
+    }
+    return res;
+  }
+
+  /** Upload per-system params and encode the particle integration compute pass. */
+  private prepareParticles(encoder: GPUCommandEncoder, dt: number): void {
+    if (this.particleSystems.length === 0) return;
+    this.ensureParticleSimResources();
+
+    const f32 = this._particleSimData;
+    const u32 = this._particleSimU32;
+    const dp = this._particleDrawData;
+    for (const sys of this.particleSystems) {
+      const res = this.getParticleResources(sys);
+      const o = sys.options;
+
+      // Emission budget: rate × dt with fractional carry, ring-cursor advance.
+      let emit = 0;
+      if (sys.emitting && dt > 0) {
+        res.carry += (o.rate ?? 100) * dt;
+        emit = Math.min(Math.floor(res.carry), res.capacity);
+        res.carry = Math.min(res.carry - emit, 1);
+      }
+
+      sys.getWorldPosition(this._meshPos);
+      const life = o.lifetime ?? 2;
+      const [lifeMin, lifeMax] = typeof life === 'number' ? [life, life] : life;
+      f32[0] = this._meshPos.x; f32[1] = this._meshPos.y; f32[2] = this._meshPos.z;
+      f32[3] = dt;
+      f32[4] = o.velocity?.x ?? 0; f32[5] = o.velocity?.y ?? 1; f32[6] = o.velocity?.z ?? 0;
+      f32[7] = o.spread ?? 0.5;
+      f32[8] = o.gravity?.x ?? 0; f32[9] = o.gravity?.y ?? 0; f32[10] = o.gravity?.z ?? 0;
+      f32[11] = (performance.now() - this.clockStart) / 1000; // randomness seed
+      f32[12] = lifeMin; f32[13] = lifeMax; f32[14] = 0; f32[15] = 0;
+      u32[16] = res.cursor; u32[17] = emit; u32[18] = res.capacity; u32[19] = 0;
+      this.device.queue.writeBuffer(res.simParams, 0, f32);
+      res.cursor = (res.cursor + emit) % res.capacity;
+
+      // Draw params: size/color/opacity over life (re-read every frame, no flags).
+      const size = o.size ?? 0.1;
+      const [s0, s1] = typeof size === 'number' ? [size, size] : size;
+      const c0 = Array.isArray(o.color) ? o.color[0] : o.color;
+      const c1 = Array.isArray(o.color) ? o.color[1] : o.color;
+      const op = o.opacity ?? [1, 0];
+      const [o0, o1] = typeof op === 'number' ? [op, op] : op;
+      dp[0] = s0; dp[1] = s1; dp[2] = 0; dp[3] = 0;
+      dp[4] = c0?.r ?? 1; dp[5] = c0?.g ?? 1; dp[6] = c0?.b ?? 1; dp[7] = o0;
+      dp[8] = c1?.r ?? 1; dp[9] = c1?.g ?? 1; dp[10] = c1?.b ?? 1; dp[11] = o1;
+      this.device.queue.writeBuffer(res.drawParams, 0, dp);
+    }
+
+    const pass = encoder.beginComputePass({ label: 'particle-sim' });
+    pass.setPipeline(this.particleSimPipeline!);
+    for (const sys of this.particleSystems) {
+      const res = this.particleResources.get(sys)!;
+      pass.setBindGroup(0, res.simBindGroup);
+      pass.dispatchWorkgroups(Math.ceil(res.capacity / 64));
+    }
+    pass.end();
+  }
+
+  /** Draw all particle systems as instanced billboards (inside the scene pass). */
+  private drawParticles(pass: GPURenderPassEncoder): void {
+    for (const sys of this.particleSystems) {
+      const res = this.particleResources.get(sys);
+      if (!res) continue;
+      const additive = (sys.options.blending ?? 'additive') === 'additive';
+      pass.setPipeline(this.pipelines.getParticles(this.sceneTargetFormat, additive));
+      pass.setBindGroup(0, this.frameBindGroup);
+      pass.setBindGroup(1, res.drawBindGroup);
+      pass.draw(6, res.capacity);
+    }
+  }
+
   private ensureGpuCullResources(minSlots: number): void {
     if (!this.gpuCullPipeline) {
       const module = this.device.createShaderModule({ code: CULL_SHADER, label: 'cull' });
@@ -1241,11 +1399,14 @@ export class WebGPURenderer {
     this.opaque.length = 0;
     this.transparent.length = 0;
     this.lights.length = 0;
+    this.particleSystems.length = 0;
     this.culledCount = 0;
 
     scene.traverseVisible((object: Object3D) => {
       if (object instanceof Light) {
         this.lights.push(object);
+      } else if (object instanceof ParticleSystem) {
+        this.particleSystems.push(object);
       } else if (object instanceof Mesh) {
         if (this.frustumCulling && object.frustumCulled && this.isCulled(object)) {
           this.culledCount++;

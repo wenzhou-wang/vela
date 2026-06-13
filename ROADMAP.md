@@ -276,12 +276,19 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
       Debug helpers (the line path) deliberately stay unfogged so grids/gizmos remain
       readable. Also fixed the line shader's linear-out check to test bit 0 of the
       `envParams.w` bit field instead of `>= 0.5` (it misfired whenever IBL was active).
-- ⬜ **GPU particles** — `ParticleSystem` with a declarative emitter config (rate,
-      lifetime, velocity/spread, gravity, size/color-over-life as gradient stops, world
-      or local space). A compute pass integrates a fixed-capacity particle pool in a
-      storage buffer (dead particles recycled via an atomic freelist); rendering is one
-      instanced quad draw reading the pool, depth-tested but unsorted (additive) or
-      OIT-composited (alpha). No per-particle JS objects — the hot path never allocates.
+- ✅ **GPU particles** — `ParticleSystem extends Object3D` with a declarative emitter
+      config (rate, lifetime, velocity/spread, gravity, size/color/opacity over life as
+      `[start, end]` pairs, additive or alpha blending), re-read every frame with no
+      flags; emission happens at the object's world position. A compute pass
+      (`@workgroup_size(64)`, one invocation per pool slot) integrates a fixed-capacity
+      48-byte-stride pool in a storage buffer; emission uses a ring cursor — slots in
+      the wrapped window respawn at the emitter (simpler than an atomic freelist, same
+      capability: oldest particles recycle when full; a zeroed buffer means all-dead).
+      Rendering is one 6-vertex instanced draw per system: camera-facing soft-disc
+      quads built from the view-matrix basis, depth-tested but not written,
+      premultiplied additive/alpha blending, tonemapped like the material path. The
+      per-frame upload path reuses scratch arrays — no per-particle JS objects, no
+      hot-loop allocation.
 - ⬜ **Sprites & SDF text** — billboarded quads (`Sprite`) batched into one instanced
       draw per texture; `TextMesh` renders strings via a runtime-generated SDF atlas
       (`OffscreenCanvas` rasterization → distance transform, cached per font), one quad
