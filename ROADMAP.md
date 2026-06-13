@@ -397,11 +397,17 @@ rest" — to the remaining programmable surfaces.
       instanced vertex stages before the model transform (skinned/morph keep their
       built-in stages). Offline-verified: all four variants + texture-only +
       empty-uniform cases parse via wgsl_reflect with correct group-2 bindings.
-- ⬜ **ShaderPass** — custom fullscreen post effects: `renderer.passes.push(new
-      ShaderPass({ fragment, uniforms }))` with the same auto-packed uniform object;
-      the pass receives the previous stage's HDR view + depth and is inserted into the
-      PostProcessing chain before tonemap. Compile errors report exactly like
-      ShaderMaterial.
+- ✅ **ShaderPass** — custom fullscreen post effects: `renderer.passes.push(new
+      ShaderPass({ effect, uniforms }))`. Each enabled pass runs in order in HDR
+      linear space after bloom/SSAO/TAA and before tonemap, ping-ponging two
+      full-res HDR buffers. The user writes `fn effect(uv) -> vec4<f32>` with
+      `sceneColor(uv)`/`sceneDepth(uv)` helpers, `pp.resolution`/`pp.time`, and the
+      same auto-packed `u.<name>` / `t_<name>` uniforms as ShaderMaterial (in group
+      1; `computeUniformLayout` gained a group parameter). Per-pass pipeline + bind
+      group are cached and rebuilt on version/shape/texture change; compile errors
+      print the offending generated line like ShaderMaterial. Read↔write aliasing is
+      avoided by flipping the target. Offline-verified: no-uniform, scalar+texture,
+      and group-binding cases parse via wgsl_reflect.
 - ⬜ **Compute API** — `new ComputeTask({ code, workgroups, buffers: { particles:
       storage(...), params: uniform({...}) } })` with declarative buffer/uniform
       bindings (auto layout, same packing rules), `task.dispatch(encoder?)`, and

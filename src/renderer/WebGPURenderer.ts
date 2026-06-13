@@ -20,6 +20,7 @@ import { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { ShaderMaterial, computeUniformLayout, packUniforms } from '../materials/ShaderMaterial';
 import type { UniformLayout } from '../materials/ShaderMaterial';
 import { Texture } from '../textures/Texture';
+import { ShaderPass } from './ShaderPass';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
 import { Matrix4 } from '../math/Matrix4';
@@ -280,6 +281,12 @@ export class WebGPURenderer {
   outlineThickness = 2.0;
   /** Blend strength for outer silhouettes and interior feature lines. */
   outlineStrength = 1.0;
+  /**
+   * Custom fullscreen post effects, run in order in HDR linear space before
+   * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
+   * effects; reorder or splice to change the chain.
+   */
+  passes: ShaderPass[] = [];
   /**
    * Order-independent transparency (weighted-blended). Requires `postProcessing`
    * and sampleCount 1; otherwise transparent meshes fall back to sorted blending.
@@ -861,6 +868,17 @@ export class WebGPURenderer {
           this._jitterX,
           this._jitterY,
           this.taaBlend,
+        );
+      }
+      // Custom ShaderPasses run in HDR linear space before tonemap.
+      if (this.passes.length > 0) {
+        postInput = this.post.runShaderPasses(
+          encoder,
+          this.passes,
+          postInput ?? this.post.hdrTargetView,
+          this.depthSampleView ?? this.post.dummyDepth,
+          this.textures,
+          this._elapsed,
         );
       }
       this.post.run(encoder, swapView!, {

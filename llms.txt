@@ -308,7 +308,21 @@ A custom-surface material: you write one WGSL function that produces PBR surface
 - uniforms: Record<string, UniformValue> — Custom uniform values; mutate freely (uploaded every frame).
 - version: number — Bumped by setSurface(); part of the pipeline cache key.
 - surfaceCode: string
+- vertexCode: string | null
 - setSurface(code: string): void — Replace the surface function; the shader recompiles on next draw.
+- setVertex(code: string | null): void — Set/replace/clear the vertex displacement function; recompiles on next draw.
+
+### class ShaderPass
+A custom fullscreen post-processing effect. Push instances into `renderer.passes`; they run in order in HDR linear space after the scene (and bloom/SSAO/TAA) and before tonemap, each reading the previous stage's color plus the scene depth.
+- new ShaderPass(options: ShaderPassOptions)
+- isShaderPass: true
+- enabled: boolean
+- name: string
+- uniforms: Record<string, UniformValue>
+- version: number — Bumped by `setEffect()`; part of the pipeline cache key.
+- id: string — Stable id for caching GPU resources.
+- effectCode: string
+- setEffect(code: string): void — Replace the effect function; recompiles on the next frame.
 
 ### class GridHelper extends LineSegments
 A wireframe grid on the XZ plane, centered at the origin. The two center lines (the X and Z axes) use `centerColor`; the rest use `gridColor`.
@@ -432,6 +446,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - celShading: boolean — Unlit diffuse rendering with depth, normal, and color-derived outlines.
 - outlineThickness: number — Screen-space outline radius in device pixels.
 - outlineStrength: number — Blend strength for outer silhouettes and interior feature lines.
+- passes: ShaderPass[] — Custom fullscreen post effects, run in order in HDR linear space before tonemap (requires `postProcessing`).
 - oit: boolean — Order-independent transparency (weighted-blended).
 - ssao: boolean — Screen-space ambient occlusion.
 - ssaoRadius: number
@@ -938,6 +953,7 @@ export interface LineBasicMaterialParams {
 ```ts
 export interface ShaderMaterialOptions {
   surface: string;
+  vertex?: string;
   uniforms?: Record<string, UniformValue>;
   name?: string;
   side?: Side;
@@ -951,7 +967,17 @@ export interface ShaderMaterialOptions {
 ### UniformValue
 Value types accepted in `ShaderMaterial.uniforms`.
 ```ts
-export type UniformValue = number | Vector2 | Vector3 | Vector4 | Color;
+export type UniformValue = number | Vector2 | Vector3 | Vector4 | Color | Texture;
+```
+
+### ShaderPassOptions
+```ts
+export interface ShaderPassOptions {
+  effect: string;
+  uniforms?: Record<string, UniformValue>;
+  enabled?: boolean;
+  name?: string;
+}
 ```
 
 ### TextureOptions

@@ -66,7 +66,7 @@ function kindOf(name: string, value: UniformValue): UniformKind {
  * `t_<name>`/`s_<name>` texture+sampler binding pairs after the buffer.
  * Pure — exported for offline verification.
  */
-export function computeUniformLayout(uniforms: Record<string, UniformValue>): UniformLayout {
+export function computeUniformLayout(uniforms: Record<string, UniformValue>, group = 2): UniformLayout {
   const names = Object.keys(uniforms);
   const fields: UniformField[] = [];
   const textures: string[] = [];
@@ -91,11 +91,11 @@ export function computeUniformLayout(uniforms: Record<string, UniformValue>): Un
   }
   let wgsl = '';
   if (fields.length > 0) {
-    wgsl += `struct SMUniforms {\n${structLines}};\n@group(2) @binding(0) var<uniform> u : SMUniforms;\n`;
+    wgsl += `struct SMUniforms {\n${structLines}};\n@group(${group}) @binding(0) var<uniform> u : SMUniforms;\n`;
   }
   textures.forEach((name, i) => {
-    wgsl += `@group(2) @binding(${1 + i * 2}) var t_${name} : texture_2d<f32>;\n`;
-    wgsl += `@group(2) @binding(${2 + i * 2}) var s_${name} : sampler;\n`;
+    wgsl += `@group(${group}) @binding(${1 + i * 2}) var t_${name} : texture_2d<f32>;\n`;
+    wgsl += `@group(${group}) @binding(${2 + i * 2}) var s_${name} : sampler;\n`;
   });
   const size = Math.max(16, Math.ceil(offset / 4) * 16);
   return { wgsl, size, fields, textures };

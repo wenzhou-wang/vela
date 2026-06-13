@@ -1,10 +1,27 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
+import { buildShaderPass } from './shaders/shaderpass.wgsl';
+import { computeUniformLayout, packUniforms, type UniformLayout } from '../materials/ShaderMaterial';
+import type { ShaderPass } from './ShaderPass';
+import type { Texture } from '../textures/Texture';
+import type { TextureManager } from './TextureManager';
 import { DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
 
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
 const LDR_FORMAT: GPUTextureFormat = 'rgba8unorm';
+
+/** Per-ShaderPass cached GPU resources (pipeline + group-1 uniform binding). */
+interface ShaderPassResources {
+  pipeline: GPURenderPipeline;
+  version: number;             // material version the pipeline was built for
+  shapeKey: string;            // uniform shape the pipeline + layout assume
+  buffer: GPUBuffer | null;
+  data: Float32Array<ArrayBuffer>;
+  layout: UniformLayout;
+  bindGroup1: GPUBindGroup | null;  // null when the pass has no group-1 uniforms
+  textureSig: string;
+}
 
 export interface PostOptions {
   fxaa: boolean;
@@ -77,6 +94,15 @@ export class PostProcessing {
   // Screen-space refraction: a copy of the HDR target captured before transparent draws.
   private sceneCapture: GPUTexture | null = null;
   private _sceneCaptureView!: GPUTextureView;
+
+  // Custom ShaderPass ping-pong (full-res HDR) + per-pass GPU resource cache.
+  private passA: GPUTexture | null = null;
+  private passAView!: GPUTextureView;
+  private passB: GPUTexture | null = null;
+  private passBView!: GPUTextureView;
+  private passBindLayout: GPUBindGroupLayout;
+  private passParamsBuffer: GPUBuffer;
+  private passResources = new Map<string, ShaderPassResources>();
 
   constructor(
     private device: GPUDevice,
@@ -166,6 +192,19 @@ export class PostProcessing {
     });
     // prevViewProj(64) + invViewProj(64) + info(16) = 144 bytes
     this.taaParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    // Custom ShaderPass group-0 layout: scene color + sampler + depth + params.
+    this.passBindLayout = device.createBindGroupLayout({
+      label: 'shaderpass',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    // resolution(16) + time(16) = 32 bytes
+    this.passParamsBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
 
   /** (Re)allocate size-dependent targets. `w`/`h` are device pixels. */
@@ -240,10 +279,21 @@ export class PostProcessing {
     this.taaB = attach(HDR_FORMAT, [w, h]);
     this.taaBView = this.taaB.createView();
     this.taaHistoryValid = false;
+
+    // Custom ShaderPass ping-pong (full-res HDR; lazily used).
+    this.passA?.destroy();
+    this.passB?.destroy();
+    this.passA = attach(HDR_FORMAT, [w, h]);
+    this.passAView = this.passA.createView();
+    this.passB = attach(HDR_FORMAT, [w, h]);
+    this.passBView = this.passB.createView();
   }
 
   /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
   get hdrTargetView(): GPUTextureView { return this.hdrView; }
+
+  /** A 1×1 cleared depth view, for passes that have no real scene depth. */
+  get dummyDepth(): GPUTextureView { return this.dummyDepthView; }
 
   /** View of the HDR snapshot taken before transparent draws (screen-space refraction). */
   get sceneCaptureView(): GPUTextureView { return this._sceneCaptureView; }
@@ -459,6 +509,155 @@ export class PostProcessing {
   /** Drop the TAA history (e.g. when TAA is toggled off) so re-enabling starts clean. */
   invalidateTAAHistory(): void {
     this.taaHistoryValid = false;
+  }
+
+  /**
+   * Run the enabled custom ShaderPasses in order over `input` (HDR linear),
+   * ping-ponging between the two pass buffers, and return the final HDR view to
+   * feed the tonemap chain. `depthView` is the scene depth (or a dummy).
+   * `textures` resolves a pass's texture uniforms; `time` drives `pp.time`.
+   * Returns `input` unchanged when no pass is enabled.
+   */
+  runShaderPasses(
+    encoder: GPUCommandEncoder,
+    passes: ShaderPass[],
+    input: GPUTextureView,
+    depthView: GPUTextureView,
+    textures: TextureManager,
+    time: number,
+  ): GPUTextureView {
+    const active = passes.filter((p) => p.enabled);
+    if (active.length === 0) return input;
+
+    this.device.queue.writeBuffer(this.passParamsBuffer, 0, new Float32Array([
+      this.width, this.height, 1 / this.width, 1 / this.height,
+      time, 0, 0, 0,
+    ]));
+
+    let src = input;
+    const buffers = [this.passAView, this.passBView];
+    let writeIdx = 0;
+    for (const pass of active) {
+      const res = this.getShaderPassResources(pass, textures);
+      // Avoid reading and writing the same texture: if src is the buffer we'd
+      // write, flip to the other one.
+      let dst = buffers[writeIdx];
+      if (dst === src) { writeIdx ^= 1; dst = buffers[writeIdx]; }
+
+      const group0 = this.device.createBindGroup({
+        layout: this.passBindLayout,
+        entries: [
+          { binding: 0, resource: src },
+          { binding: 1, resource: this.sampler },
+          { binding: 2, resource: depthView },
+          { binding: 3, resource: { buffer: this.passParamsBuffer } },
+        ],
+      });
+      const rp = encoder.beginRenderPass({
+        colorAttachments: [{ view: dst, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      });
+      rp.setPipeline(res.pipeline);
+      rp.setBindGroup(0, group0);
+      if (res.bindGroup1) rp.setBindGroup(1, res.bindGroup1);
+      rp.draw(3);
+      rp.end();
+
+      src = dst;
+      writeIdx ^= 1;
+    }
+    return src;
+  }
+
+  /** Build/refresh a ShaderPass's pipeline + group-1 uniform binding. */
+  private getShaderPassResources(pass: ShaderPass, textures: TextureManager): ShaderPassResources {
+    const layout = computeUniformLayout(pass.uniforms, 1);
+    const shapeKey = layout.fields.map((f) => `${f.name}:${f.kind}`).join(',') + '|tex:' + layout.textures.join(',');
+    let textureSig = '';
+    for (const name of layout.textures) {
+      const tex = pass.uniforms[name] as Texture;
+      textureSig += `${name}=${tex.id}:${tex.version};`;
+    }
+
+    const existing = this.passResources.get(pass.id);
+    const needsRebuild = !existing || existing.version !== pass.version || existing.shapeKey !== shapeKey;
+    let res: ShaderPassResources;
+    if (!existing || needsRebuild) {
+      existing?.buffer?.destroy();
+      const code = buildShaderPass(layout.wgsl, pass.effectCode);
+      const module = this.device.createShaderModule({ code, label: `shaderpass:${pass.name}` });
+      module.getCompilationInfo().then((info) => {
+        const errs = info.messages.filter((m) => m.type === 'error');
+        if (errs.length === 0) return;
+        const lines = code.split('\n');
+        let report = `[vela] ShaderPass "${pass.name}" failed to compile:\n`;
+        for (const m of errs) {
+          report += `  :${m.lineNum}:${m.linePos} ${m.message}\n`;
+          if (lines[m.lineNum - 1] !== undefined) report += `    ${m.lineNum} | ${lines[m.lineNum - 1]}\n`;
+        }
+        console.error(report + 'Fix the `effect` WGSL (fn effect(uv : vec2<f32>) -> vec4<f32>).');
+      });
+      const layouts = [this.passBindLayout];
+      if (layout.fields.length > 0 || layout.textures.length > 0) {
+        layouts.push(this.customGroup1Layout(layout.fields.length > 0, layout.textures.length));
+      }
+      const pipeline = this.device.createRenderPipeline({
+        label: `shaderpass:${pass.name}`,
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
+        vertex: { module, entryPoint: 'vs_main' },
+        fragment: { module, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const buffer = layout.fields.length > 0
+        ? this.device.createBuffer({ size: layout.size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+        : null;
+      res = {
+        pipeline, version: pass.version, shapeKey, buffer,
+        data: new Float32Array(layout.size / 4), layout, bindGroup1: null, textureSig: '',
+      };
+      this.passResources.set(pass.id, res);
+    } else {
+      res = existing;
+    }
+
+    // (Re)build the group-1 bind group when shape/textures change.
+    if (res.bindGroup1 === null || res.textureSig !== textureSig || needsRebuild) {
+      if (layout.fields.length > 0 || layout.textures.length > 0) {
+        const entries: GPUBindGroupEntry[] = [];
+        if (res.buffer) entries.push({ binding: 0, resource: { buffer: res.buffer } });
+        layout.textures.forEach((name, i) => {
+          const entry = textures.get(pass.uniforms[name] as Texture);
+          entries.push({ binding: 1 + i * 2, resource: entry.view });
+          entries.push({ binding: 2 + i * 2, resource: entry.sampler });
+        });
+        res.bindGroup1 = this.device.createBindGroup({
+          layout: this.customGroup1Layout(layout.fields.length > 0, layout.textures.length),
+          entries,
+        });
+      }
+      res.textureSig = textureSig;
+    }
+    if (res.buffer) {
+      packUniforms(pass.uniforms, layout, res.data);
+      this.device.queue.writeBuffer(res.buffer, 0, res.data);
+    }
+    return res;
+  }
+
+  private group1Layouts = new Map<number, GPUBindGroupLayout>();
+  /** ShaderPass group-1 bind layout (uniforms + textures), cached by shape. */
+  private customGroup1Layout(hasBuffer: boolean, textureCount: number): GPUBindGroupLayout {
+    const shape = (hasBuffer ? 1000 : 0) + textureCount;
+    let l = this.group1Layouts.get(shape);
+    if (l) return l;
+    const entries: GPUBindGroupLayoutEntry[] = [];
+    if (hasBuffer) entries.push({ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } });
+    for (let i = 0; i < textureCount; i++) {
+      entries.push({ binding: 1 + i * 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } });
+      entries.push({ binding: 2 + i * 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } });
+    }
+    l = this.device.createBindGroupLayout({ label: `shaderpass-g1-${shape}`, entries });
+    this.group1Layouts.set(shape, l);
+    return l;
   }
 
   private taaPipeline(): GPURenderPipeline {

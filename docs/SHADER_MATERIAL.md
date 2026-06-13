@@ -211,3 +211,59 @@ Surface functions run identically with and without `renderer.postProcessing`.
 - The vertex hook applies to plain and instanced meshes; skinned and
   morph-target meshes use their built-in vertex stages unchanged.
 - Transmission/clearcoat/sheen lobes are `StandardMaterial`-only.
+
+---
+
+# ShaderPass — custom post effects
+
+`ShaderPass` is the screen-space sibling of `ShaderMaterial`: you write one
+WGSL function over the full frame, and it runs as a post-processing stage.
+Passes run in order in **HDR linear space**, after bloom/SSAO/TAA and before
+tonemapping, so effects compose correctly with the rest of the pipeline.
+Requires `renderer.postProcessing = true`.
+
+```ts
+import { ShaderPass } from 'vela';
+
+renderer.postProcessing = true;
+
+// Heat-haze wobble.
+renderer.passes.push(new ShaderPass({
+  effect: /* wgsl */ `
+    fn effect(uv : vec2<f32>) -> vec4<f32> {
+      let wobble = sin(uv.y * 80.0 + pp.time * 4.0) * u.amount;
+      return sceneColor(uv + vec2(wobble, 0.0));
+    }
+  `,
+  uniforms: { amount: 0.008 },
+}));
+```
+
+## The effect function
+
+Define `fn effect(uv : vec2<f32>) -> vec4<f32>` returning the output color for
+that pixel (`uv` is 0..1, origin top-left). In scope:
+
+- `sceneColor(uv)` — the previous stage's color (HDR linear). Also `sceneTex` +
+  `sceneSmp` if you want manual sampling.
+- `sceneDepth(uv)` — non-linear depth in `[0,1]` (1 = background), for
+  depth-aware effects like fog or DoF.
+- `pp.resolution` — `vec4` (xy = pixels, zw = 1/pixels); `pp.time` — seconds.
+- `u.<name>` / `t_<name>` + `s_<name>` — your `uniforms`, same types and rules
+  as ShaderMaterial.
+
+## Managing the chain
+
+```ts
+const grade = new ShaderPass({ effect: `...`, uniforms: { exposure: 1.2 } });
+renderer.passes.push(grade);
+
+grade.uniforms.exposure = 0.8; // applied next frame
+grade.enabled = false;         // skip without removing
+grade.setEffect(newWgsl);      // recompiles next frame
+renderer.passes = [];          // clear all
+```
+
+Passes execute in array order; reorder the array to reorder effects. Like
+ShaderMaterial, an invalid `effect` throws on construction, and WGSL compile
+errors print the failing generated line to the console.
