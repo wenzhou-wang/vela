@@ -22,6 +22,7 @@ export { InstancedMesh } from './core/InstancedMesh';
 export { ParticleSystem } from './core/ParticleSystem';
 export type { ParticleSystemOptions } from './core/ParticleSystem';
 export { Sprite } from './core/Sprite';
+export { LOD } from './core/LOD';
 export { TextMesh } from './core/TextMesh';
 export type { TextMeshOptions } from './core/TextMesh';
 export { RenderTarget } from './core/RenderTarget';

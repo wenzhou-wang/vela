@@ -424,9 +424,14 @@ rest" — to the remaining programmable surfaces.
 
 ## v0.9 — Scale & robustness ⬜
 
-- ⬜ **LOD** — `LOD` node with distance-banded children (hysteresis to avoid popping);
-      selection happens in `collect()` against the camera distance already computed for
-      transparency sorting.
+- ✅ **LOD** — `LOD extends Object3D` with `addLevel(object, distance, hysteresis?)`
+      (levels auto-sorted by distance). Before `collect()`, the renderer walks the
+      scene and calls `lod.update(cameraWorldPos)`, which toggles child `.visible` so
+      the active level flows through frustum culling and every other traversal
+      unchanged. Cold-start picks the natural level; thereafter hysteresis is a
+      bidirectional deadband — switch up only past `distance + hysteresis`, down only
+      below `distance - hysteresis` — eliminating boundary flicker. `autoUpdate = false`
+      hands control to manual `update()` calls. Selection + hysteresis offline-verified.
 - ⬜ **GPU occlusion culling** — two-phase: render last frame's visible set, build a
       hi-Z mip pyramid from depth, then test the remaining bounds against it in the
       existing GPU-cull compute pass (extends the indirect-draw path).

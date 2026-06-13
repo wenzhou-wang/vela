@@ -11,6 +11,7 @@ import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
 import { ParticleSystem } from '../core/ParticleSystem';
 import { Sprite } from '../core/Sprite';
+import { LOD } from '../core/LOD';
 import { TextMesh } from '../core/TextMesh';
 import { RenderTarget } from '../core/RenderTarget';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
@@ -721,6 +722,12 @@ export class WebGPURenderer {
       this._jitterY = 0;
     }
     if (!rt) this.taaActive = useTAA;
+
+    // Pick LOD levels by camera distance before collecting (toggles child visibility).
+    camera.getWorldPosition(this._camPos);
+    scene.traverse((o) => {
+      if (o instanceof LOD && o.autoUpdate) o.update(this._camPos);
+    });
 
     this.collect(scene);
     this.prepareShadow();
