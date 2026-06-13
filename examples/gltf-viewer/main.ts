@@ -216,7 +216,7 @@ let clips: GLTFResult['animations'] = [];
 
 function onLoaded(result: GLTFResult, isBitmoji = false): void {
   setModel(result.scene, result.boundingBox);
-  // Bitmoji defaults to the comic style; the dropdown offers PBR/comic/anime.
+  // Bitmoji defaults to the comic style; the dropdown offers PBR/comic.
   setBitmojiSelected(isBitmoji, isBitmoji ? 'comic' : 'pbr');
   setupAnimations(result.animations);
   const extra = result.animations.length ? ` · ${result.animations.length} anim` : '';
@@ -258,17 +258,14 @@ const styleEl = document.getElementById('renderStyle') as HTMLSelectElement;
 const outlineEl = document.getElementById('outlineThickness') as HTMLInputElement;
 const styleRow = document.getElementById('styleRow') as HTMLLabelElement;
 const outlineRow = document.getElementById('outlineRow') as HTMLLabelElement;
-// 'pbr' (default), 'comic' (cel + bold outlines), 'anime' (toon ramp + ink lines).
+// 'pbr' (default) or 'comic' (cel shading + ink outlines).
 function setRenderStyle(style: string): void {
   const comic = style === 'comic';
-  const anime = style === 'anime';
   renderer.celShading = comic;
-  renderer.animeShading = anime;
-  renderer.postProcessing = comic || anime;
-  // Comic uses bolder lines; anime keeps them thinner.
-  if (comic || anime) outlineEl.value = comic ? '2' : '1.25';
+  renderer.postProcessing = comic;
+  if (comic) outlineEl.value = '2';
   renderer.outlineThickness = parseFloat(outlineEl.value);
-  outlineEl.disabled = !(comic || anime);
+  outlineEl.disabled = !comic;
 }
 function setBitmojiSelected(selected: boolean, defaultStyle = 'pbr'): void {
   styleRow.style.display = selected ? 'flex' : 'none';

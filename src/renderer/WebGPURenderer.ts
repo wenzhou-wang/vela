@@ -293,13 +293,6 @@ export class WebGPURenderer {
    * (comic look). Requires `postProcessing = true` and `sampleCount = 1`.
    */
   celShading = false;
-  /**
-   * Anime/toon shading: a stepped diffuse ramp + soft rim light over the
-   * authored albedo, with ink outlines. Requires `postProcessing = true` and
-   * `sampleCount = 1` (for the outline pass). Mutually exclusive with
-   * `celShading`; when both are set, cel (comic) wins.
-   */
-  animeShading = false;
   /** Screen-space outline radius in device pixels. */
   outlineThickness = 2.0;
   /** Blend strength for outer silhouettes and interior feature lines. */
@@ -1022,10 +1015,6 @@ export class WebGPURenderer {
 
     const useSSAO = this.ssao && usePost && this.sampleCount === 1 && !!this.depthSampleView;
     const useCelShading = this.celShading && usePost && this.sampleCount === 1 && !!this.depthSampleView;
-    // Anime adds ink outlines over its (lit) toon shading; cel takes precedence.
-    const useAnimeOutline = !useCelShading && this.animeShading && usePost &&
-      this.sampleCount === 1 && !!this.depthSampleView;
-    const useOutline = useCelShading || useAnimeOutline;
     // Resolve the HDR target through the post chain into the swap chain.
     if (usePost) {
       if (useSSAO) {
@@ -1072,11 +1061,10 @@ export class WebGPURenderer {
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
         celShading: useCelShading,
-        outline: useOutline,
         outlineThickness: this.outlineThickness,
         outlineStrength: this.outlineStrength,
-      }, postInput, useOutline ? this.depthSampleView! : undefined,
-      useOutline ? new Float32Array(camera.projectionMatrixInverse.elements) : undefined);
+      }, postInput, useCelShading ? this.depthSampleView! : undefined,
+      useCelShading ? new Float32Array(camera.projectionMatrixInverse.elements) : undefined);
     }
     // Save this frame's unjittered view-projection for next frame's TAA
     // reprojection (canvas renders only — offscreen cameras must not pollute it).
@@ -1244,7 +1232,7 @@ export class WebGPURenderer {
     }
 
     // Post effects requested but post pipeline off (silently inactive).
-    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.celShading || this.animeShading || this.passes.length > 0)) {
+    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.celShading || this.passes.length > 0)) {
       out.push({
         code: 'post-effect-inactive',
         message: 'A post effect (bloom/ssao/taa/oit/cel/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
@@ -2432,16 +2420,13 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    // Bit 0: linear output; bit 1: IBL; bit 2: SSR; bit 3: unlit cel preview;
-    // bit 4: anime toon shading. _usePost is false for render-target passes.
-    // Cel (comic) takes precedence over anime when both are set.
+    // Bit 0: linear output; bit 1: IBL; bit 2: SSR; bit 3: unlit cel preview.
+    // _usePost is false for render-target passes (direct pipeline, in-shader tonemap).
     const celActive = this.celShading && this._usePost && this.sampleCount === 1;
-    const animeActive = !celActive && this.animeShading && this._usePost && this.sampleCount === 1;
     f[63] = (this._usePost ? 1 : 0) |
       (this.iblActive ? 2 : 0) |
       (this._usePost ? 4 : 0) |
-      (celActive ? 8 : 0) |
-      (animeActive ? 16 : 0);
+      (celActive ? 8 : 0);
 
     // clusterParams (64..67) + clusterDims (68..71)
     const cam = camera as unknown as { near?: number; far?: number };
