@@ -382,7 +382,7 @@ human looking at pixels — the core AI-first differentiator.
 
 ---
 
-## v0.8 — AI-extensible pipeline ⬜
+## v0.8 — AI-extensible pipeline ✅
 
 Extend the ShaderMaterial pattern — "write one WGSL function, the engine does the
 rest" — to the remaining programmable surfaces.
@@ -408,11 +408,17 @@ rest" — to the remaining programmable surfaces.
       print the offending generated line like ShaderMaterial. Read↔write aliasing is
       avoided by flipping the target. Offline-verified: no-uniform, scalar+texture,
       and group-binding cases parse via wgsl_reflect.
-- ⬜ **Compute API** — `new ComputeTask({ code, workgroups, buffers: { particles:
-      storage(...), params: uniform({...}) } })` with declarative buffer/uniform
-      bindings (auto layout, same packing rules), `task.dispatch(encoder?)`, and
-      `task.read('buffer')` for results — GPU sims (boids, erosion, procedural
-      geometry) without touching raw WebGPU.
+- ✅ **Compute API** — `new ComputeTask({ code, entryPoint?, workgroups,
+      bindings: { data: storage({ size, data?, readable? }), params: uniform({...}) } })`.
+      Named bindings map to `@group(0)` in declaration order (binding 0,1,2,…); the
+      bind group layout is built automatically and uniform values are auto-packed via
+      the shared `computeUniformLayout`/`packUniforms`. `await task.init(device)`
+      compiles (with the same line-numbered error reporting as ShaderMaterial/
+      ShaderPass); `task.dispatch(encoder?)` folds into a frame or runs standalone,
+      `task.run()` is the standalone shortcut, `task.write()`/`updateUniform()` push
+      new data, and `await task.read(name)` copies a `readable` storage buffer back to
+      an `ArrayBuffer`. `task.buffer(name)` exposes the raw `GPUBuffer` for
+      interop. No raw WebGPU plumbing for boids/sims/procedural-geometry jobs.
 
 ---
 

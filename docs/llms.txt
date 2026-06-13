@@ -324,6 +324,19 @@ A custom fullscreen post-processing effect. Push instances into `renderer.passes
 - effectCode: string
 - setEffect(code: string): void — Replace the effect function; recompiles on the next frame.
 
+### class ComputeTask
+A declarative GPU compute job: WGSL plus named storage/uniform buffers, with auto-built bind group layout and uniform packing — no raw WebGPU plumbing. Run it standalone (`await task.run()`) or fold it into a frame by passing the frame's encoder. Read storage results back with `task.read(name)` (requires `readable: true`).
+- new ComputeTask(options: ComputeTaskOptions)
+- name: string
+- init(device: GPUDevice): Promise<void> — Create GPU resources on `device`.
+- updateUniform(name: string, values: Record<string, UniformValue>): void — Re-pack and upload a uniform binding's values (call after mutating them).
+- write(name: string, data: ArrayBufferView<ArrayBuffer>, offset?: number): void — Overwrite a storage buffer's contents (offset in bytes).
+- dispatch(encoder?: GPUCommandEncoder | undefined, workgroups?: [number, (number | undefined)?, (number | undefined)?] | undefined): void — Encode the dispatch.
+- run(workgroups?: [number, (number | undefined)?, (number | undefined)?] | undefined): void — Convenience: dispatch standalone.
+- read(name: string): Promise<ArrayBuffer> — Read a `readable` storage buffer back to the CPU (resolves after the GPU finishes).
+- buffer(name: string): GPUBuffer — Raw GPU buffer for a binding (e.g.
+- dispose(): void — Release all GPU buffers.
+
 ### class GridHelper extends LineSegments
 A wireframe grid on the XZ plane, centered at the origin. The two center lines (the X and Z axes) use `centerColor`; the rest use `gridColor`.
 - new GridHelper(size: number, divisions: number, centerColor: number, gridColor: number)
@@ -792,6 +805,12 @@ A ray with an origin and a normalized direction.
 
 ## Functions
 
+### function storage(opts?: Omit<StorageBinding, "kind">): StorageBinding
+`storage({...})` / `uniform({...})` helpers for `ComputeTask` bindings.
+
+### function uniform(values: Record<string, UniformValue>): UniformBinding
+
+
 ### function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState): Diagnostic[]
 Triage why a scene "renders but looks wrong" — especially the classic black screen. Pure scene-graph math: runs without a GPU. Returns an empty array when nothing looks suspicious.
 
@@ -977,6 +996,42 @@ export interface ShaderPassOptions {
   uniforms?: Record<string, UniformValue>;
   enabled?: boolean;
   name?: string;
+}
+```
+
+### ComputeTaskOptions
+```ts
+export interface ComputeTaskOptions {
+  code: string;
+  entryPoint?: string;
+  bindings: Record<string, ComputeBinding>;
+  workgroups?: [number, number?, number?];
+  name?: string;
+}
+```
+
+### ComputeBinding
+```ts
+export type ComputeBinding = StorageBinding | UniformBinding;
+```
+
+### StorageBinding
+A storage buffer binding: either a byte size, or initial data to upload.
+```ts
+export interface StorageBinding {
+  kind: 'storage';
+  size?: number;
+  data?: ArrayBufferView<ArrayBuffer>;
+  readable?: boolean;
+}
+```
+
+### UniformBinding
+A uniform buffer binding holding auto-packed scalar/vector values.
+```ts
+export interface UniformBinding {
+  kind: 'uniform';
+  values: Record<string, UniformValue>;
 }
 ```
 
