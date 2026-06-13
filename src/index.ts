@@ -67,6 +67,8 @@ export { SpotLight } from './lights/SpotLight';
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';
 export type { RendererOptions, PixelData } from './renderer/WebGPURenderer';
+export { diagnoseScene } from './renderer/diagnose';
+export type { Diagnostic, DiagnoseState } from './renderer/diagnose';
 
 // golden-image testing helpers (deterministic capture + perceptual compare)
 export { captureFrame, comparePixels, loadPixels, pixelsToPNG, expectFrame, FrameMismatchError } from './test';

@@ -347,13 +347,20 @@ human looking at pixels — the core AI-first differentiator.
       message says how to bless a new golden). `comparePixels` is pure and
       offline-verified (identical/1-px/noise/size-mismatch cases); `captureFrame`,
       `loadPixels`, `pixelsToPNG` are exported separately for custom harnesses.
-- ⬜ **`renderer.diagnose(scene, camera)`** — structured triage of the classic
-      black-screen causes, returned as `{ severity, code, message, fix }[]`: no
-      lights/zero intensity, camera frustum missing the scene bounds (with the actual
-      distance and a suggested position), NaN/zero-scale transforms, model scale outliers
-      (>1000× scene median), `transparent` without alpha < 1, `oit`/`ssao`/`taa` flags
-      whose prerequisites (postProcessing, sampleCount) aren't met, materials referencing
-      destroyed textures. Every message names the offending object and the one-line fix.
+- ✅ **`renderer.diagnose(scene, camera)`** — structured triage of the classic
+      black-screen causes, returned as `{ severity, code, message, fix }[]`: empty
+      scene, no lights/ambient/env, zero-intensity or black lights, camera frustum
+      missing the scene bounds (with the actual distance and a copy-pasteable
+      suggested position), scene-beyond-`camera.far` (distinguished from bad aim via
+      a facing test), invalid/degenerate near/far + depth-precision warnings, aspect
+      mismatch with the canvas, NaN world matrices, zero scale components, scale
+      outliers (>1000× the scene median radius), missing/unsupported materials
+      (which the renderer would silently skip), `transparent` without an alpha
+      source, `oit`/`ssao`/`taa` prerequisite violations, skybox without an
+      environment, shadow-casting lights with `renderer.shadows` off, and inverted
+      fog ranges. Pure scene-graph math in `diagnoseScene()` (no GPU) —
+      offline-tested against nine synthetic scenes including the healthy-scene
+      no-findings case.
 - ⬜ **`scene.describe()` / `renderer.report()`** — JSON introspection an LLM can
       reason over: node hierarchy summary (counts by type, named nodes), world bounds,
       material/light/texture inventories, last-frame stats (draw calls, triangles,

@@ -40,6 +40,7 @@ import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
 import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
+import { diagnoseScene, type Diagnostic } from './diagnose';
 
 /** Either encoder accepts the same draw commands (pass or render bundle). */
 type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
@@ -914,6 +915,25 @@ export class WebGPURenderer {
       buffer.unmap();
       buffer.destroy();
       for (const resolve of resolvers) resolve({ data, width, height });
+    });
+  }
+
+  /**
+   * Explain why a scene "renders but looks wrong" — especially black screens.
+   * Returns structured findings, each with a stable `code`, a message naming
+   * the offending object, and the one-line `fix`. Empty array = nothing
+   * suspicious. Cheap enough to call when stuck; not meant for every frame.
+   */
+  diagnose(scene: Scene, camera: Camera): Diagnostic[] {
+    return diagnoseScene(scene, camera, {
+      postProcessing: this.postProcessing,
+      sampleCount: this.sampleCount,
+      oit: this.oit,
+      ssao: this.ssao,
+      taa: this.taa,
+      shadows: this.shadows,
+      canvasWidth: this.canvas.width,
+      canvasHeight: this.canvas.height,
     });
   }
 
