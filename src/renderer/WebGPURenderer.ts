@@ -280,6 +280,19 @@ export class WebGPURenderer {
   taa = false;
   /** TAA blend factor: weight of the current frame (lower = smoother, more ghosting). */
   taaBlend = 0.1;
+  /**
+   * Deterministic rendering: identical scenes produce identical pixels.
+   * Time stops following the wall clock — drive it via `renderer.time`
+   * (e.g. `renderer.time += 1 / 60` per frame); particle simulation and
+   * shader `elapsedTime()` use it, and the TAA jitter sequence restarts from
+   * a fixed point when this is enabled. The foundation for golden-image tests.
+   */
+  deterministic = false;
+  /** Scene time in seconds; only advances when you set it (`deterministic = true`). */
+  time = 0;
+  private lastDeterministicTime = 0;
+  private prevDeterministic = false;
+  private _elapsed = 0; // seconds fed to shaders/particles this render
   private taaActive = false;     // was TAA running last frame (history validity)
   private taaFrameIndex = 0;     // Halton sequence cursor
   private _jitterX = 0;          // NDC jitter baked into this frame's projection
@@ -634,9 +647,24 @@ export class WebGPURenderer {
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
     this.frameNumber++;
-    const nowMs = performance.now();
-    const dt = this.lastRenderTime > 0 ? Math.min((nowMs - this.lastRenderTime) / 1000, 0.1) : 0;
-    this.lastRenderTime = nowMs;
+    // Frame timing: wall clock normally; renderer.time when deterministic.
+    let dt: number;
+    if (this.deterministic) {
+      if (!this.prevDeterministic) {
+        this.lastDeterministicTime = this.time;
+        this.taaFrameIndex = 0;               // restart the jitter sequence
+        this.post?.invalidateTAAHistory();
+      }
+      dt = Math.max(this.time - this.lastDeterministicTime, 0);
+      this.lastDeterministicTime = this.time;
+      this._elapsed = this.time;
+    } else {
+      const nowMs = performance.now();
+      dt = this.lastRenderTime > 0 ? Math.min((nowMs - this.lastRenderTime) / 1000, 0.1) : 0;
+      this.lastRenderTime = nowMs;
+      this._elapsed = (nowMs - this.clockStart) / 1000;
+    }
+    this.prevDeterministic = this.deterministic;
     // Render-target passes use the direct pipeline; the post chain (and its
     // screen-sized resources) belongs to the default canvas target.
     const rt = target ? this.getRenderTargetResources(target) : null;
@@ -1458,7 +1486,7 @@ export class WebGPURenderer {
       f32[4] = o.velocity?.x ?? 0; f32[5] = o.velocity?.y ?? 1; f32[6] = o.velocity?.z ?? 0;
       f32[7] = o.spread ?? 0.5;
       f32[8] = o.gravity?.x ?? 0; f32[9] = o.gravity?.y ?? 0; f32[10] = o.gravity?.z ?? 0;
-      f32[11] = (performance.now() - this.clockStart) / 1000; // randomness seed
+      f32[11] = this._elapsed; // randomness seed (pinned by renderer.time when deterministic)
       f32[12] = lifeMin; f32[13] = lifeMax; f32[14] = 0; f32[15] = 0;
       u32[16] = res.cursor; u32[17] = emit; u32[18] = res.capacity; u32[19] = 0;
       this.device.queue.writeBuffer(res.simParams, 0, f32);
@@ -1925,7 +1953,7 @@ export class WebGPURenderer {
     f[67] = scene.backgroundBlur; // skybox blur (0 = sharp, 1 = max mip)
     f[68] = this._renderWidth / CLUSTER_X;  // tile size in pixels
     f[69] = this._renderHeight / CLUSTER_Y;
-    f[70] = (performance.now() - this.clockStart) / 1000; // elapsed seconds (shader elapsedTime())
+    f[70] = this._elapsed; // seconds for shader elapsedTime() (renderer.time when deterministic)
     f[71] = 0;
 
     // fogColor (72..75) + fogParams (76..79)

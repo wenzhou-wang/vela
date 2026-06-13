@@ -333,10 +333,11 @@ human looking at pixels — the core AI-first differentiator.
       `readPixels(rt)` reads a RenderTarget immediately. `renderer.screenshot()`
       wraps either in a PNG Blob via `OffscreenCanvas.convertToBlob`. Errors name
       the fix (e.g. reading a never-rendered target).
-- ⬜ **Deterministic mode** — `renderer.deterministic = true`: TAA jitter sequence
-      restarts from a fixed seed, `elapsedTime()` is driven by a settable
-      `renderer.time` instead of the wall clock, and any future stochastic effects key
-      off one seed — so the same scene always produces the same pixels.
+- ✅ **Deterministic mode** — `renderer.deterministic = true`: shader
+      `elapsedTime()`, particle integration dt, and particle PCG seeds all derive
+      from a settable `renderer.time` (advance it manually, e.g. `+= 1/60`) instead
+      of the wall clock, and the TAA jitter sequence + history restart from a fixed
+      point on enable — so the same scene + time always produces the same pixels.
 - ⬜ **Golden-image testing** — `vela/test` helper: `await expectFrame(renderer, scene,
       camera, 'golden/lava.png', { tolerance })` renders deterministically, compares
       with a perceptual diff (per-channel + SSIM-lite), writes the actual + diff images
