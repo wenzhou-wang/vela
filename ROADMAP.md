@@ -289,17 +289,23 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
       premultiplied additive/alpha blending, tonemapped like the material path. The
       per-frame upload path reuses scratch arrays — no per-particle JS objects, no
       hot-loop allocation.
-- 🚧 **Sprites & SDF text** — ✅ **sprites**: `Sprite extends Object3D` (texture,
+- ✅ **Sprites & SDF text** — ✅ **sprites**: `Sprite extends Object3D` (texture,
       color/opacity tint, `size`/`offset`, `screenSpace`) batched per (texture, mode)
       into one 6-vertex instanced draw from a 64-byte-stride instance storage buffer
       (grown ×2, rebuilt per frame with no per-sprite GPU objects). World-space
       sprites billboard from the view-matrix basis and depth-test against the scene;
       `screenSpace = true` projects the anchor then offsets in CSS pixels
       (pixel-ratio-scaled CPU-side) with the depth test off, drawn after everything as
-      a HUD overlay. Premultiplied alpha, literal color like the helper path. The
-      shader already carries the SDF text mode flag + per-instance uv rects. ⬜
-      `TextMesh`: runtime SDF atlas (`OffscreenCanvas` rasterization → distance
-      transform, cached per font), one glyph per instance through the same batcher.
+      a HUD overlay. Premultiplied alpha, literal color like the helper path.
+      ✅ **SDF text** (`TextMesh`): glyphs rasterize lazily via Canvas2D into a
+      per-font 1024² atlas (64px cells, 256 glyphs) with an exact Felzenszwalb
+      Euclidean distance transform (offline-verified against analytic fields);
+      distance lives in alpha and the texture version bumps per new glyph so the
+      atlas re-uploads automatically. Each character becomes one instance in the
+      shared sprite batcher (per-glyph uv rect + pen/baseline offsets, multi-line
+      `\n`, left/center/right anchors); the fragment thresholds the SDF at 0.5
+      with `fwidth` antialiasing, so text stays crisp at any scale in both world
+      and screen space.
 - ⬜ **Render-to-texture** — `const rt = new RenderTarget(w, h)` +
       `renderer.render(scene, camera, rt)`: renders the full pipeline (including post)
       into an offscreen color texture usable as any material map (mirrors, portals,

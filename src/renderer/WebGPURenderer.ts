@@ -11,6 +11,8 @@ import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
 import { ParticleSystem } from '../core/ParticleSystem';
 import { Sprite } from '../core/Sprite';
+import { TextMesh } from '../core/TextMesh';
+import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
@@ -350,6 +352,9 @@ export class WebGPURenderer {
   // Sprites: one instanced batch per (texture, screen-space, sdf) combination.
   private sprites: Sprite[] = [];
   private spriteBatches = new Map<string, SpriteBatch>();
+  // SDF text: glyphs flow through the sprite batcher, one atlas per font.
+  private texts: TextMesh[] = [];
+  private fontAtlases = new Map<string, SDFFontAtlas>();
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
@@ -1344,7 +1349,7 @@ export class WebGPURenderer {
 
   /** Rebuild sprite batches from the collected sprites and upload instance data. */
   private prepareSprites(): void {
-    if (this.sprites.length === 0 && this.spriteBatches.size === 0) return;
+    if (this.sprites.length === 0 && this.texts.length === 0 && this.spriteBatches.size === 0) return;
     for (const batch of this.spriteBatches.values()) batch.count = 0;
 
     for (const sprite of this.sprites) {
@@ -1369,6 +1374,51 @@ export class WebGPURenderer {
       d[i + 11] = sprite.opacity;
       d[i + 12] = 0; d[i + 13] = 0; d[i + 14] = 1; d[i + 15] = 1; // full texture
       batch.count++;
+    }
+
+    // SDF text: one glyph instance per character, batched per font atlas.
+    for (const tm of this.texts) {
+      if (!tm.text) continue;
+      let atlas = this.fontAtlases.get(tm.font);
+      if (!atlas) {
+        atlas = new SDFFontAtlas(tm.font);
+        this.fontAtlases.set(tm.font, atlas);
+      }
+      // Rasterize any new glyphs first (bumps the atlas texture version), so
+      // textures.get() below uploads the finished atlas.
+      for (const ch of tm.text) {
+        if (ch !== '\n') atlas.getGlyph(ch);
+      }
+      const entry = this.textures.get(atlas.texture);
+      const textureSig = `${atlas.texture.id}:${atlas.texture.version}`;
+      const screen = tm.screenSpace;
+      const key = `sdf:${tm.font}|${screen ? 1 : 0}|1`;
+      tm.getWorldPosition(this._meshPos);
+      const scale = (tm.fontSize / SDF_BASE_FONT) * (screen ? this.pixelRatio : 1);
+
+      let lineY = 0;
+      for (const line of tm.text.split('\n')) {
+        let width = 0;
+        for (const ch of line) width += atlas.advanceOf(ch);
+        let pen = tm.anchor === 'left' ? 0 : tm.anchor === 'center' ? -width / 2 : -width;
+        for (const ch of line) {
+          const g = atlas.getGlyph(ch);
+          if (g) {
+            const batch = this.getSpriteBatch(key, screen, true, textureSig, entry.view, entry.sampler);
+            const d = batch.data;
+            const i = batch.count * SPRITE_STRIDE_F;
+            d[i] = this._meshPos.x; d[i + 1] = this._meshPos.y; d[i + 2] = this._meshPos.z; d[i + 3] = 0;
+            d[i + 4] = g.w * scale; d[i + 5] = g.h * scale;
+            d[i + 6] = (pen + g.cx) * scale; d[i + 7] = (lineY + g.cy) * scale;
+            d[i + 8] = tm.color.r; d[i + 9] = tm.color.g; d[i + 10] = tm.color.b;
+            d[i + 11] = tm.opacity;
+            d[i + 12] = g.u0; d[i + 13] = g.v0; d[i + 14] = g.u1; d[i + 15] = g.v1;
+            batch.count++;
+          }
+          pen += g ? g.advance : atlas.advanceOf(ch);
+        }
+        lineY -= atlas.lineHeight;
+      }
     }
 
     // Upload live batches; drop batches that went empty (texture/mode changed).
@@ -1514,6 +1564,7 @@ export class WebGPURenderer {
     this.lights.length = 0;
     this.particleSystems.length = 0;
     this.sprites.length = 0;
+    this.texts.length = 0;
     this.culledCount = 0;
 
     scene.traverseVisible((object: Object3D) => {
@@ -1523,6 +1574,8 @@ export class WebGPURenderer {
         this.particleSystems.push(object);
       } else if (object instanceof Sprite) {
         this.sprites.push(object);
+      } else if (object instanceof TextMesh) {
+        this.texts.push(object);
       } else if (object instanceof Mesh) {
         if (this.frustumCulling && object.frustumCulled && this.isCulled(object)) {
           this.culledCount++;
