@@ -435,11 +435,13 @@ rest" — to the remaining programmable surfaces.
 - ⬜ **GPU occlusion culling** — two-phase: render last frame's visible set, build a
       hi-Z mip pyramid from depth, then test the remaining bounds against it in the
       existing GPU-cull compute pass (extends the indirect-draw path).
-- ⬜ **Performance advisor** — `renderer.report()` grows actionable suggestions with
-      the same `{ code, message, fix }` shape as `diagnose()`: "412 draws share one
-      geometry+material — use InstancedMesh", "shadow map re-rendered but no caster
-      moved", "postProcessing off but bloom set". An agent has no perf intuition; the
-      engine lends it some.
+- ✅ **Performance advisor** — `renderer.report().suggestions` is a list of
+      `{ code, message, fix }` items (same shape as `diagnose()`) computed from the
+      last frame: an instancing opportunity (≥16 meshes sharing one geometry+material
+      drawn separately → InstancedMesh), high draw-call count without render bundles,
+      many ranged lights without clustered lighting, a post effect enabled while
+      `postProcessing` is off, and MSAA blocking SSAO/TAA. An agent has no perf
+      intuition; the engine lends it some.
 - ⬜ **Lifecycle hardening** — device-lost recovery (re-init device, rebuild all cached
       GPU resources from their CPU-side sources, which the cache design already keeps),
       a `dispose()` audit across geometry/texture/material/render-target paths, and a

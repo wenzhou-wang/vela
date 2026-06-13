@@ -169,6 +169,16 @@ interface RenderTargetResources {
   depthView: GPUTextureView;
 }
 
+/** An actionable performance suggestion (same shape as a Diagnostic). */
+export interface PerfSuggestion {
+  /** Stable identifier (e.g. 'instancing-opportunity') for programmatic handling. */
+  code: string;
+  /** What was observed. */
+  message: string;
+  /** The recommended change. */
+  fix: string;
+}
+
 /** Last-frame statistics from `renderer.report()` — JSON an agent can reason over. */
 export interface RenderReport {
   /** Monotonic frame counter. */
@@ -186,6 +196,8 @@ export interface RenderReport {
   /** Estimated GPU texture memory in bytes. */
   textureMemoryBytes: number;
   flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+  /** Actionable performance suggestions for the last frame (may be empty). */
+  suggestions: PerfSuggestion[];
 }
 
 /** RGBA8 pixel readback result (rows top-to-bottom). */
@@ -986,10 +998,11 @@ export class WebGPURenderer {
     for (const sys of this.particleSystems) particleCapacity += sys.options.capacity ?? 1000;
 
     const shadowTiles = this.spotShadowCasters.length + (this.shadowCasterIndex >= 0 ? 1 : 0);
+    const drawCalls = this.opaque.length + this.transparent.length +
+      this.particleSystems.length + this.spriteBatches.size;
     return {
       frame: this.frameNumber,
-      drawCalls: this.opaque.length + this.transparent.length +
-        this.particleSystems.length + this.spriteBatches.size,
+      drawCalls,
       triangles,
       meshes: {
         opaque: this.opaque.length,
@@ -1007,7 +1020,77 @@ export class WebGPURenderer {
         msaa: this.sampleCount,
         shadows: this.shadows,
       },
+      suggestions: this.perfSuggestions(drawCalls),
     };
+  }
+
+  /** Heuristic performance advice for the last frame (the report's `suggestions`). */
+  private perfSuggestions(drawCalls: number): PerfSuggestion[] {
+    const out: PerfSuggestion[] = [];
+
+    // Many non-instanced meshes sharing one geometry+material → InstancedMesh.
+    const groups = new Map<string, number>();
+    for (const mesh of this.opaque) {
+      if (mesh instanceof InstancedMesh) continue;
+      const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      if (!mat) continue;
+      const key = `${mesh.geometry.id}|${mat.id}`;
+      groups.set(key, (groups.get(key) ?? 0) + 1);
+    }
+    let bestCount = 0;
+    for (const count of groups.values()) {
+      if (count > bestCount) bestCount = count;
+    }
+    if (bestCount >= 16) {
+      out.push({
+        code: 'instancing-opportunity',
+        message: `${bestCount} meshes share one geometry+material but draw separately (${drawCalls} total draw calls).`,
+        fix: 'Replace them with a single InstancedMesh (one draw for the whole batch).',
+      });
+    }
+
+    // High draw-call count without render bundles.
+    if (drawCalls > 500 && !this.renderBundles) {
+      out.push({
+        code: 'consider-render-bundles',
+        message: `${drawCalls} draw calls per frame with renderBundles off — CPU encoding may dominate.`,
+        fix: 'Set renderer.renderBundles = true to record and replay the opaque pass.',
+      });
+    }
+
+    // Many ranged lights without clustered lighting.
+    let rangedLights = 0;
+    for (const l of this.lights) {
+      const range = (l as { distance?: number }).distance;
+      if (range !== undefined && range > 0) rangedLights++;
+    }
+    if (rangedLights >= 16 && !this.clusteredLighting) {
+      out.push({
+        code: 'consider-clustered-lighting',
+        message: `${rangedLights} ranged point/spot lights with clusteredLighting off — every fragment loops all lights.`,
+        fix: 'Set renderer.clusteredLighting = true (perspective cameras).',
+      });
+    }
+
+    // Post effects requested but post pipeline off (silently inactive).
+    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.celShading || this.passes.length > 0)) {
+      out.push({
+        code: 'post-effect-inactive',
+        message: 'A post effect (bloom/ssao/taa/oit/cel/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
+        fix: 'Set renderer.postProcessing = true, or disable the effect to avoid confusion.',
+      });
+    }
+
+    // Heavy MSAA while features that need sampleCount 1 are requested.
+    if (this.sampleCount > 1 && (this.ssao || this.taa)) {
+      out.push({
+        code: 'msaa-blocks-effect',
+        message: `sampleCount is ${this.sampleCount}× but SSAO/TAA require sampleCount 1 — those effects are inactive.`,
+        fix: 'Recreate the renderer with { sampleCount: 1 } to use SSAO/TAA (they include their own AA).',
+      });
+    }
+
+    return out;
   }
 
   /**

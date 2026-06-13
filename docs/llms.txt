@@ -1140,6 +1140,17 @@ export interface RenderReport {
   shadowDraws: number;
   textureMemoryBytes: number;
   flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+  suggestions: PerfSuggestion[];
+}
+```
+
+### PerfSuggestion
+An actionable performance suggestion (same shape as a Diagnostic).
+```ts
+export interface PerfSuggestion {
+  code: string;
+  message: string;
+  fix: string;
 }
 ```
 
