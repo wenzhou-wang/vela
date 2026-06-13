@@ -12,6 +12,7 @@ import { InstancedMesh } from '../core/InstancedMesh';
 import { ParticleSystem } from '../core/ParticleSystem';
 import { Sprite } from '../core/Sprite';
 import { TextMesh } from '../core/TextMesh';
+import { RenderTarget } from '../core/RenderTarget';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
@@ -92,6 +93,10 @@ const SKY_TEX_HEIGHT = 128;
 // Sprite instance stride: posPad + sizeOffset + color + uvRect (4 × vec4).
 const SPRITE_STRIDE_F = 16;
 
+// Render targets store tonemapped sRGB-encoded bytes; sampling goes through an
+// -srgb view so materials read linear values back.
+const RT_FORMAT: GPUTextureFormat = 'rgba8unorm';
+
 /** Radical-inverse Halton sequence value in [0, 1) for the given 1-based index. */
 function halton(index: number, base: number): number {
   let f = 1;
@@ -150,6 +155,12 @@ interface SpriteBatch {
   buffer: GPUBuffer;
   params: GPUBuffer;
   bindGroup: GPUBindGroup;
+}
+
+interface RenderTargetResources {
+  renderView: GPUTextureView;            // rgba8unorm attachment / resolve target
+  msaaView: GPUTextureView | null;       // MSAA color when sampleCount > 1
+  depthView: GPUTextureView;
 }
 
 interface ParticleResources {
@@ -359,6 +370,11 @@ export class WebGPURenderer {
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
   private readonly clockStart = performance.now();
+  // Per-render state: output dimensions + whether the post chain runs.
+  private _renderWidth = 1;
+  private _renderHeight = 1;
+  private _usePost = false;
+  private renderTargets = new WeakMap<RenderTarget, RenderTargetResources>();
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
   private morphResources = new WeakMap<Mesh, MorphResources>();
@@ -602,33 +618,40 @@ export class WebGPURenderer {
     return this.canvas.height;
   }
 
-  render(scene: Scene, camera: Camera): void {
+  render(scene: Scene, camera: Camera, target?: RenderTarget): void {
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
     this.frameNumber++;
     const nowMs = performance.now();
     const dt = this.lastRenderTime > 0 ? Math.min((nowMs - this.lastRenderTime) / 1000, 0.1) : 0;
     this.lastRenderTime = nowMs;
+    // Render-target passes use the direct pipeline; the post chain (and its
+    // screen-sized resources) belongs to the default canvas target.
+    const rt = target ? this.getRenderTargetResources(target) : null;
+    const usePost = this.postProcessing && !rt;
+    this._usePost = usePost;
+    this._renderWidth = target ? target.width : this.canvas.width;
+    this._renderHeight = target ? target.height : this.canvas.height;
     // The scene pass renders into the HDR target when post-processing is on,
     // so material pipelines must target that format.
-    this.sceneTargetFormat = this.postProcessing ? 'rgba16float' : this.format;
+    this.sceneTargetFormat = usePost ? 'rgba16float' : rt ? RT_FORMAT : this.format;
 
     // Build the view frustum for culling (projection * view).
     this._viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this._frustum.setFromProjectionMatrix(this._viewProjection);
 
     // TAA: pick this frame's sub-pixel jitter (baked into the uploaded projection).
-    const useTAA = this.taa && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
+    const useTAA = this.taa && usePost && this.sampleCount === 1 && !!this.depthSampleView;
     if (useTAA) {
       const i = (this.taaFrameIndex++ % TAA_SAMPLES) + 1;
-      this._jitterX = (halton(i, 2) * 2 - 1) / this.canvas.width;
-      this._jitterY = (halton(i, 3) * 2 - 1) / this.canvas.height;
+      this._jitterX = (halton(i, 2) * 2 - 1) / this._renderWidth;
+      this._jitterY = (halton(i, 3) * 2 - 1) / this._renderHeight;
       if (!this.taaActive) this.post?.invalidateTAAHistory(); // just (re)enabled
     } else {
       this._jitterX = 0;
       this._jitterY = 0;
     }
-    this.taaActive = useTAA;
+    if (!rt) this.taaActive = useTAA;
 
     this.collect(scene);
     this.prepareShadow();
@@ -659,29 +682,31 @@ export class WebGPURenderer {
     // GPU particles: emit + integrate the pools.
     this.prepareParticles(encoder, dt);
 
-    const swapView = this.context.getCurrentTexture().createView();
+    // Don't acquire the swap-chain texture for offscreen renders.
+    const swapView = rt ? null : this.context.getCurrentTexture().createView();
+    const outView = rt ? rt.renderView : swapView!;
     const clear = this.clearColor(scene);
 
     let colorAttachment: GPURenderPassColorAttachment;
-    if (this.postProcessing) {
+    if (usePost) {
       this.post.ensureSize(this.canvas.width, this.canvas.height);
       colorAttachment = this.post.sceneColorAttachment(clear);
     } else if (this.sampleCount > 1) {
       colorAttachment = {
-        view: this.msaaTexture!.createView(),
-        resolveTarget: swapView,
+        view: rt ? rt.msaaView! : this.msaaTexture!.createView(),
+        resolveTarget: outView,
         loadOp: 'clear',
         storeOp: 'store',
         clearValue: clear,
       };
     } else {
-      colorAttachment = { view: swapView, loadOp: 'clear', storeOp: 'store', clearValue: clear };
+      colorAttachment = { view: outView, loadOp: 'clear', storeOp: 'store', clearValue: clear };
     }
 
     const pass = encoder.beginRenderPass({
       colorAttachments: [colorAttachment],
       depthStencilAttachment: {
-        view: this.depthTexture.createView(),
+        view: rt ? rt.depthView : this.depthTexture.createView(),
         depthClearValue: 1.0,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -690,7 +715,7 @@ export class WebGPURenderer {
 
     pass.setBindGroup(0, this.frameBindGroup);
 
-    if (this.renderBundles && this.opaque.length) {
+    if (this.renderBundles && this.opaque.length && !rt) {
       this.refreshOpaqueUniforms(); // keep per-object buffers fresh for the replay
       pass.executeBundles([this.getOpaqueBundle()]);
     } else {
@@ -717,7 +742,7 @@ export class WebGPURenderer {
       pass.setBindGroup(0, this.frameBindGroup); // restore for transparent draws
     }
 
-    const useOIT = this.oit && this.postProcessing && this.transparent.length > 0;
+    const useOIT = this.oit && usePost && this.transparent.length > 0;
     if (!useOIT) {
       for (const mesh of this.transparent) this.drawMesh(pass, mesh);
     }
@@ -730,7 +755,7 @@ export class WebGPURenderer {
     pass.end();
 
     // Capture the opaque HDR scene for screen-space refraction before transparent draws.
-    if (this.postProcessing && this.transparent.length > 0) {
+    if (usePost && this.transparent.length > 0) {
       this.post.captureHDR(encoder);
     }
 
@@ -746,10 +771,10 @@ export class WebGPURenderer {
       this.post.compositeOIT(encoder);
     }
 
-    const useSSAO = this.ssao && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
-    const useCelShading = this.celShading && this.postProcessing && this.sampleCount === 1 && !!this.depthSampleView;
+    const useSSAO = this.ssao && usePost && this.sampleCount === 1 && !!this.depthSampleView;
+    const useCelShading = this.celShading && usePost && this.sampleCount === 1 && !!this.depthSampleView;
     // Resolve the HDR target through the post chain into the swap chain.
-    if (this.postProcessing) {
+    if (usePost) {
       if (useSSAO) {
         this.post.runSSAO(
           encoder,
@@ -775,7 +800,7 @@ export class WebGPURenderer {
           this.taaBlend,
         );
       }
-      this.post.run(encoder, swapView, {
+      this.post.run(encoder, swapView!, {
         fxaa: this.fxaa,
         bloom: this.bloom,
         bloomThreshold: this.bloomThreshold,
@@ -788,10 +813,60 @@ export class WebGPURenderer {
       }, postInput, useCelShading ? this.depthSampleView! : undefined,
       useCelShading ? new Float32Array(camera.projectionMatrixInverse.elements) : undefined);
     }
-    // Save this frame's unjittered view-projection for next frame's reprojection.
-    this._prevViewProj.set(this._viewProjection.elements);
+    // Save this frame's unjittered view-projection for next frame's TAA
+    // reprojection (canvas renders only — offscreen cameras must not pollute it).
+    if (!rt) this._prevViewProj.set(this._viewProjection.elements);
 
     this.device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Lazily allocate a RenderTarget's GPU resources (color + depth + MSAA) and
+   * register its sampleable view with the TextureManager so `rt.texture` works
+   * in any material.
+   */
+  private getRenderTargetResources(rt: RenderTarget): RenderTargetResources {
+    let res = this.renderTargets.get(rt);
+    if (!res) {
+      const color = this.device.createTexture({
+        label: 'render-target',
+        size: [rt.width, rt.height],
+        format: RT_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        viewFormats: ['rgba8unorm-srgb'],
+      });
+      const depth = this.device.createTexture({
+        label: 'render-target-depth',
+        size: [rt.width, rt.height],
+        format: DEPTH_FORMAT,
+        sampleCount: this.sampleCount,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      let msaaView: GPUTextureView | null = null;
+      if (this.sampleCount > 1) {
+        msaaView = this.device.createTexture({
+          label: 'render-target-msaa',
+          size: [rt.width, rt.height],
+          format: RT_FORMAT,
+          sampleCount: this.sampleCount,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        }).createView();
+      }
+      const sampler = this.device.createSampler({
+        magFilter: 'linear', minFilter: 'linear',
+        addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
+      });
+      // Materials sample through the -srgb view (decodes back to linear).
+      this.textures.setExternal(rt.texture, {
+        texture: color,
+        view: color.createView({ format: 'rgba8unorm-srgb' }),
+        sampler,
+        version: rt.texture.version,
+      });
+      res = { renderView: color.createView(), msaaView, depthView: depth.createView() };
+      this.renderTargets.set(rt, res);
+    }
+    return res;
   }
 
   /**
@@ -1552,7 +1627,7 @@ export class WebGPURenderer {
   private clearColor(scene: Scene): GPUColor {
     const bg = scene.background;
     if (!bg) return { r: 0.05, g: 0.05, b: 0.06, a: 1 };
-    if (this.postProcessing) return { r: bg.r, g: bg.g, b: bg.b, a: 1 };
+    if (this._usePost) return { r: bg.r, g: bg.g, b: bg.b, a: 1 };
     // background is linear; encode to sRGB-ish for the non-srgb target
     const enc = (c: number) => (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
     return { r: enc(bg.r), g: enc(bg.g), b: enc(bg.b), a: 1 };
@@ -1721,10 +1796,11 @@ export class WebGPURenderer {
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
     // Bit 0: linear output; bit 1: IBL; bit 2: SSR; bit 3: unlit diffuse cel preview.
-    f[63] = (this.postProcessing ? 1 : 0) |
+    // _usePost is false for render-target passes (direct pipeline, in-shader tonemap).
+    f[63] = (this._usePost ? 1 : 0) |
       (this.iblActive ? 2 : 0) |
-      (this.postProcessing ? 4 : 0) |
-      (this.celShading && this.postProcessing && this.sampleCount === 1 ? 8 : 0);
+      (this._usePost ? 4 : 0) |
+      (this.celShading && this._usePost && this.sampleCount === 1 ? 8 : 0);
 
     // clusterParams (64..67) + clusterDims (68..71)
     const cam = camera as unknown as { near?: number; far?: number };
@@ -1732,8 +1808,8 @@ export class WebGPURenderer {
     f[65] = Math.max(cam.near ?? 0.1, 0.001);
     f[66] = cam.far ?? 2000;
     f[67] = scene.backgroundBlur; // skybox blur (0 = sharp, 1 = max mip)
-    f[68] = this.canvas.width / CLUSTER_X;  // tile size in pixels
-    f[69] = this.canvas.height / CLUSTER_Y;
+    f[68] = this._renderWidth / CLUSTER_X;  // tile size in pixels
+    f[69] = this._renderHeight / CLUSTER_Y;
     f[70] = (performance.now() - this.clockStart) / 1000; // elapsed seconds (shader elapsedTime())
     f[71] = 0;
 

@@ -306,12 +306,17 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
       `\n`, left/center/right anchors); the fragment thresholds the SDF at 0.5
       with `fwidth` antialiasing, so text stays crisp at any scale in both world
       and screen space.
-- ⬜ **Render-to-texture** — `const rt = new RenderTarget(w, h)` +
-      `renderer.render(scene, camera, rt)`: renders the full pipeline (including post)
-      into an offscreen color texture usable as any material map (mirrors, portals,
-      minimaps, security cams). Depth/MSAA resources sized per target and cached;
-      `rt.texture` plugs into `StandardMaterial.map` or a future ShaderMaterial texture
-      uniform.
+- ✅ **Render-to-texture** — `const rt = new RenderTarget(w, h)` +
+      `renderer.render(scene, camera, rt)`: renders the scene pipeline (lights,
+      shadows, sky, fog, particles, sprites/text, clustered lighting) into an
+      offscreen `rgba8unorm` color texture with per-target cached depth/MSAA
+      resources; `rt.texture` plugs into any material map (mirrors, portals,
+      minimaps, security cams) via a TextureManager external-entry registration and
+      an `-srgb` sampling view, so the tonemapped sRGB bytes decode back to linear.
+      RT passes use the direct pipeline with in-shader tonemapping — the post chain
+      (and TAA history/jitter state, which RT renders deliberately don't touch)
+      belongs to the canvas target. Cluster tile dims and shader `elapsedTime()`
+      follow the active target's size.
 
 ---
 

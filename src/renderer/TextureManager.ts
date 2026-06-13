@@ -2,7 +2,7 @@ import { Texture, type WrapMode, type FilterMode } from '../textures/Texture';
 import { DataTexture, CompressedDataTexture } from '../textures/DataTexture';
 import { MipmapGenerator } from './MipmapGenerator';
 
-interface GPUTextureEntry {
+export interface GPUTextureEntry {
   texture: GPUTexture;
   view: GPUTextureView;
   sampler: GPUSampler;
@@ -154,6 +154,17 @@ export class TextureManager {
     const entry = this.create(texture);
     this.cache.set(texture, entry);
     return entry;
+  }
+
+  /**
+   * Register an externally-owned GPU texture (e.g. a render target's color
+   * buffer) so its Texture handle works anywhere a sampled texture does. The
+   * caller owns the GPU texture's lifetime; `get()` keeps returning this entry
+   * as long as the Texture's version is left untouched.
+   */
+  setExternal(texture: Texture, entry: GPUTextureEntry): void {
+    texture.version = entry.version;
+    this.cache.set(texture, entry);
   }
 
   private create(texture: Texture): GPUTextureEntry {

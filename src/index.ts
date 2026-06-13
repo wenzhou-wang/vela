@@ -24,6 +24,7 @@ export type { ParticleSystemOptions } from './core/ParticleSystem';
 export { Sprite } from './core/Sprite';
 export { TextMesh } from './core/TextMesh';
 export type { TextMeshOptions } from './core/TextMesh';
+export { RenderTarget } from './core/RenderTarget';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';
