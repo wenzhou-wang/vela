@@ -158,9 +158,17 @@ interface SpriteBatch {
 }
 
 interface RenderTargetResources {
-  renderView: GPUTextureView;            // rgba8unorm attachment / resolve target
+  color: GPUTexture;                     // rgba8unorm color (readable via readPixels)
+  renderView: GPUTextureView;            // attachment / resolve target view
   msaaView: GPUTextureView | null;       // MSAA color when sampleCount > 1
   depthView: GPUTextureView;
+}
+
+/** RGBA8 pixel readback result (rows top-to-bottom). */
+export interface PixelData {
+  data: Uint8ClampedArray<ArrayBuffer>;
+  width: number;
+  height: number;
 }
 
 interface ParticleResources {
@@ -375,6 +383,8 @@ export class WebGPURenderer {
   private _renderHeight = 1;
   private _usePost = false;
   private renderTargets = new WeakMap<RenderTarget, RenderTargetResources>();
+  // readPixels() waiters fulfilled with the next presented canvas frame.
+  private pendingCapture: Array<(p: PixelData) => void> = [];
   private skinnedResources = new WeakMap<SkinnedMesh, SkinnedResources>();
   private instancedResources = new WeakMap<InstancedMesh, InstancedResources>();
   private morphResources = new WeakMap<Mesh, MorphResources>();
@@ -436,6 +446,8 @@ export class WebGPURenderer {
       device: this.device,
       format: this.format,
       alphaMode: 'opaque',
+      // COPY_SRC lets readPixels()/screenshot() capture the presented frame.
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
 
     this.geometries = new GeometryBuffers(this.device);
@@ -683,7 +695,8 @@ export class WebGPURenderer {
     this.prepareParticles(encoder, dt);
 
     // Don't acquire the swap-chain texture for offscreen renders.
-    const swapView = rt ? null : this.context.getCurrentTexture().createView();
+    const swapTexture = rt ? null : this.context.getCurrentTexture();
+    const swapView = swapTexture ? swapTexture.createView() : null;
     const outView = rt ? rt.renderView : swapView!;
     const clear = this.clearColor(scene);
 
@@ -817,7 +830,109 @@ export class WebGPURenderer {
     // reprojection (canvas renders only — offscreen cameras must not pollute it).
     if (!rt) this._prevViewProj.set(this._viewProjection.elements);
 
+    // Pending readPixels(): copy the final frame into a mappable buffer before
+    // the swap texture is presented.
+    let captureBuffer: GPUBuffer | null = null;
+    if (!rt && this.pendingCapture.length > 0) {
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+      captureBuffer = this.device.createBuffer({
+        size: bytesPerRow * h,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      encoder.copyTextureToBuffer(
+        { texture: swapTexture! },
+        { buffer: captureBuffer, bytesPerRow },
+        [w, h],
+      );
+    }
+
     this.device.queue.submit([encoder.finish()]);
+
+    if (captureBuffer) {
+      const resolvers = this.pendingCapture;
+      this.pendingCapture = [];
+      this.resolveCapture(captureBuffer, this.canvas.width, this.canvas.height, this.format === 'bgra8unorm', resolvers);
+    }
+  }
+
+  /** Map the capture buffer, strip row padding (+ BGRA swizzle), resolve waiters. */
+  private resolveCapture(
+    buffer: GPUBuffer,
+    width: number,
+    height: number,
+    bgra: boolean,
+    resolvers: Array<(p: PixelData) => void>,
+  ): void {
+    const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+    buffer.mapAsync(GPUMapMode.READ).then(() => {
+      const src = new Uint8Array(buffer.getMappedRange());
+      const data = new Uint8ClampedArray(width * height * 4);
+      for (let y = 0; y < height; y++) {
+        const row = y * bytesPerRow;
+        const out = y * width * 4;
+        if (bgra) {
+          for (let x = 0; x < width; x++) {
+            data[out + x * 4] = src[row + x * 4 + 2];
+            data[out + x * 4 + 1] = src[row + x * 4 + 1];
+            data[out + x * 4 + 2] = src[row + x * 4];
+            data[out + x * 4 + 3] = src[row + x * 4 + 3];
+          }
+        } else {
+          data.set(src.subarray(row, row + width * 4), out);
+        }
+      }
+      buffer.unmap();
+      buffer.destroy();
+      for (const resolve of resolvers) resolve({ data, width, height });
+    });
+  }
+
+  /**
+   * Read back rendered pixels as RGBA8 (rows top-to-bottom).
+   *
+   * - `readPixels()` captures the **next canvas frame** — call `render()`
+   *   afterwards (or from a running loop) and the promise resolves with the
+   *   final post-processed output.
+   * - `readPixels(rt)` reads a RenderTarget immediately (it must have been
+   *   rendered to at least once).
+   */
+  readPixels(target?: RenderTarget): Promise<PixelData> {
+    if (!target) {
+      return new Promise<PixelData>((resolve) => this.pendingCapture.push(resolve));
+    }
+    const res = this.renderTargets.get(target);
+    if (!res) {
+      return Promise.reject(new Error(
+        'readPixels: this RenderTarget has never been rendered to. ' +
+        'Call renderer.render(scene, camera, target) first.',
+      ));
+    }
+    const w = target.width;
+    const h = target.height;
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    const buffer = this.device.createBuffer({
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = this.device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture: res.color }, { buffer, bytesPerRow }, [w, h]);
+    this.device.queue.submit([encoder.finish()]);
+    return new Promise<PixelData>((resolve) => this.resolveCapture(buffer, w, h, false, [resolve]));
+  }
+
+  /**
+   * Capture a PNG of the next canvas frame (or of a RenderTarget). Returns a
+   * Blob — save it, upload it, or `URL.createObjectURL` it.
+   */
+  async screenshot(target?: RenderTarget): Promise<Blob> {
+    const { data, width, height } = await this.readPixels(target);
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('screenshot: OffscreenCanvas 2D context unavailable.');
+    ctx.putImageData(new ImageData(data, width, height), 0, 0);
+    return canvas.convertToBlob({ type: 'image/png' });
   }
 
   /**
@@ -832,7 +947,7 @@ export class WebGPURenderer {
         label: 'render-target',
         size: [rt.width, rt.height],
         format: RT_FORMAT,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         viewFormats: ['rgba8unorm-srgb'],
       });
       const depth = this.device.createTexture({
@@ -863,7 +978,7 @@ export class WebGPURenderer {
         sampler,
         version: rt.texture.version,
       });
-      res = { renderView: color.createView(), msaaView, depthView: depth.createView() };
+      res = { color, renderView: color.createView(), msaaView, depthView: depth.createView() };
       this.renderTargets.set(rt, res);
     }
     return res;

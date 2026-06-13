@@ -326,10 +326,13 @@ vela's developers are AI agents: they cannot see the canvas, and they iterate th
 text. This tier makes rendering results readable, diffable, and explainable without a
 human looking at pixels — the core AI-first differentiator.
 
-- ⬜ **Pixel readback & screenshots** — `renderer.readPixels(x?, y?, w?, h?)` →
-      `Uint8ClampedArray` and `renderer.screenshot()` → PNG blob/data-URL, implemented
-      with a `COPY_SRC` hook on the final target + a mapped read-back buffer (reuses the
-      id-picking machinery). Works headless via `OffscreenCanvas`.
+- ✅ **Pixel readback & screenshots** — `await renderer.readPixels()` resolves with
+      the next presented canvas frame (full post chain included: the swap chain is
+      configured with `COPY_SRC` and pending captures copy into a mapped read-back
+      buffer just before present, with row-padding strip + BGRA→RGBA swizzle);
+      `readPixels(rt)` reads a RenderTarget immediately. `renderer.screenshot()`
+      wraps either in a PNG Blob via `OffscreenCanvas.convertToBlob`. Errors name
+      the fix (e.g. reading a never-rendered target).
 - ⬜ **Deterministic mode** — `renderer.deterministic = true`: TAA jitter sequence
       restarts from a fixed seed, `elapsedTime()` is driven by a settable
       `renderer.time` instead of the wall clock, and any future stochastic effects key

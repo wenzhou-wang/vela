@@ -66,7 +66,7 @@ export { SpotLight } from './lights/SpotLight';
 
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';
-export type { RendererOptions } from './renderer/WebGPURenderer';
+export type { RendererOptions, PixelData } from './renderer/WebGPURenderer';
 
 // controls
 export { OrbitControls } from './controls/OrbitControls';
