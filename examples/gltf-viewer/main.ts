@@ -216,7 +216,8 @@ let clips: GLTFResult['animations'] = [];
 
 function onLoaded(result: GLTFResult, isBitmoji = false): void {
   setModel(result.scene, result.boundingBox);
-  setBitmojiSelected(isBitmoji, isBitmoji);
+  // Bitmoji defaults to the comic style; the dropdown offers PBR/comic/anime.
+  setBitmojiSelected(isBitmoji, isBitmoji ? 'comic' : 'pbr');
   setupAnimations(result.animations);
   const extra = result.animations.length ? ` · ${result.animations.length} anim` : '';
   status(`Loaded · ${result.materials.length} materials${extra}`);
@@ -253,23 +254,30 @@ exposureEl.addEventListener('input', () => { renderer.exposure = parseFloat(expo
 const lightEl = document.getElementById('lightIntensity') as HTMLInputElement;
 lightEl.addEventListener('input', () => { key.intensity = parseFloat(lightEl.value); });
 
-const celEl = document.getElementById('celShading') as HTMLInputElement;
+const styleEl = document.getElementById('renderStyle') as HTMLSelectElement;
 const outlineEl = document.getElementById('outlineThickness') as HTMLInputElement;
-const celRow = document.getElementById('celRow') as HTMLLabelElement;
+const styleRow = document.getElementById('styleRow') as HTMLLabelElement;
 const outlineRow = document.getElementById('outlineRow') as HTMLLabelElement;
-function setCelShading(enabled: boolean): void {
-  renderer.celShading = enabled;
-  renderer.postProcessing = enabled;
-  outlineEl.disabled = !enabled;
+// 'pbr' (default), 'comic' (cel + bold outlines), 'anime' (toon ramp + ink lines).
+function setRenderStyle(style: string): void {
+  const comic = style === 'comic';
+  const anime = style === 'anime';
+  renderer.celShading = comic;
+  renderer.animeShading = anime;
+  renderer.postProcessing = comic || anime;
+  // Comic uses bolder lines; anime keeps them thinner.
+  if (comic || anime) outlineEl.value = comic ? '2' : '1.25';
+  renderer.outlineThickness = parseFloat(outlineEl.value);
+  outlineEl.disabled = !(comic || anime);
 }
-function setBitmojiSelected(selected: boolean, enableCel = false): void {
-  celRow.style.display = selected ? 'flex' : 'none';
+function setBitmojiSelected(selected: boolean, defaultStyle = 'pbr'): void {
+  styleRow.style.display = selected ? 'flex' : 'none';
   outlineRow.style.display = selected ? 'flex' : 'none';
-  celEl.disabled = !selected;
-  celEl.checked = selected && enableCel;
-  setCelShading(celEl.checked);
+  styleEl.disabled = !selected;
+  styleEl.value = selected ? defaultStyle : 'pbr';
+  setRenderStyle(styleEl.value);
 }
-celEl.addEventListener('change', () => setCelShading(celEl.checked));
+styleEl.addEventListener('change', () => setRenderStyle(styleEl.value));
 outlineEl.addEventListener('input', () => {
   renderer.outlineThickness = parseFloat(outlineEl.value);
 });

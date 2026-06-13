@@ -30,7 +30,10 @@ export interface PostOptions {
   bloomIntensity: number;
   ssao: boolean;
   ssaoStrength: number;
+  /** Comic look: unlit diffuse + ink outlines (skips tonemap of the base). */
   celShading: boolean;
+  /** Add ink outlines (used by anime over tonemapped toon shading). */
+  outline: boolean;
   outlineThickness: number;
   outlineStrength: number;
 }
@@ -711,9 +714,15 @@ export class PostProcessing {
     }
 
     const ssaoView = opts.ssao ? this.ssaoAView : this.dummyWhiteView;
-    const tonemapEntry = opts.celShading ? 'fs_diffuse' : opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
-    if (opts.celShading) {
-      this.pass(encoder, tonemapEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView, depthView);
+    // Comic (cel) feeds unlit diffuse into the outline pass; anime tonemaps its
+    // lit toon shading first, then outlines. Both finish with `fs_cel`.
+    const wantOutline = opts.celShading || opts.outline;
+    // Comic and anime both skip the filmic curve for flat, vivid cel colors
+    // (their material stages already produced final-look shading); the
+    // difference is unlit albedo (comic) vs. toon-lit color (anime).
+    const baseEntry = wantOutline ? 'fs_diffuse' : opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
+    if (wantOutline) {
+      this.pass(encoder, baseEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView, depthView);
       if (opts.fxaa) {
         this.pass(encoder, 'fs_cel', LDR_FORMAT, this.ldrView, this.ldrPongView,
           this.dummyView, this.dummyWhiteView, depthView);
@@ -723,10 +732,10 @@ export class PostProcessing {
           this.dummyView, this.dummyWhiteView, depthView);
       }
     } else if (opts.fxaa) {
-      this.pass(encoder, tonemapEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
+      this.pass(encoder, baseEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);
     } else {
-      this.pass(encoder, tonemapEntry, this.swapFormat, input, output, bloomView, ssaoView);
+      this.pass(encoder, baseEntry, this.swapFormat, input, output, bloomView, ssaoView);
     }
   }
 

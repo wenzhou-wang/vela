@@ -89,7 +89,13 @@
       <div id="controls" class="panel">
         <label>Exposure <input id="exposure" type="range" min="0.2" max="3" step="0.01" value="1" /></label>
         <label>Light <input id="lightIntensity" type="range" min="0" max="6" step="0.05" value="3" /></label>
-        <label id="celRow" style="display:none">Cel shading <input id="celShading" type="checkbox" disabled /></label>
+        <label id="styleRow" style="display:none">Render style
+          <select id="renderStyle">
+            <option value="pbr">PBR</option>
+            <option value="comic">Comic</option>
+            <option value="anime">Anime</option>
+          </select>
+        </label>
         <label id="outlineRow" style="display:none">Outline <input id="outlineThickness" type="range" min="0.75" max="4" step="0.05" value="2" disabled /></label>
         <label>Auto-rotate <input id="autorotate" type="checkbox" /></label>
         <label>Background

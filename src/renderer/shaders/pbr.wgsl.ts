@@ -510,6 +510,14 @@ fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
   }
   return frame.ambient.rgb * diffuseColor * ao;
 }
+
+// Anime/toon diffuse ramp: maps N·L into three flat bands with sharp,
+// slightly antialiased terminators (shadow 0.40, mid 0.75, lit 1.0).
+fn toonBand(x : f32) -> f32 {
+  let a = smoothstep(0.20, 0.27, x);
+  let b = smoothstep(0.60, 0.67, x);
+  return 0.40 + 0.35 * a + 0.25 * b;
+}
 `;
 
 // PBR fragment stage: decode StandardMaterial inputs, shade, tonemap.
@@ -532,6 +540,44 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   // bypasses direct lights, IBL, specular, normal maps, AO, and transmission.
   if ((u32(frame.envParams.w) & 8u) != 0u) {
     return vec4<f32>(baseColor, alpha);
+  }
+
+  // Anime/toon mode (bit 4): the base color is shaded by a stepped diffuse ramp
+  // plus a soft view-facing rim light — intensity-robust (lights are normalized
+  // by luminance so the bands track direction, not brightness). Keeps the
+  // authored albedo, emissive, and normal map; skips PBR specular/IBL/transmission.
+  if ((u32(frame.envParams.w) & 16u) != 0u) {
+    var Na = normalize(in.worldNormal);
+    if (!frontFacing) { Na = -Na; }
+    if (hasNormalMap) {
+      var T = normalize(in.worldTangent - Na * dot(in.worldTangent, Na));
+      let B = cross(Na, T) * in.tangentSign;
+      var tn = textureSample(normalTex, normalSmp, in.uv).xyz * 2.0 - 1.0;
+      tn = vec3<f32>(tn.xy * material.params.z, tn.z);
+      Na = normalize(mat3x3<f32>(T, B, Na) * tn);
+    }
+    let Va = normalize(frame.cameraPos.xyz - in.worldPos);
+    let lw = vec3<f32>(0.2126, 0.7152, 0.0722);
+    var weighted = 0.0;
+    var total = 0.0;
+    let listA = lightList(in.clipPosition.xy, in.worldPos);
+    for (var j = 0u; j < listA.x; j = j + 1u) {
+      let i = lightIndex(listA, j);
+      let lc = evaluateLight(i, in.worldPos, Na);
+      let w = dot(lc.radiance, lw) + 1e-4;
+      let NoL = max(dot(Na, lc.L), 0.0);
+      weighted += toonBand(NoL) * w;
+      total += w;
+    }
+    // Banded lightness in [0.40, 1.0]; falls back to lit when there are no lights.
+    let lightness = select(1.0, weighted / max(total, 1e-4), total > 1e-3);
+    var animeColor = baseColor * lightness;
+    // Soft cool rim on the silhouette, stronger on lit edges.
+    let rim = smoothstep(0.55, 1.0, 1.0 - max(dot(Na, Va), 0.0));
+    animeColor += vec3<f32>(0.55, 0.6, 0.7) * (rim * 0.35 * (0.3 + 0.7 * lightness));
+    let em = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
+    animeColor += material.emissive.rgb * material.emissive.a * em;
+    return vec4<f32>(applyFog(animeColor, in.worldPos), alpha);
   }
 
   let mrSample = textureSample(mrTex, mrSmp, in.uv);
