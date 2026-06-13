@@ -56,6 +56,12 @@ fn luma(c : vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.299, 0.587, 0.114));
 }
 
+fn lipTone(c : vec3<f32>) -> f32 {
+  return smoothstep(0.26, 0.34, c.r - c.g)
+    * smoothstep(0.08, 0.16, c.g - c.b)
+    * (1.0 - smoothstep(0.68, 0.78, luma(c)));
+}
+
 fn sceneDepth(uv : vec2<f32>) -> f32 {
   let size = vec2<i32>(textureDimensions(depthTex));
   let coord = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
@@ -169,9 +175,29 @@ fn fs_cel(in : VSOut) -> @location(0) vec4<f32> {
   let colorDelta = (length(sobelX) + length(sobelY)) * 0.25;
   let colorEdge = smoothstep(params.toon.z, params.toon.z * 2.5, colorDelta) * object;
 
-  let innerEdge = max(depthEdge, max(normalEdge, colorEdge)) * 0.78;
-  let edge = clamp(max(outerEdge, innerEdge) * params.ssao.w, 0.0, 1.0);
-  return vec4<f32>(mix(center.rgb, params.outline.rgb, edge), center.a);
+  // Preserve authored highlights. Warm facial details use brown ink; a broad
+  // lip-colored neighborhood suppresses generated mouth contours while a dark
+  // local contrast restores the texture-authored center seam.
+  let highlightProtection = smoothstep(0.72, 0.92, luma(center.rgb));
+  let warmColor = smoothstep(0.08, 0.2, center.r - center.b)
+    * smoothstep(0.03, 0.12, center.g - center.b);
+  let lipNeighbors = (
+    lipTone(cL) + lipTone(cR) + lipTone(cU) + lipTone(cD)
+    + lipTone(cUL) + lipTone(cUR) + lipTone(cDL) + lipTone(cDR)
+  ) * 0.125;
+  let lipProtection = lipTone(center.rgb) * smoothstep(0.2, 0.45, lipNeighbors);
+  let verticalContrast = (luma(cU) + luma(cD)) * 0.5 - luma(center.rgb);
+  let lipSeam = lipTone(center.rgb) * smoothstep(0.72, 0.9, lipNeighbors)
+    * smoothstep(0.008, 0.03, verticalContrast);
+  let innerEdge = max(depthEdge, max(normalEdge, colorEdge))
+    * 0.78 * (1.0 - highlightProtection) * (1.0 - lipProtection);
+  let innerAmount = clamp(innerEdge * params.ssao.w, 0.0, 1.0);
+  let outerAmount = clamp(outerEdge * params.ssao.w, 0.0, 1.0);
+  let brownInk = vec3<f32>(0.34, 0.15, 0.09);
+  let detailInk = mix(params.outline.rgb, brownInk, warmColor);
+  let authored = mix(center.rgb, brownInk, lipSeam * 0.9);
+  let detailed = mix(authored, detailInk, innerAmount);
+  return vec4<f32>(mix(detailed, params.outline.rgb, outerAmount), center.a);
 }
 
 // Weighted-blended OIT resolve: src = accum (rgb*aw, aw), bloomTex.r = revealage.

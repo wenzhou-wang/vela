@@ -294,7 +294,7 @@ export class WebGPURenderer {
    */
   celShading = false;
   /** Screen-space outline radius in device pixels. */
-  outlineThickness = 2.0;
+  outlineThickness = 1.5;
   /** Blend strength for outer silhouettes and interior feature lines. */
   outlineStrength = 1.0;
   /**

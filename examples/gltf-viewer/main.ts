@@ -27,6 +27,60 @@ import {
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const statsEl = document.getElementById('stats') as HTMLDivElement;
 
+type RenderStyle = 'pbr' | 'comic';
+type BackgroundMode = 'dark' | 'light';
+
+interface ViewerOptions {
+  exposure: number;
+  lightIntensity: number;
+  renderStyle: RenderStyle;
+  autoRotate: boolean;
+  background: BackgroundMode;
+  sampleUrl: string;
+  animation: number;
+}
+
+const OPTIONS_KEY = 'vela-gltf-viewer-options-v1';
+const DEFAULT_OPTIONS: ViewerOptions = {
+  exposure: 1,
+  lightIntensity: 3,
+  renderStyle: 'comic',
+  autoRotate: false,
+  background: 'dark',
+  sampleUrl: '/models/bitmoji.glb',
+  animation: 0,
+};
+
+function loadViewerOptions(): ViewerOptions {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? '{}') as Partial<ViewerOptions>;
+    return {
+      exposure: Number.isFinite(saved.exposure) ? saved.exposure! : DEFAULT_OPTIONS.exposure,
+      lightIntensity: Number.isFinite(saved.lightIntensity) ? saved.lightIntensity! : DEFAULT_OPTIONS.lightIntensity,
+      renderStyle: saved.renderStyle === 'pbr' || saved.renderStyle === 'comic'
+        ? saved.renderStyle : DEFAULT_OPTIONS.renderStyle,
+      autoRotate: typeof saved.autoRotate === 'boolean' ? saved.autoRotate : DEFAULT_OPTIONS.autoRotate,
+      background: saved.background === 'light' || saved.background === 'dark'
+        ? saved.background : DEFAULT_OPTIONS.background,
+      sampleUrl: typeof saved.sampleUrl === 'string' ? saved.sampleUrl : DEFAULT_OPTIONS.sampleUrl,
+      animation: Number.isInteger(saved.animation) ? saved.animation! : DEFAULT_OPTIONS.animation,
+    };
+  } catch {
+    return { ...DEFAULT_OPTIONS };
+  }
+}
+
+const viewerOptions = loadViewerOptions();
+
+function saveViewerOptions(changes: Partial<ViewerOptions>): void {
+  Object.assign(viewerOptions, changes);
+  try {
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify(viewerOptions));
+  } catch {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
 if (!WebGPURenderer.isSupported()) {
   (document.getElementById('unsupported') as HTMLElement).style.display = 'flex';
   throw new Error('WebGPU not supported');
@@ -162,12 +216,21 @@ const loader = new GLTFLoader();
 const status = (msg: string) => { statusMsg = msg; };
 let statusMsg = '';
 
-async function loadFromURL(url: string, isBitmoji = false): Promise<void> {
+async function loadFromURL(
+  url: string,
+  isBitmoji = false,
+  style: RenderStyle = isBitmoji ? 'comic' : 'pbr',
+  animation = 0,
+  persistSelection = true,
+): Promise<void> {
   setBitmojiSelected(false);
   status('Loading…');
   try {
     const result = await loader.load(url);
-    onLoaded(result, isBitmoji);
+    onLoaded(result, isBitmoji, style, animation);
+    if (persistSelection) {
+      saveViewerOptions({ sampleUrl: url, renderStyle: styleEl.value as RenderStyle, animation });
+    }
   } catch (e) {
     console.error(e);
     status(`Error: ${(e as Error).message}`);
@@ -214,16 +277,21 @@ async function loadFromFiles(files: File[]): Promise<void> {
 let mixer: AnimationMixer | null = null;
 let clips: GLTFResult['animations'] = [];
 
-function onLoaded(result: GLTFResult, isBitmoji = false): void {
+function onLoaded(
+  result: GLTFResult,
+  isBitmoji = false,
+  style: RenderStyle = isBitmoji ? 'comic' : 'pbr',
+  animation = 0,
+): void {
   setModel(result.scene, result.boundingBox);
   // Bitmoji defaults to the comic style; the dropdown offers PBR/comic.
-  setBitmojiSelected(isBitmoji, isBitmoji ? 'comic' : 'pbr');
-  setupAnimations(result.animations);
+  setBitmojiSelected(isBitmoji, style);
+  setupAnimations(result.animations, animation);
   const extra = result.animations.length ? ` · ${result.animations.length} anim` : '';
   status(`Loaded · ${result.materials.length} materials${extra}`);
 }
 
-function setupAnimations(animations: GLTFResult['animations']): void {
+function setupAnimations(animations: GLTFResult['animations'], selected = 0): void {
   mixer = null;
   clips = animations;
   const row = document.getElementById('animRow') as HTMLElement;
@@ -238,53 +306,70 @@ function setupAnimations(animations: GLTFResult['animations']): void {
     opt.textContent = clip.name || `clip ${i}`;
     select.appendChild(opt);
   });
-  mixer = new AnimationMixer().play(animations[0]);
-  select.value = '0';
+  const index = Math.min(Math.max(selected, 0), animations.length - 1);
+  mixer = new AnimationMixer().play(animations[index]);
+  select.value = String(index);
 }
 
 document.getElementById('animSelect')!.addEventListener('change', (e) => {
   const i = parseInt((e.target as HTMLSelectElement).value, 10);
-  if (clips[i]) mixer = new AnimationMixer().play(clips[i]);
+  if (clips[i]) {
+    mixer = new AnimationMixer().play(clips[i]);
+    saveViewerOptions({ animation: i });
+  }
 });
 
 // ---- UI wiring ----
 const exposureEl = document.getElementById('exposure') as HTMLInputElement;
-exposureEl.addEventListener('input', () => { renderer.exposure = parseFloat(exposureEl.value); });
+exposureEl.value = String(viewerOptions.exposure);
+renderer.exposure = viewerOptions.exposure;
+exposureEl.addEventListener('input', () => {
+  renderer.exposure = parseFloat(exposureEl.value);
+  saveViewerOptions({ exposure: renderer.exposure });
+});
 
 const lightEl = document.getElementById('lightIntensity') as HTMLInputElement;
-lightEl.addEventListener('input', () => { key.intensity = parseFloat(lightEl.value); });
+lightEl.value = String(viewerOptions.lightIntensity);
+key.intensity = viewerOptions.lightIntensity;
+lightEl.addEventListener('input', () => {
+  key.intensity = parseFloat(lightEl.value);
+  saveViewerOptions({ lightIntensity: key.intensity });
+});
 
 const styleEl = document.getElementById('renderStyle') as HTMLSelectElement;
-const outlineEl = document.getElementById('outlineThickness') as HTMLInputElement;
 const styleRow = document.getElementById('styleRow') as HTMLLabelElement;
-const outlineRow = document.getElementById('outlineRow') as HTMLLabelElement;
 // 'pbr' (default) or 'comic' (cel shading + ink outlines).
 function setRenderStyle(style: string): void {
   const comic = style === 'comic';
   renderer.celShading = comic;
   renderer.postProcessing = comic;
-  if (comic) outlineEl.value = '2';
-  renderer.outlineThickness = parseFloat(outlineEl.value);
-  outlineEl.disabled = !comic;
 }
-function setBitmojiSelected(selected: boolean, defaultStyle = 'pbr'): void {
+function setBitmojiSelected(selected: boolean, defaultStyle: RenderStyle = 'pbr'): void {
   styleRow.style.display = selected ? 'flex' : 'none';
-  outlineRow.style.display = selected ? 'flex' : 'none';
   styleEl.disabled = !selected;
   styleEl.value = selected ? defaultStyle : 'pbr';
   setRenderStyle(styleEl.value);
 }
-styleEl.addEventListener('change', () => setRenderStyle(styleEl.value));
-outlineEl.addEventListener('input', () => {
-  renderer.outlineThickness = parseFloat(outlineEl.value);
+styleEl.addEventListener('change', () => {
+  setRenderStyle(styleEl.value);
+  saveViewerOptions({ renderStyle: styleEl.value as RenderStyle });
 });
 
 const autoEl = document.getElementById('autorotate') as HTMLInputElement;
-autoEl.addEventListener('change', () => { controls.autoRotate = autoEl.checked; });
+autoEl.checked = viewerOptions.autoRotate;
+controls.autoRotate = viewerOptions.autoRotate;
+autoEl.addEventListener('change', () => {
+  controls.autoRotate = autoEl.checked;
+  saveViewerOptions({ autoRotate: autoEl.checked });
+});
 
 const backgroundEl = document.getElementById('backgroundMode') as HTMLSelectElement;
+backgroundEl.value = viewerOptions.background;
+scene.background!.setHex(viewerOptions.background === 'light' ? 0xe8edf5 : 0x10131a);
 backgroundEl.addEventListener('change', () => {
-  scene.background!.setHex(backgroundEl.value === 'light' ? 0xe8edf5 : 0x10131a);
+  const background = backgroundEl.value as BackgroundMode;
+  scene.background!.setHex(background === 'light' ? 0xe8edf5 : 0x10131a);
+  saveViewerOptions({ background });
 });
 
 document.getElementById('reset')!.addEventListener('click', () => {
@@ -310,7 +395,8 @@ fileInput.addEventListener('change', () => {
 
 document.querySelectorAll<HTMLButtonElement>('.sample').forEach((btn) => {
   btn.addEventListener('click', () => {
-    loadFromURL(btn.dataset.url!, btn.dataset.cel === 'true');
+    const isBitmoji = btn.dataset.cel === 'true';
+    void loadFromURL(btn.dataset.url!, isBitmoji, isBitmoji ? 'comic' : 'pbr');
   });
 });
 
@@ -373,6 +459,19 @@ function resize(): void {
 }
 window.addEventListener('resize', resize);
 resize();
+
+const savedSample = [...document.querySelectorAll<HTMLButtonElement>('.sample')]
+  .find((button) => button.dataset.url === viewerOptions.sampleUrl);
+if (savedSample) {
+  const isBitmoji = savedSample.dataset.cel === 'true';
+  void loadFromURL(
+    savedSample.dataset.url!,
+    isBitmoji,
+    isBitmoji ? viewerOptions.renderStyle : 'pbr',
+    viewerOptions.animation,
+    false,
+  );
+}
 
 // ---- Render loop ----
 let frames = 0;
