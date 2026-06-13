@@ -7,6 +7,8 @@ export interface GPUTextureEntry {
   view: GPUTextureView;
   sampler: GPUSampler;
   version: number;
+  /** Estimated GPU memory (set by the manager; reported by renderer.report()). */
+  bytes?: number;
 }
 
 function wrapToGPU(w: WrapMode): GPUAddressMode {
@@ -146,14 +148,31 @@ export class TextureManager {
     return texture.createView();
   }
 
+  /** Estimated total bytes of live GPU textures created through this manager. */
+  totalBytes = 0;
+
   get(texture: Texture): GPUTextureEntry {
     const existing = this.cache.get(texture);
     if (existing && existing.version === texture.version) return existing;
-    if (existing) existing.texture.destroy();
+    if (existing) {
+      existing.texture.destroy();
+      this.totalBytes -= existing.bytes ?? 0;
+    }
 
     const entry = this.create(texture);
+    entry.bytes = this.estimateBytes(texture, entry.texture);
+    this.totalBytes += entry.bytes;
     this.cache.set(texture, entry);
     return entry;
+  }
+
+  private estimateBytes(texture: Texture, gpu: GPUTexture): number {
+    if (texture instanceof DataTexture) {
+      const base = texture.data.byteLength;
+      return gpu.mipLevelCount > 1 ? Math.round(base * 4 / 3) : base;
+    }
+    const base = gpu.width * gpu.height * 4;
+    return gpu.mipLevelCount > 1 ? Math.round(base * 4 / 3) : base;
   }
 
   /**
@@ -164,6 +183,8 @@ export class TextureManager {
    */
   setExternal(texture: Texture, entry: GPUTextureEntry): void {
     texture.version = entry.version;
+    entry.bytes ??= entry.texture.width * entry.texture.height * 4;
+    this.totalBytes += entry.bytes;
     this.cache.set(texture, entry);
   }
 

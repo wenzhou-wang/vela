@@ -361,11 +361,16 @@ human looking at pixels — the core AI-first differentiator.
       fog ranges. Pure scene-graph math in `diagnoseScene()` (no GPU) —
       offline-tested against nine synthetic scenes including the healthy-scene
       no-findings case.
-- ⬜ **`scene.describe()` / `renderer.report()`** — JSON introspection an LLM can
-      reason over: node hierarchy summary (counts by type, named nodes), world bounds,
-      material/light/texture inventories, last-frame stats (draw calls, triangles,
-      culled counts, GPU buffer/texture memory estimates), and per-mesh visibility
-      (in-frustum? culled by what?).
+- ✅ **`describeScene()` / `renderer.report()`** — JSON introspection an LLM can
+      reason over. `describeScene(scene, camera?)` (pure, offline-tested): counts by
+      node/light type, world bounds (center/size/radius), de-duplicated material
+      inventory with user counts, environment/skybox/fog state, named nodes with
+      world positions, and — given a camera — per-named-mesh `inFrustum` plus
+      aggregate visibility counts. `renderer.report()` (last frame): draw calls,
+      triangles (instancing-aware), opaque/transparent/culled mesh counts, light
+      count, particle pool capacity, sprite batches/instances, shadow re-draw cost,
+      estimated GPU texture memory (tracked by the TextureManager incl. mip
+      overhead), and active feature flags.
 - ⬜ **`llms.txt` + generated API reference** — a single context-window-friendly page
       of the whole public API (signatures + one-line docs, generated from the `.d.ts`
       surface by a script in `scripts/`), published at the repo root and `docs/llms.txt`

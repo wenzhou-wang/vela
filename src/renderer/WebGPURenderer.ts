@@ -165,6 +165,25 @@ interface RenderTargetResources {
   depthView: GPUTextureView;
 }
 
+/** Last-frame statistics from `renderer.report()` — JSON an agent can reason over. */
+export interface RenderReport {
+  /** Monotonic frame counter. */
+  frame: number;
+  /** Scene-pass draw calls (excludes shadow passes; see shadowDraws). */
+  drawCalls: number;
+  /** Triangles submitted (instancing included). */
+  triangles: number;
+  meshes: { opaque: number; transparent: number; culled: number };
+  lights: number;
+  particles: { systems: number; poolCapacity: number };
+  sprites: { batches: number; instances: number };
+  /** Extra draws spent re-rendering casters into shadow maps. */
+  shadowDraws: number;
+  /** Estimated GPU texture memory in bytes. */
+  textureMemoryBytes: number;
+  flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+}
+
 /** RGBA8 pixel readback result (rows top-to-bottom). */
 export interface PixelData {
   data: Uint8ClampedArray<ArrayBuffer>;
@@ -916,6 +935,52 @@ export class WebGPURenderer {
       buffer.destroy();
       for (const resolve of resolvers) resolve({ data, width, height });
     });
+  }
+
+  /**
+   * Last-frame statistics as plain JSON: draw calls, triangles, culling
+   * results, memory estimates, and active feature flags. Reflects the most
+   * recent `render()` call.
+   */
+  report(): RenderReport {
+    let triangles = 0;
+    const countMesh = (mesh: Mesh): void => {
+      const geo = mesh.geometry;
+      const verts = geo.index ? geo.index.count : (geo.attributes.position?.count ?? 0);
+      const instances = mesh instanceof InstancedMesh ? mesh.count : 1;
+      triangles += Math.floor(verts / 3) * instances;
+    };
+    for (const m of this.opaque) countMesh(m);
+    for (const m of this.transparent) countMesh(m);
+
+    let spriteInstances = 0;
+    for (const b of this.spriteBatches.values()) spriteInstances += b.count;
+    let particleCapacity = 0;
+    for (const sys of this.particleSystems) particleCapacity += sys.options.capacity ?? 1000;
+
+    const shadowTiles = this.spotShadowCasters.length + (this.shadowCasterIndex >= 0 ? 1 : 0);
+    return {
+      frame: this.frameNumber,
+      drawCalls: this.opaque.length + this.transparent.length +
+        this.particleSystems.length + this.spriteBatches.size,
+      triangles,
+      meshes: {
+        opaque: this.opaque.length,
+        transparent: this.transparent.length,
+        culled: this.culledCount,
+      },
+      lights: this.lights.length,
+      particles: { systems: this.particleSystems.length, poolCapacity: particleCapacity },
+      sprites: { batches: this.spriteBatches.size, instances: spriteInstances },
+      shadowDraws: shadowTiles * this.opaque.length,
+      textureMemoryBytes: this.textures?.totalBytes ?? 0,
+      flags: {
+        postProcessing: this.postProcessing,
+        clusteredLighting: this.clusteredLighting,
+        msaa: this.sampleCount,
+        shadows: this.shadows,
+      },
+    };
   }
 
   /**
