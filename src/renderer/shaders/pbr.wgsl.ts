@@ -511,13 +511,6 @@ fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
   return frame.ambient.rgb * diffuseColor * ao;
 }
 
-// Anime/toon diffuse ramp: maps N·L into three flat bands with sharp,
-// slightly antialiased terminators (shadow 0.40, mid 0.75, lit 1.0).
-fn toonBand(x : f32) -> f32 {
-  let a = smoothstep(0.20, 0.27, x);
-  let b = smoothstep(0.60, 0.67, x);
-  return 0.40 + 0.35 * a + 0.25 * b;
-}
 `;
 
 // PBR fragment stage: decode StandardMaterial inputs, shade, tonemap.
@@ -542,10 +535,11 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     return vec4<f32>(baseColor, alpha);
   }
 
-  // Anime/toon mode (bit 4): the base color is shaded by a stepped diffuse ramp
-  // plus a soft view-facing rim light — intensity-robust (lights are normalized
-  // by luminance so the bands track direction, not brightness). Keeps the
-  // authored albedo, emissive, and normal map; skips PBR specular/IBL/transmission.
+  // Anime/toon mode (bit 4): Genshin/Guilty-Gear-style NPR over the authored
+  // albedo — a crisp two-tone diffuse from the single dominant key light, a
+  // warm "fake SSS" band at the terminator, a hard stepped specular, and a
+  // Fresnel rim. One key light (not a sum of all lights) keeps the terminator
+  // clean. Skips PBR IBL/transmission.
   if ((u32(frame.envParams.w) & 16u) != 0u) {
     var Na = normalize(in.worldNormal);
     if (!frontFacing) { Na = -Na; }
@@ -558,23 +552,54 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
     }
     let Va = normalize(frame.cameraPos.xyz - in.worldPos);
     let lw = vec3<f32>(0.2126, 0.7152, 0.0722);
-    var weighted = 0.0;
-    var total = 0.0;
+
+    // Pick the brightest light as the key (anime reads best from one key).
+    var keyL = vec3<f32>(0.0, 1.0, 0.0);
+    var keyRad = vec3<f32>(0.0);
+    var keyLum = 0.0;
     let listA = lightList(in.clipPosition.xy, in.worldPos);
     for (var j = 0u; j < listA.x; j = j + 1u) {
       let i = lightIndex(listA, j);
       let lc = evaluateLight(i, in.worldPos, Na);
-      let w = dot(lc.radiance, lw) + 1e-4;
-      let NoL = max(dot(Na, lc.L), 0.0);
-      weighted += toonBand(NoL) * w;
-      total += w;
+      let lum = dot(lc.radiance, lw);
+      if (lum > keyLum) { keyLum = lum; keyL = lc.L; keyRad = lc.radiance; }
     }
-    // Banded lightness in [0.40, 1.0]; falls back to lit when there are no lights.
-    let lightness = select(1.0, weighted / max(total, 1e-4), total > 1e-3);
-    var animeColor = baseColor * lightness;
-    // Soft cool rim on the silhouette, stronger on lit edges.
-    let rim = smoothstep(0.55, 1.0, 1.0 - max(dot(Na, Va), 0.0));
-    animeColor += vec3<f32>(0.55, 0.6, 0.7) * (rim * 0.35 * (0.3 + 0.7 * lightness));
+    let hasKey = keyLum > 1e-3;
+    // Hue of the key light, value-normalized so banding is about direction.
+    let keyTint = select(vec3<f32>(1.0), keyRad / max(keyLum, 1e-4), hasKey);
+
+    let NoL = dot(Na, keyL);
+    // Tight-but-soft terminator a touch past the half-lit line; mostly-lit face.
+    let litMask = select(1.0, smoothstep(0.02, 0.16, NoL), hasKey);
+
+    // Two tones: lit = albedo warmed by the key hue; shadow = a cool, darker
+    // multiply (not black) so detail survives.
+    let litColor = baseColor * mix(vec3<f32>(1.0), keyTint, 0.35);
+    let shadowColor = baseColor * vec3<f32>(0.58, 0.56, 0.66);
+    var animeColor = mix(shadowColor, litColor, litMask);
+
+    // Fake subsurface scatter: a warm reddish band right at the terminator.
+    let sss = clamp(1.0 - abs(NoL - 0.09) / 0.12, 0.0, 1.0);
+    animeColor += baseColor * vec3<f32>(0.28, 0.07, 0.04) * sss;
+
+    // Hard anime specular: a tight binary Blinn-Phong highlight, only on lit
+    // areas, attenuated on rough surfaces (eye/skin/hair shines).
+    let mrA = textureSample(mrTex, mrSmp, in.uv);
+    let roughA = clamp(material.params.y * mrA.g, 0.04, 1.0);
+    let H = normalize(keyL + Va);
+    let specPow = mix(8.0, 96.0, 1.0 - roughA);
+    let spec = pow(max(dot(Na, H), 0.0), specPow);
+    let specMask = smoothstep(0.5, 0.6, spec) * litMask * (1.0 - roughA) * 0.6;
+    animeColor += keyTint * specMask;
+
+    // Fresnel rim along the silhouette, brighter on the lit side (cool tint).
+    let fres = pow(1.0 - max(dot(Na, Va), 0.0), 4.0);
+    let rim = smoothstep(0.45, 1.0, fres) * (0.25 + 0.75 * litMask);
+    animeColor += vec3<f32>(0.6, 0.66, 0.8) * rim * 0.5;
+
+    // Flat ambient floor so deep shadow keeps the base hue.
+    animeColor += baseColor * frame.ambient.rgb * 0.18;
+
     let em = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
     animeColor += material.emissive.rgb * material.emissive.a * em;
     return vec4<f32>(applyFog(animeColor, in.worldPos), alpha);
