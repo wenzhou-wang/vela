@@ -406,6 +406,12 @@ export class WebGPURenderer {
   private meshSlots = new WeakMap<Mesh, number>();
   private nextMeshSlot = 0;
 
+  // Lifecycle.
+  private disposed = false;
+  private deviceLost = false;
+  /** Called when the GPU device is lost unexpectedly; call `restoreContext()` to recover. */
+  onDeviceLost?: (info: GPUDeviceLostInfo) => void;
+
   private materialResources = new WeakMap<Material, MaterialResources>();
   private shaderMaterialResources = new WeakMap<ShaderMaterial, ShaderMaterialResources>();
   // Skybox: frame uniform + raw env view (rebuilt when the environment changes).
@@ -488,15 +494,40 @@ export class WebGPURenderer {
     if (!WebGPURenderer.isSupported()) {
       throw new Error('WebGPU is not available in this browser.');
     }
+    await this.acquireDevice();
+    this.context = this.canvas.getContext('webgpu') as GPUCanvasContext;
+    this.format = navigator.gpu.getPreferredCanvasFormat();
+    this.setupDeviceState();
+    this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
+  }
+
+  /** Request an adapter + device and install the device-lost handler. */
+  private async acquireDevice(): Promise<void> {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) throw new Error('No suitable GPUAdapter found.');
     this.device = await adapter.requestDevice();
+    this.deviceLost = false;
     this.device.lost.then((info) => {
-      console.error('[vela] WebGPU device lost:', info.message);
+      // 'destroyed' = we called dispose()/destroy() ourselves; not an error.
+      if (this.disposed || info.reason === 'destroyed') return;
+      this.deviceLost = true;
+      console.error(
+        `[vela] WebGPU device lost: ${info.message}\n` +
+        'Rendering is paused. Call await renderer.restoreContext() to rebuild GPU ' +
+        'resources (geometry/material/texture caches repopulate lazily), or set ' +
+        'renderer.onDeviceLost to handle it.',
+      );
+      this.onDeviceLost?.(info);
     });
+  }
 
-    this.context = this.canvas.getContext('webgpu') as GPUCanvasContext;
-    this.format = navigator.gpu.getPreferredCanvasFormat();
+  /**
+   * (Re)configure the canvas, (re)create every device-owned object, and reset
+   * all lazy caches. The single source of truth for "what lives on the GPU" —
+   * shared by `init()` and `restoreContext()`. Caches keyed by surviving
+   * CPU-side objects (geometry/material/texture data) repopulate on next draw.
+   */
+  private setupDeviceState(): void {
     this.context.configure({
       device: this.device,
       format: this.format,
@@ -505,24 +536,112 @@ export class WebGPURenderer {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
 
+    // Device-owned managers (fresh instances drop all their internal caches).
     this.geometries = new GeometryBuffers(this.device);
     this.textures = new TextureManager(this.device);
     this.pipelines = new PipelineCache(
       this.device, this.format, this.sampleCount,
       PBR_SHADER, PBR_SKINNED_SHADER, PBR_INSTANCED_SHADER, PBR_MORPH_SHADER, LINE_SHADER, SHADOW_SHADER,
     );
+    this.post = new PostProcessing(this.device, this.format, this.sampleCount);
+    this.ibl = new IBLPrefilter(this.device);
+
+    // Reset renderer-held lazy caches so they rebuild against the new device.
+    this.materialResources = new WeakMap();
+    this.shaderMaterialResources = new WeakMap();
+    this.skinnedResources = new WeakMap();
+    this.instancedResources = new WeakMap();
+    this.morphResources = new WeakMap();
+    this.lineResources = new WeakMap();
+    this.particleResources = new WeakMap();
+    this.renderTargets = new WeakMap();
+    this.meshSlots = new WeakMap();
+    this.nextMeshSlot = 0;
+    this.spriteBatches.clear();
+    this.fontAtlases.clear();
+
+    // Null lazily-created device singletons + reset their size/capacity guards.
+    this.clusterPipeline = null; this.clusterParamsBuffer = null;
+    this.clusterLightsBuffer = null; this.clusterDummyBuffer = null; this.clusterBindGroup = null;
+    this.gpuCullPipeline = null; this.gpuCullLayout = null; this.gpuCullParamsBuffer = null;
+    this.gpuSphereBuffer = null; this.gpuIndirectBuffer = null; this.gpuCullBindGroup = null;
+    this.gpuCullCapacity = 0;
+    this.modelPoolBuffer = null; this.modelPoolBindGroup = null; this.modelPoolCapacity = 0;
+    this.skyBindGroup = null; this.skyBindGroupKey = '';
+    this.skyGenPipeline = null; this.skyGenParamsBuffer = null; this.skyGenBindGroup = null;
+    this.skyGenView = null; this.skyGenSampler = null;
+    this.particleSimPipeline = null; this.particleSimLayout = null;
+    this.idPipeline = null; this.idLayout = null; this.idUniformBuffer = null;
+    this.idBindGroup = null; this.idBufferCapacity = 0;
+    this.idColorTexture = null; this.idDepthTexture = null; this.idReadBuffer = null;
+    this.idTexW = 0; this.idTexH = 0;
+    this.shadowMapAllocated = 0; this.spotAtlasAllocated = 0;
+    this.shadowSampler = null as unknown as GPUSampler;
+    this.shadowLightBuffer = null as unknown as GPUBuffer;
+    this.spotAtlasSampler = null;
+    this.spotShadowTilesBuffer = null;
+    this.spotLightBuffers = [];
+    this.spotLightBindGroups = [];
+    this.opaqueBundle = null; this.bundleKey = '';
+    this.envKey = ''; this.iblEnvKey = ''; this.iblActive = false;
+    // Null the frame buffer so createShadowResources() doesn't rebuild the frame
+    // bind group before createFrameResources() recreates its dependencies.
+    this.frameBuffer = null as unknown as GPUBuffer;
+    this.lightBuffer = null as unknown as GPUBuffer;
 
     this.createShadowResources();
     this.envView = this.textures.defaultWhiteView;
     this.envSampler = this.textures.defaultSampler;
-    this.post = new PostProcessing(this.device, this.format, this.sampleCount);
-    this.ibl = new IBLPrefilter(this.device);
-    // Compute the BRDF LUT once at startup.
+    // Compute the BRDF LUT once.
     const brdfEncoder = this.device.createCommandEncoder();
     this.ibl.computeBRDFLUT(brdfEncoder);
     this.device.queue.submit([brdfEncoder.finish()]);
     this.createFrameResources();
-    this.setSize(this.canvas.clientWidth || 800, this.canvas.clientHeight || 600);
+  }
+
+  /**
+   * Rebuild after a lost device (or to recover from a GPU reset). Requests a
+   * fresh device, reconfigures the canvas, and recreates all GPU resources;
+   * meshes/materials/textures redraw from their surviving CPU-side data. Safe
+   * to call from `onDeviceLost`. No-op if the renderer was disposed.
+   */
+  async restoreContext(): Promise<void> {
+    if (this.disposed) return;
+    await this.acquireDevice();
+    this.setupDeviceState();
+    const w = this.width, h = this.height;
+    this.width = 0; this.height = 0; // force size-dependent rebuild
+    this.setSize(w, h);
+  }
+
+  /**
+   * Release GPU resources and destroy the device. The renderer is unusable
+   * afterward; create a new one to render again.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.spriteBatches.clear();
+    this.fontAtlases.clear();
+    this.device?.destroy();
+  }
+
+  /** True once `dispose()` has run. */
+  get isDisposed(): boolean { return this.disposed; }
+  /** True while the device is lost and not yet restored. */
+  get isDeviceLost(): boolean { return this.deviceLost; }
+
+  /**
+   * Debug snapshot of tracked GPU resource usage — for spotting leaks in
+   * long-running sessions. Counts reflect live cache entries.
+   */
+  resources(): { textureMemoryBytes: number; spriteBatches: number; fontAtlases: number; modelPoolSlots: number } {
+    return {
+      textureMemoryBytes: this.textures?.totalBytes ?? 0,
+      spriteBatches: this.spriteBatches.size,
+      fontAtlases: this.fontAtlases.size,
+      modelPoolSlots: this.nextMeshSlot,
+    };
   }
 
   private createFrameResources(): void {
@@ -686,6 +805,8 @@ export class WebGPURenderer {
   }
 
   render(scene: Scene, camera: Camera, target?: RenderTarget): void {
+    // Skip rendering while the device is gone; restoreContext()/dispose() govern recovery.
+    if (this.disposed || this.deviceLost) return;
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
     this.frameNumber++;

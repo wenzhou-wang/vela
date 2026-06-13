@@ -442,10 +442,17 @@ rest" — to the remaining programmable surfaces.
       many ranged lights without clustered lighting, a post effect enabled while
       `postProcessing` is off, and MSAA blocking SSAO/TAA. An agent has no perf
       intuition; the engine lends it some.
-- ⬜ **Lifecycle hardening** — device-lost recovery (re-init device, rebuild all cached
-      GPU resources from their CPU-side sources, which the cache design already keeps),
-      a `dispose()` audit across geometry/texture/material/render-target paths, and a
-      debug allocation tracker (`renderer.resources()`) so long-running agent sessions
+- ✅ **Lifecycle hardening** — all device-owned GPU resource creation + cache resets
+      are centralized in one private `setupDeviceState()` (the single source of truth
+      for "what lives on the GPU"), shared by `init()` and `restoreContext()`. The
+      device-lost handler distinguishes intentional teardown (`reason === 'destroyed'`)
+      from real loss, pauses rendering (`render()` early-returns while lost), fires an
+      `onDeviceLost` hook, and prints how to recover. `await renderer.restoreContext()`
+      requests a fresh device and rebuilds everything — geometry/material/texture caches
+      repopulate lazily from their surviving CPU-side data. `dispose()` destroys the
+      device (freeing all its resources) and blocks further rendering; `isDisposed`/
+      `isDeviceLost` expose state and `resources()` reports tracked GPU usage (texture
+      bytes, sprite batches, font atlases, model-pool slots) so long-running agent sessions
       don't leak.
 
 ---

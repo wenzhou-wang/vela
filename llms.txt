@@ -481,9 +481,15 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
 - gpuCulling: boolean — GPU-driven frustum culling: a compute shader tests bounding spheres against the camera frustum and writes instanceCount 0/1 into an indirect draw buffer.
 - clusteredLighting: boolean — Clustered forward+ lighting: a compute shader bins light bounding spheres into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade only the lights in their cluster (up to 32), so hundreds of ranged lights stay cheap.
+- onDeviceLost: ((info: GPUDeviceLostInfo) => void) | undefined — Called when the GPU device is lost unexpectedly; call `restoreContext()` to recover.
 - frustumCulling: boolean — Skip meshes whose bounding sphere is outside the camera frustum.
 - culledCount: number — Number of meshes culled in the last frame (diagnostics).
 - init(): Promise<void>
+- restoreContext(): Promise<void> — Rebuild after a lost device (or to recover from a GPU reset).
+- dispose(): void — Release GPU resources and destroy the device.
+- isDisposed: boolean — True once `dispose()` has run.
+- isDeviceLost: boolean — True while the device is lost and not yet restored.
+- resources(): { textureMemoryBytes: number; spriteBatches: number; fontAtlases: number; modelPoolSlots: number; } — Debug snapshot of tracked GPU resource usage — for spotting leaks in long-running sessions.
 - setPixelRatio(ratio: number): void
 - setSize(width: number, height: number): void — Resize backing store.
 - drawingBufferWidth: number
