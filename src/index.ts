@@ -21,6 +21,7 @@ export { SkinnedMesh } from './core/SkinnedMesh';
 export { InstancedMesh } from './core/InstancedMesh';
 export { ParticleSystem } from './core/ParticleSystem';
 export type { ParticleSystemOptions } from './core/ParticleSystem';
+export { Sprite } from './core/Sprite';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';

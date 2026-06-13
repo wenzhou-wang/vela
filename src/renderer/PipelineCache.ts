@@ -5,6 +5,7 @@ import { LINE_VERTEX_BUFFER_LAYOUT } from './shaders/line.wgsl';
 import { SHADOW_VERTEX_BUFFER_LAYOUT } from './shaders/shadow.wgsl';
 import { SKY_SHADER } from './shaders/sky.wgsl';
 import { PARTICLE_DRAW_SHADER } from './shaders/particles.wgsl';
+import { SPRITE_SHADER } from './shaders/sprite.wgsl';
 
 /**
  * Owns the shared bind group layouts and compiles/caches render pipelines.
@@ -31,6 +32,9 @@ export class PipelineCache {
   /** Particle draw layout (group 1): particle pool + draw params. */
   readonly particleLayout: GPUBindGroupLayout;
   private particleModule: GPUShaderModule | null = null;
+  /** Sprite/text batch layout (group 1): instances + batch params + texture. */
+  readonly spriteLayout: GPUBindGroupLayout;
+  private spriteModule: GPUShaderModule | null = null;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
   private customLayouts: Record<PipelineVariant, GPUPipelineLayout>;
   private modules: Record<PipelineVariant, GPUShaderModule>;
@@ -166,6 +170,17 @@ export class PipelineCache {
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    // Sprite/text batches: instances + params + texture/sampler at group 1.
+    this.spriteLayout = device.createBindGroupLayout({
+      label: 'sprites',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
 
@@ -445,6 +460,44 @@ export class PipelineCache {
       fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: [{ format, blend }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
+      multisample: { count: this.sampleCount },
+    });
+    this.cache.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * Sprite/SDF-text pipeline: premultiplied alpha blending; world-space
+   * batches are depth-tested (no write), screen-space batches skip the depth
+   * test entirely (HUD overlay).
+   */
+  getSprites(format: GPUTextureFormat, screen: boolean): GPURenderPipeline {
+    const key = `sprites|${format}|${screen ? 'screen' : 'world'}`;
+    let pipeline = this.cache.get(key);
+    if (pipeline) return pipeline;
+
+    this.spriteModule ??= this.device.createShaderModule({ code: SPRITE_SHADER, label: 'sprites' });
+    pipeline = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.spriteLayout] }),
+      vertex: { module: this.spriteModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: this.spriteModule,
+        entryPoint: 'fs_main',
+        targets: [{
+          format,
+          blend: {
+            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
+        }],
+      },
+      primitive: { topology: 'triangle-list' },
+      depthStencil: {
+        format: DEPTH_FORMAT,
+        depthWriteEnabled: false,
+        depthCompare: screen ? 'always' : 'less',
+      },
       multisample: { count: this.sampleCount },
     });
     this.cache.set(key, pipeline);

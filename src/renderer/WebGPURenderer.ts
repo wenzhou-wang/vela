@@ -10,6 +10,7 @@ import { SpotLight } from '../lights/SpotLight';
 import { SkinnedMesh } from '../core/SkinnedMesh';
 import { InstancedMesh } from '../core/InstancedMesh';
 import { ParticleSystem } from '../core/ParticleSystem';
+import { Sprite } from '../core/Sprite';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
@@ -86,6 +87,9 @@ const TAA_SAMPLES = 8;
 const SKY_TEX_WIDTH = 256;
 const SKY_TEX_HEIGHT = 128;
 
+// Sprite instance stride: posPad + sizeOffset + color + uvRect (4 × vec4).
+const SPRITE_STRIDE_F = 16;
+
 /** Radical-inverse Halton sequence value in [0, 1) for the given 1-based index. */
 function halton(index: number, base: number): number {
   let f = 1;
@@ -132,6 +136,18 @@ interface ShaderMaterialResources {
   layout: UniformLayout;
   shapeKey: string;       // uniform names+kinds; a change rebuilds buffer + shader
   uploadedFrame: number;  // last frameNumber the uniform values were written
+}
+
+interface SpriteBatch {
+  screen: boolean;
+  sdf: boolean;
+  textureSig: string;                // `${texture.id}:${texture.version}` or 'white'
+  data: Float32Array<ArrayBuffer>;   // SPRITE_STRIDE_F floats per instance
+  capacity: number;
+  count: number;
+  buffer: GPUBuffer;
+  params: GPUBuffer;
+  bindGroup: GPUBindGroup;
 }
 
 interface ParticleResources {
@@ -331,6 +347,9 @@ export class WebGPURenderer {
   private particleSimPipeline: GPUComputePipeline | null = null;
   private particleSimLayout: GPUBindGroupLayout | null = null;
   private lastRenderTime = 0;
+  // Sprites: one instanced batch per (texture, screen-space, sdf) combination.
+  private sprites: Sprite[] = [];
+  private spriteBatches = new Map<string, SpriteBatch>();
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
@@ -609,6 +628,7 @@ export class WebGPURenderer {
     this.collect(scene);
     this.prepareShadow();
     this.uploadFrame(scene, camera);
+    this.prepareSprites();
 
     // Sort transparent back-to-front
     camera.getWorldPosition(this._camPos);
@@ -699,6 +719,8 @@ export class WebGPURenderer {
 
     // Particles: blended billboards, depth-tested against the opaque scene.
     if (this.particleSystems.length > 0) this.drawParticles(pass);
+    // Sprites & text: world-space labels, then HUD overlays on top.
+    if (this.spriteBatches.size > 0) this.drawSprites(pass);
 
     pass.end();
 
@@ -1283,6 +1305,97 @@ export class WebGPURenderer {
     }
   }
 
+  /**
+   * Get (or create/grow) the batch for a (texture, screen, sdf) combination
+   * with room for one more instance. Bind groups rebuild when the buffer grows
+   * or the texture version changes.
+   */
+  private getSpriteBatch(key: string, screen: boolean, sdf: boolean, textureSig: string, view: GPUTextureView, sampler: GPUSampler): SpriteBatch {
+    let batch = this.spriteBatches.get(key);
+    const needsGrow = batch !== undefined && batch.count >= batch.capacity;
+    if (!batch || needsGrow || batch.textureSig !== textureSig) {
+      const capacity = needsGrow ? batch!.capacity * 2 : (batch?.capacity ?? 16);
+      const buffer = needsGrow || !batch
+        ? this.device.createBuffer({ size: capacity * SPRITE_STRIDE_F * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+        : batch.buffer;
+      if (needsGrow) batch!.buffer.destroy();
+      let params = batch?.params;
+      if (!params) {
+        params = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.device.queue.writeBuffer(params, 0, new Float32Array([screen ? 1 : 0, sdf ? 1 : 0, 0, 0]));
+      }
+      const bindGroup = this.device.createBindGroup({
+        layout: this.pipelines.spriteLayout,
+        entries: [
+          { binding: 0, resource: { buffer } },
+          { binding: 1, resource: { buffer: params } },
+          { binding: 2, resource: view },
+          { binding: 3, resource: sampler },
+        ],
+      });
+      const data = needsGrow
+        ? (() => { const d = new Float32Array(capacity * SPRITE_STRIDE_F); d.set(batch!.data); return d; })()
+        : (batch?.data ?? new Float32Array(capacity * SPRITE_STRIDE_F));
+      batch = { screen, sdf, textureSig, data, capacity, count: batch?.count ?? 0, buffer, params, bindGroup };
+      this.spriteBatches.set(key, batch);
+    }
+    return batch;
+  }
+
+  /** Rebuild sprite batches from the collected sprites and upload instance data. */
+  private prepareSprites(): void {
+    if (this.sprites.length === 0 && this.spriteBatches.size === 0) return;
+    for (const batch of this.spriteBatches.values()) batch.count = 0;
+
+    for (const sprite of this.sprites) {
+      const tex = sprite.texture;
+      const entry = tex ? this.textures.get(tex) : null;
+      const textureSig = tex ? `${tex.id}:${tex.version}` : 'white';
+      const screen = sprite.screenSpace;
+      const key = `${tex ? tex.id : 'white'}|${screen ? 1 : 0}|0`;
+      const batch = this.getSpriteBatch(
+        key, screen, false, textureSig,
+        entry ? entry.view : this.textures.defaultWhiteView,
+        entry ? entry.sampler : this.textures.defaultSampler,
+      );
+      sprite.getWorldPosition(this._meshPos);
+      const px = screen ? this.pixelRatio : 1; // CSS px → device px
+      const d = batch.data;
+      const i = batch.count * SPRITE_STRIDE_F;
+      d[i] = this._meshPos.x; d[i + 1] = this._meshPos.y; d[i + 2] = this._meshPos.z; d[i + 3] = 0;
+      d[i + 4] = sprite.size.x * px; d[i + 5] = sprite.size.y * px;
+      d[i + 6] = sprite.offset.x * px; d[i + 7] = sprite.offset.y * px;
+      d[i + 8] = sprite.color.r; d[i + 9] = sprite.color.g; d[i + 10] = sprite.color.b;
+      d[i + 11] = sprite.opacity;
+      d[i + 12] = 0; d[i + 13] = 0; d[i + 14] = 1; d[i + 15] = 1; // full texture
+      batch.count++;
+    }
+
+    // Upload live batches; drop batches that went empty (texture/mode changed).
+    for (const [key, batch] of this.spriteBatches) {
+      if (batch.count === 0) {
+        batch.buffer.destroy();
+        batch.params.destroy();
+        this.spriteBatches.delete(key);
+      } else {
+        this.device.queue.writeBuffer(batch.buffer, 0, batch.data, 0, batch.count * SPRITE_STRIDE_F);
+      }
+    }
+  }
+
+  /** Draw sprite batches: world-space first (depth-tested), then HUD overlays. */
+  private drawSprites(pass: GPURenderPassEncoder): void {
+    for (const screenPhase of [false, true]) {
+      for (const batch of this.spriteBatches.values()) {
+        if (batch.count === 0 || batch.screen !== screenPhase) continue;
+        pass.setPipeline(this.pipelines.getSprites(this.sceneTargetFormat, batch.screen));
+        pass.setBindGroup(0, this.frameBindGroup);
+        pass.setBindGroup(1, batch.bindGroup);
+        pass.draw(6, batch.count);
+      }
+    }
+  }
+
   private ensureGpuCullResources(minSlots: number): void {
     if (!this.gpuCullPipeline) {
       const module = this.device.createShaderModule({ code: CULL_SHADER, label: 'cull' });
@@ -1400,6 +1513,7 @@ export class WebGPURenderer {
     this.transparent.length = 0;
     this.lights.length = 0;
     this.particleSystems.length = 0;
+    this.sprites.length = 0;
     this.culledCount = 0;
 
     scene.traverseVisible((object: Object3D) => {
@@ -1407,6 +1521,8 @@ export class WebGPURenderer {
         this.lights.push(object);
       } else if (object instanceof ParticleSystem) {
         this.particleSystems.push(object);
+      } else if (object instanceof Sprite) {
+        this.sprites.push(object);
       } else if (object instanceof Mesh) {
         if (this.frustumCulling && object.frustumCulled && this.isCulled(object)) {
           this.culledCount++;

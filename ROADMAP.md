@@ -289,11 +289,17 @@ declarative: an object literal to set up, no builder chains, no hidden update fl
       premultiplied additive/alpha blending, tonemapped like the material path. The
       per-frame upload path reuses scratch arrays — no per-particle JS objects, no
       hot-loop allocation.
-- ⬜ **Sprites & SDF text** — billboarded quads (`Sprite`) batched into one instanced
-      draw per texture; `TextMesh` renders strings via a runtime-generated SDF atlas
-      (`OffscreenCanvas` rasterization → distance transform, cached per font), one quad
-      per glyph in the same batcher. Both work in world space and as screen-space
-      overlays (HUD: `sprite.screenSpace = true`, sized in CSS pixels).
+- 🚧 **Sprites & SDF text** — ✅ **sprites**: `Sprite extends Object3D` (texture,
+      color/opacity tint, `size`/`offset`, `screenSpace`) batched per (texture, mode)
+      into one 6-vertex instanced draw from a 64-byte-stride instance storage buffer
+      (grown ×2, rebuilt per frame with no per-sprite GPU objects). World-space
+      sprites billboard from the view-matrix basis and depth-test against the scene;
+      `screenSpace = true` projects the anchor then offsets in CSS pixels
+      (pixel-ratio-scaled CPU-side) with the depth test off, drawn after everything as
+      a HUD overlay. Premultiplied alpha, literal color like the helper path. The
+      shader already carries the SDF text mode flag + per-instance uv rects. ⬜
+      `TextMesh`: runtime SDF atlas (`OffscreenCanvas` rasterization → distance
+      transform, cached per font), one glyph per instance through the same batcher.
 - ⬜ **Render-to-texture** — `const rt = new RenderTarget(w, h)` +
       `renderer.render(scene, camera, rt)`: renders the full pipeline (including post)
       into an offscreen color texture usable as any material map (mirrors, portals,
