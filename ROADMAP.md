@@ -387,11 +387,16 @@ human looking at pixels — the core AI-first differentiator.
 Extend the ShaderMaterial pattern — "write one WGSL function, the engine does the
 rest" — to the remaining programmable surfaces.
 
-- ⬜ **ShaderMaterial v2** — texture uniforms (`uniforms: { noise: texture }` →
-      auto-bound `t_noise`/`s_noise` pair on group 2, layout regenerated on shape change
-      like scalar uniforms) and an optional vertex hook (`fn displace(pos : vec3<f32>,
-      in : VSIn) -> vec3<f32>`) spliced into all four vertex variants for displacement
-      and wind effects.
+- ✅ **ShaderMaterial v2** — **texture uniforms**: a `Texture` value in `uniforms`
+      becomes a `t_<name>`/`s_<name>` texture+sampler pair on group 2 (bindings
+      1,2 / 3,4 / …, scalar buffer at 0 only when present). The group-2 bind layout
+      and pipeline layout are built dynamically per `(hasBuffer, textureCount)` shape;
+      the bind group rebuilds when a texture's id/version changes, the shader
+      recompiles when the uniform shape changes. **Vertex hook**: an optional
+      `fn displace(position, in : VSIn) -> vec3<f32>` is spliced into the static and
+      instanced vertex stages before the model transform (skinned/morph keep their
+      built-in stages). Offline-verified: all four variants + texture-only +
+      empty-uniform cases parse via wgsl_reflect with correct group-2 bindings.
 - ⬜ **ShaderPass** — custom fullscreen post effects: `renderer.passes.push(new
       ShaderPass({ fragment, uniforms }))` with the same auto-packed uniform object;
       the pass receives the previous stage's HDR view + depth and is inserted into the

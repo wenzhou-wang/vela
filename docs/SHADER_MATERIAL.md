@@ -52,12 +52,13 @@ from `defaultSurface(in)`, override what you need, return it.
 Declare uniforms as a plain object; they appear in WGSL as `u.<name>` with the
 matching type. Mutate values freely — they upload every frame, no dirty flags:
 
-| JS value | WGSL type |
+| JS value | WGSL |
 |---|---|
-| `number` | `f32` |
-| `Vector2` | `vec2<f32>` |
-| `Vector3`, `Color` | `vec3<f32>` |
-| `Vector4` | `vec4<f32>` |
+| `number` | `u.<name> : f32` |
+| `Vector2` | `u.<name> : vec2<f32>` |
+| `Vector3`, `Color` | `u.<name> : vec3<f32>` |
+| `Vector4` | `u.<name> : vec4<f32>` |
+| `Texture` | `t_<name> : texture_2d<f32>` + `s_<name> : sampler` |
 
 ```ts
 import { ShaderMaterial, Color } from 'vela';
@@ -87,6 +88,60 @@ lava.uniforms.glowColor = new Color(0, 1, 0);
 
 Adding or removing a uniform key (or changing a value's type) recompiles the
 shader automatically on the next frame.
+
+## Texture uniforms
+
+A `Texture` value becomes a `t_<name>` / `s_<name>` texture+sampler pair you
+sample directly. Swapping the texture (or bumping its `version`) rebinds it on
+the next frame:
+
+```ts
+import { ShaderMaterial, Vector2, TextureLoader } from 'vela';
+
+const albedo = await new TextureLoader().load('brick.png');
+const mat = new ShaderMaterial({
+  surface: /* wgsl */ `
+    fn surface(in : VSOut) -> Surface {
+      var s = defaultSurface(in);
+      s.baseColor = textureSample(t_albedo, s_albedo, in.uv * u.tiling).rgb;
+      s.roughness = textureSample(t_rough, s_rough, in.uv).r;
+      return s;
+    }
+  `,
+  uniforms: { tiling: new Vector2(4, 4), albedo, rough: roughnessTex },
+});
+```
+
+## Vertex displacement
+
+An optional `vertex` function `displace(position, in) -> vec3<f32>` runs in the
+vertex stage before the model transform — for waves, wind, inflation, terrain.
+It applies to plain and instanced meshes (skinned/morph meshes ignore it). The
+shading normal isn't recomputed automatically, so perturb `s.normal` in
+`surface()` if the lighting should follow the displacement.
+
+```ts
+const flag = new ShaderMaterial({
+  uniforms: { amp: 0.15 },
+  vertex: /* wgsl */ `
+    fn displace(position : vec3<f32>, in : VSIn) -> vec3<f32> {
+      let wave = sin(position.x * 6.0 + elapsedTime() * 3.0) * u.amp;
+      return position + vec3(0.0, 0.0, wave);
+    }
+  `,
+  surface: /* wgsl */ `
+    fn surface(in : VSOut) -> Surface {
+      var s = defaultSurface(in);
+      s.baseColor = vec3(0.8, 0.1, 0.1);
+      return s;
+    }
+  `,
+});
+// swap it live:
+flag.setVertex(null);     // back to undisplaced
+```
+
+`VSIn` exposes `in.position`, `in.normal`, `in.uv`, `in.tangent`, `in.color`.
 
 ## More recipes
 
@@ -150,9 +205,9 @@ culling, instancing (`InstancedMesh`), skinning (`SkinnedMesh`), morph targets,
 OIT, TAA, SSAO, bloom, picking (`renderer.pickAt`), and render bundles.
 Surface functions run identically with and without `renderer.postProcessing`.
 
-## Limitations (v1)
+## Limitations
 
-- No custom textures yet — uniforms only. Use `StandardMaterial` for textured
-  surfaces, or bake data into vertex colors/UVs.
-- No custom vertex stage; the four built-in vertex variants are used as-is.
+- Texture uniforms are 2D only (no cube/array/3D textures yet).
+- The vertex hook applies to plain and instanced meshes; skinned and
+  morph-target meshes use their built-in vertex stages unchanged.
 - Transmission/clearcoat/sheen lobes are `StandardMaterial`-only.

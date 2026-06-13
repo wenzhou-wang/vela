@@ -24,8 +24,6 @@ export class PipelineCache {
   readonly lineMaterialLayout: GPUBindGroupLayout;
   readonly shadowLightLayout: GPUBindGroupLayout;
   readonly shadowPipeline: GPURenderPipeline;
-  /** Group-2 layout for ShaderMaterial: one auto-packed uniform buffer. */
-  readonly customUniformLayout: GPUBindGroupLayout;
   /** Skybox pass layout: frame uniform + raw equirect env texture/sampler. */
   readonly skyLayout: GPUBindGroupLayout;
   private skyModule: GPUShaderModule | null = null;
@@ -36,7 +34,10 @@ export class PipelineCache {
   readonly spriteLayout: GPUBindGroupLayout;
   private spriteModule: GPUShaderModule | null = null;
   private layouts: Record<PipelineVariant, GPUPipelineLayout>;
-  private customLayouts: Record<PipelineVariant, GPUPipelineLayout>;
+  // ShaderMaterial group-2 bind layouts keyed by texture count, and pipeline
+  // layouts keyed by `${variant}|${textureCount}`.
+  private customBindLayouts = new Map<number, GPUBindGroupLayout>();
+  private customPipelineLayouts = new Map<string, GPUPipelineLayout>();
   private modules: Record<PipelineVariant, GPUShaderModule>;
   private customModules = new Map<string, GPUShaderModule>();
   private lineLayout: GPUPipelineLayout;
@@ -184,26 +185,6 @@ export class PipelineCache {
       ],
     });
 
-    // ShaderMaterial pipeline layouts: same shape, custom group 2.
-    this.customUniformLayout = device.createBindGroupLayout({
-      label: 'shader-material',
-      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
-    });
-    this.customLayouts = {
-      static: device.createPipelineLayout({
-        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout],
-      }),
-      skinned: device.createPipelineLayout({
-        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout, this.bonesLayout],
-      }),
-      instanced: device.createPipelineLayout({
-        bindGroupLayouts: [this.frameLayout, this.instanceLayout, this.customUniformLayout],
-      }),
-      morph: device.createPipelineLayout({
-        bindGroupLayouts: [this.frameLayout, this.modelLayout, this.customUniformLayout, this.morphLayout],
-      }),
-    };
-
     // Unlit line path: frame + model + a small line-material uniform.
     this.lineMaterialLayout = device.createBindGroupLayout({
       label: 'line-material',
@@ -310,10 +291,49 @@ export class PipelineCache {
   }
 
   /**
+   * Group-2 bind layout for a ShaderMaterial: a uniform buffer at binding 0
+   * (when it has scalar uniforms) plus `textureCount` texture+sampler pairs at
+   * bindings 1,2 / 3,4 / … — exactly matching the generated WGSL. Cached per
+   * `(hasBuffer, textureCount)` shape.
+   */
+  customUniformLayout(hasBuffer: boolean, textureCount: number): GPUBindGroupLayout {
+    const shape = (hasBuffer ? 1 : 0) * 1000 + textureCount;
+    let layout = this.customBindLayouts.get(shape);
+    if (layout) return layout;
+    const entries: GPUBindGroupLayoutEntry[] = [];
+    if (hasBuffer) {
+      entries.push({ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } });
+    }
+    for (let i = 0; i < textureCount; i++) {
+      entries.push({ binding: 1 + i * 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } });
+      entries.push({ binding: 2 + i * 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } });
+    }
+    layout = this.device.createBindGroupLayout({ label: `shader-material-${shape}`, entries });
+    this.customBindLayouts.set(shape, layout);
+    return layout;
+  }
+
+  private customPipelineLayout(variant: PipelineVariant, hasBuffer: boolean, textureCount: number): GPUPipelineLayout {
+    const key = `${variant}|${hasBuffer ? 1 : 0}|${textureCount}`;
+    let layout = this.customPipelineLayouts.get(key);
+    if (layout) return layout;
+    const group2 = this.customUniformLayout(hasBuffer, textureCount);
+    const groups =
+      variant === 'instanced' ? [this.frameLayout, this.instanceLayout, group2]
+      : variant === 'skinned' ? [this.frameLayout, this.modelLayout, group2, this.bonesLayout]
+      : variant === 'morph' ? [this.frameLayout, this.modelLayout, group2, this.morphLayout]
+      : [this.frameLayout, this.modelLayout, group2];
+    layout = this.device.createPipelineLayout({ bindGroupLayouts: groups });
+    this.customPipelineLayouts.set(key, layout);
+    return layout;
+  }
+
+  /**
    * Pipeline for a ShaderMaterial. `cacheKey` must change whenever the
    * generated WGSL would (material id + version + uniform shape); `buildCode`
    * is only invoked when the module isn't cached yet. Pass the actual scene
-   * color format (`rgba16float` under post-processing).
+   * color format (`rgba16float` under post-processing). `hasBuffer`/`textureCount`
+   * describe the group-2 bind layout the generated WGSL expects.
    */
   getCustom(
     cacheKey: string,
@@ -323,8 +343,11 @@ export class PipelineCache {
     oit: boolean,
     oitSampleCount: number,
     buildCode: () => string,
+    hasBuffer: boolean,
+    textureCount: number,
     label = 'ShaderMaterial',
   ): GPURenderPipeline {
+    const pipelineLayout = this.customPipelineLayout(variant, hasBuffer, textureCount);
     const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
@@ -369,7 +392,7 @@ export class PipelineCache {
       };
       pipeline = this.device.createRenderPipeline({
         label: key,
-        layout: this.customLayouts[variant],
+        layout: pipelineLayout,
         vertex: {
           module,
           entryPoint: 'vs_main',
@@ -390,7 +413,7 @@ export class PipelineCache {
       }
       pipeline = this.device.createRenderPipeline({
         label: key,
-        layout: this.customLayouts[variant],
+        layout: pipelineLayout,
         vertex: {
           module,
           entryPoint: 'vs_main',

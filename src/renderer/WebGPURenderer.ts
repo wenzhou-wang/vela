@@ -19,6 +19,7 @@ import { StandardMaterial } from '../materials/StandardMaterial';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { ShaderMaterial, computeUniformLayout, packUniforms } from '../materials/ShaderMaterial';
 import type { UniformLayout } from '../materials/ShaderMaterial';
+import { Texture } from '../textures/Texture';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
 import { Matrix4 } from '../math/Matrix4';
@@ -138,12 +139,13 @@ interface MorphResources {
 }
 
 interface ShaderMaterialResources {
-  buffer: GPUBuffer;
+  buffer: GPUBuffer | null; // null when the material has no scalar uniforms
   bindGroup: GPUBindGroup;
   data: Float32Array<ArrayBuffer>;
   layout: UniformLayout;
   shapeKey: string;       // uniform names+kinds; a change rebuilds buffer + shader
   uploadedFrame: number;  // last frameNumber the uniform values were written
+  textureSig: string;     // texture ids+versions; a change rebuilds the bind group
 }
 
 interface SpriteBatch {
@@ -2087,9 +2089,12 @@ export class WebGPURenderer {
       const sm = material as ShaderMaterial;
       const res = this.getShaderMaterialResources(sm);
       const cacheKey = `sm:${sm.id}:v${sm.version}:${res.shapeKey}`;
+      const hasBuffer = res.layout.fields.length > 0;
+      const textureCount = res.layout.textures.length;
       pass.setPipeline(this.pipelines.getCustom(
         cacheKey, variant, sm, this.sceneTargetFormat, oit, oitSampleCount,
-        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode),
+        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode),
+        hasBuffer, textureCount,
         sm.name || sm.type,
       ));
       pass.setBindGroup(2, res.bindGroup);
@@ -2467,29 +2472,51 @@ export class WebGPURenderer {
   }
 
   /**
-   * Uniform buffer + bind group for a ShaderMaterial. Recreated when the
-   * uniforms object's shape (names/types) changes — which also changes the
-   * pipeline cache key, recompiling the shader to match. Values are packed
-   * and uploaded once per frame.
+   * Uniform buffer + bind group for a ShaderMaterial. The buffer/bind group is
+   * (re)built when the uniforms object's shape (scalar names+types and texture
+   * names) changes — which also bumps the pipeline cache key, recompiling the
+   * shader to match. The bind group also rebuilds when a texture's identity or
+   * version changes. Scalar values are packed and uploaded once per frame.
    */
   private getShaderMaterialResources(material: ShaderMaterial): ShaderMaterialResources {
     const layout = computeUniformLayout(material.uniforms);
-    const shapeKey = layout.fields.map((f) => `${f.name}:${f.kind}`).join(',');
+    const shapeKey = layout.fields.map((f) => `${f.name}:${f.kind}`).join(',') +
+      '|tex:' + layout.textures.join(',');
+    // Texture identity+version signature: rebuild the bind group when it changes.
+    let textureSig = '';
+    for (const name of layout.textures) {
+      const tex = material.uniforms[name] as Texture;
+      textureSig += `${name}=${tex.id}:${tex.version};`;
+    }
+
     let res = this.shaderMaterialResources.get(material);
-    if (!res || res.shapeKey !== shapeKey) {
-      res?.buffer.destroy();
-      const buffer = this.device.createBuffer({
-        size: layout.size,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    if (!res || res.shapeKey !== shapeKey || res.textureSig !== textureSig) {
+      const reshape = !res || res.shapeKey !== shapeKey;
+      let buffer = res?.buffer ?? null;
+      if (reshape) {
+        res?.buffer?.destroy();
+        buffer = layout.fields.length > 0
+          ? this.device.createBuffer({ size: layout.size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+          : null;
+      }
+      const entries: GPUBindGroupEntry[] = [];
+      if (buffer) entries.push({ binding: 0, resource: { buffer } });
+      layout.textures.forEach((name, i) => {
+        const entry = this.textures.get(material.uniforms[name] as Texture);
+        entries.push({ binding: 1 + i * 2, resource: entry.view });
+        entries.push({ binding: 2 + i * 2, resource: entry.sampler });
       });
       const bindGroup = this.device.createBindGroup({
-        layout: this.pipelines.customUniformLayout,
-        entries: [{ binding: 0, resource: { buffer } }],
+        layout: this.pipelines.customUniformLayout(layout.fields.length > 0, layout.textures.length),
+        entries,
       });
-      res = { buffer, bindGroup, data: new Float32Array(layout.size / 4), layout, shapeKey, uploadedFrame: -1 };
+      res = {
+        buffer, bindGroup, data: new Float32Array(layout.size / 4),
+        layout, shapeKey, uploadedFrame: -1, textureSig,
+      };
       this.shaderMaterialResources.set(material, res);
     }
-    if (res.uploadedFrame !== this.frameNumber) {
+    if (res.buffer && res.uploadedFrame !== this.frameNumber) {
       packUniforms(material.uniforms, res.layout, res.data);
       this.device.queue.writeBuffer(res.buffer, 0, res.data);
       res.uploadedFrame = this.frameNumber;

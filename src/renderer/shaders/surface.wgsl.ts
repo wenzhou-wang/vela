@@ -123,23 +123,42 @@ const VERTEX_BY_VARIANT: Record<PipelineVariant, string> = {
   morph: VERTEX_MORPH,
 };
 
+// The expression a vertex displacement hook replaces in the vertex stages.
+const POSITION_EXPR = 'vec4<f32>(in.position, 1.0)';
+
 /**
  * Assemble the complete WGSL module for a ShaderMaterial.
- * `uniformStruct` is the generated `struct SMUniforms {...}` + binding (may be
- * empty when the material declares no uniforms); `surfaceCode` must define
- * `fn surface(in : VSOut) -> Surface`.
+ * `uniformStruct` is the generated group-2 declarations (scalar buffer +
+ * texture bindings; may be empty); `surfaceCode` must define
+ * `fn surface(in : VSOut) -> Surface`; `vertexCode` optionally defines
+ * `fn displace(position : vec3<f32>, in : VSIn) -> vec3<f32>`, spliced into
+ * the static/instanced vertex stages before the model transform.
  */
 export function buildSurfaceShader(
   variant: PipelineVariant,
   uniformStruct: string,
   surfaceCode: string,
+  vertexCode?: string | null,
 ): string {
+  let vertex = VERTEX_BY_VARIANT[variant];
+  let userVertex = '';
+  if (vertexCode && (variant === 'static' || variant === 'instanced')) {
+    if (!vertex.includes(POSITION_EXPR)) {
+      throw new Error(
+        `buildSurfaceShader: vertex stage "${variant}" no longer contains the ` +
+        `position expression the displacement hook splices into — update POSITION_EXPR.`,
+      );
+    }
+    vertex = vertex.replace(POSITION_EXPR, 'vec4<f32>(displace(in.position, in), 1.0)');
+    userVertex = '\n// --- user vertex code ---\n' + vertexCode + '\n// --- end user vertex code ---\n';
+  }
   return (
     HEADER +
-    VERTEX_BY_VARIANT[variant] +
     SHADE_HELPERS +
     SURFACE_PRELUDE +
     uniformStruct +
+    userVertex +
+    vertex +
     '\n// --- user surface code ---\n' +
     surfaceCode +
     '\n// --- end user surface code ---\n' +
