@@ -28,46 +28,72 @@ const FLAT_SURFACE = /* wgsl */ `
   }
 `;
 
-// Outline effect: silhouette + normal crease + color edge → ink over the scene.
+// Outline effect: silhouette (depth occupancy) + interior creases (relative
+// depth and reconstructed view normals) + texture color edges (3x3 Sobel).
+// The scene is HDR-linear here (passes run before tonemap), so color deltas are
+// measured in approximate gamma space to match perceptual edges.
 const OUTLINE_EFFECT = /* wgsl */ `
-  fn isGeo(uv : vec2<f32>) -> f32 { return select(0.0, 1.0, sceneDepth(uv) < 1.0); }
+  fn isGeo(d : f32) -> f32 { return select(1.0, 0.0, d >= 0.9999); }
+  fn perceptual(c : vec3<f32>) -> vec3<f32> { return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)); }
 
   fn effect(uv : vec2<f32>) -> vec4<f32> {
-    let c = sceneColor(uv);
-    let step = pp.resolution.zw * u.thickness;
+    let center = sceneColor(uv);
+    let inner = pp.resolution.zw * max(u.thickness, 0.5);
+    let outerS = inner * 1.6;
     let dC = sceneDepth(uv);
-    let object = isGeo(uv);
+    let object = isGeo(dC);
 
-    // Silhouette: depth occupancy changing across an 8-neighborhood.
+    // Silhouette: depth occupancy change across the 8-neighborhood (wider radius).
     var outer = 0.0;
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>(-step.x, 0.0))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>( step.x, 0.0))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>(0.0, -step.y))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>(0.0,  step.y))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>(-step.x, -step.y))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>( step.x,  step.y))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>(-step.x,  step.y))));
-    outer = max(outer, abs(object - isGeo(uv + vec2<f32>( step.x, -step.y))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>(-outerS.x, 0.0)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>( outerS.x, 0.0)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>(0.0, -outerS.y)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>(0.0,  outerS.y)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>(-outerS.x, -outerS.y)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>( outerS.x,  outerS.y)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>(-outerS.x,  outerS.y)))));
+    outer = max(outer, abs(object - isGeo(sceneDepth(uv + vec2<f32>( outerS.x, -outerS.y)))));
 
-    // Interior creases: angle between view-space normals reconstructed from depth.
-    let inner = pp.resolution.zw;
-    let uvL = uv - vec2<f32>(inner.x, 0.0); let uvR = uv + vec2<f32>(inner.x, 0.0);
-    let uvU = uv - vec2<f32>(0.0, inner.y); let uvD = uv + vec2<f32>(0.0, inner.y);
+    // Inner 8-neighbor taps for depth/normal/color edges.
+    let uvL = uv + vec2<f32>(-inner.x, 0.0); let uvR = uv + vec2<f32>(inner.x, 0.0);
+    let uvU = uv + vec2<f32>(0.0, -inner.y); let uvD = uv + vec2<f32>(0.0, inner.y);
+    let uvUL = uv + vec2<f32>(-inner.x, -inner.y); let uvUR = uv + vec2<f32>(inner.x, -inner.y);
+    let uvDL = uv + vec2<f32>(-inner.x,  inner.y); let uvDR = uv + vec2<f32>(inner.x,  inner.y);
+    let dL = sceneDepth(uvL); let dR = sceneDepth(uvR);
+    let dU = sceneDepth(uvU); let dD = sceneDepth(uvD);
     let pC = viewPosition(uv, dC);
-    let pL = viewPosition(uvL, sceneDepth(uvL)); let pR = viewPosition(uvR, sceneDepth(uvR));
-    let pU = viewPosition(uvU, sceneDepth(uvU)); let pD = viewPosition(uvD, sceneDepth(uvD));
-    let n = normalize(cross(pR - pL, pD - pU));
-    let nL = normalize(cross(pC - pL, viewPosition(uvL - vec2<f32>(0.0, inner.y), sceneDepth(uvL - vec2<f32>(0.0, inner.y))) - pL));
-    let crease = smoothstep(0.25, 0.6, 1.0 - abs(dot(n, nL))) * object;
+    let pL = viewPosition(uvL, dL); let pR = viewPosition(uvR, dR);
+    let pU = viewPosition(uvU, dU); let pD = viewPosition(uvD, dD);
+    let pUL = viewPosition(uvUL, sceneDepth(uvUL)); let pUR = viewPosition(uvUR, sceneDepth(uvUR));
+    let pDL = viewPosition(uvDL, sceneDepth(uvDL)); let pDR = viewPosition(uvDR, sceneDepth(uvDR));
+    let neighborsGeo = min(min(isGeo(dL), isGeo(dR)), min(isGeo(dU), isGeo(dD)));
 
-    // Color edges (Sobel) from the authored albedo.
-    let cL = sceneColor(uvL).rgb; let cR = sceneColor(uvR).rgb;
-    let cU = sceneColor(uvU).rgb; let cD = sceneColor(uvD).rgb;
-    let colorDelta = (length(cR - cL) + length(cD - cU)) * 0.5;
+    // Relative-depth crease (folds facing the camera).
+    let relDepth = max(max(abs(pC.z - pL.z), abs(pC.z - pR.z)), max(abs(pC.z - pU.z), abs(pC.z - pD.z))) / max(abs(pC.z), 1e-3);
+    let depthEdge = smoothstep(0.015, 0.05, relDepth) * object * neighborsGeo;
+
+    // Normal crease (silhouette-internal form changes).
+    let nC = normalize(cross(pR - pL, pD - pU));
+    let nL = normalize(cross(pC - pL, pDL - pUL));
+    let nR = normalize(cross(pR - pC, pDR - pUR));
+    let nU = normalize(cross(pUR - pUL, pC - pU));
+    let nD = normalize(cross(pDR - pDL, pD - pC));
+    let normalDelta = max(max(1.0 - abs(dot(nC, nL)), 1.0 - abs(dot(nC, nR))), max(1.0 - abs(dot(nC, nU)), 1.0 - abs(dot(nC, nD))));
+    let normalEdge = smoothstep(0.12, 0.3, normalDelta) * object * neighborsGeo;
+
+    // Texture color edges (3x3 Sobel in gamma space) — draws painted features.
+    let cL = perceptual(sceneColor(uvL).rgb); let cR = perceptual(sceneColor(uvR).rgb);
+    let cU = perceptual(sceneColor(uvU).rgb); let cD = perceptual(sceneColor(uvD).rgb);
+    let cUL = perceptual(sceneColor(uvUL).rgb); let cUR = perceptual(sceneColor(uvUR).rgb);
+    let cDL = perceptual(sceneColor(uvDL).rgb); let cDR = perceptual(sceneColor(uvDR).rgb);
+    let sobelX = -cUL - 2.0 * cL - cDL + cUR + 2.0 * cR + cDR;
+    let sobelY = -cUL - 2.0 * cU - cUR + cDL + 2.0 * cD + cDR;
+    let colorDelta = (length(sobelX) + length(sobelY)) * 0.25;
     let colorEdge = smoothstep(u.colorEdge, u.colorEdge * 2.5, colorDelta) * object;
 
-    let edge = clamp(max(outer, max(crease * 0.8, colorEdge * 0.7)) * u.strength, 0.0, 1.0);
-    return vec4<f32>(mix(c.rgb, u.ink, edge), c.a);
+    let inkEdge = max(outer, max(depthEdge, max(normalEdge, colorEdge)));
+    let edge = clamp(inkEdge * u.strength, 0.0, 1.0);
+    return vec4<f32>(mix(center.rgb, u.ink, edge), center.a);
   }
 `;
 
@@ -90,7 +116,7 @@ export class ComicEffect {
       uniforms: {
         thickness: 1.5,
         strength: 1.0,
-        colorEdge: 0.12,
+        colorEdge: 0.08,
         ink: new Color(0.04, 0.03, 0.03),
       },
       enabled: false,
