@@ -3,6 +3,40 @@
 How vela turns a scene graph into pixels. This is the mental model you need to extend the
 renderer; the [ROADMAP](../ROADMAP.md) builds on these structures.
 
+## The engine stays generic (read this before adding features)
+
+**The engine knows nothing about any specific look, art style, game, or asset.** It
+provides general, composable primitives — meshes, materials, lights, a post chain — and
+nothing in `src/` should ever encode a use case. Cel/comic shading, a "Bitmoji face,"
+an outline style, an SDF terrain, a water effect: these are **applications** of the
+engine and belong in application code (see `examples/gltf-viewer/comic.ts` for the
+reference example), never in `src/renderer/shaders/*` or the renderer.
+
+Concretely, the following do **not** belong in the engine and must be rejected in review:
+
+- Shader branches keyed to a particular material/asset (e.g. detecting "lip" colors,
+  hardcoded tints for one model).
+- Renderer flags or shader entries named after a look (`celShading`, `outline*`,
+  `toon*`, `anime*`, …). A look is an app concern.
+- Magic numbers tuned to make one scene look right.
+
+When an app can't express a use case with the existing API, that is an **API gap** —
+surface it, then fill it with a *general* capability, designed to a standard, that any
+app could use. Examples already in the engine:
+
+- `ShaderMaterial` — the app supplies a WGSL `surface()`; the engine supplies lighting.
+- `ShaderPass` — the app supplies a fullscreen `effect()`; the engine supplies the
+  framebuffer, depth, camera matrices (`viewPosition()`), and timing.
+- `ComputeTask` — the app supplies a compute kernel with declared buffers.
+
+The litmus test for any addition: *would this make sense to someone building a completely
+different game?* If it only makes sense for one look or asset, it goes in the app. Filling
+a gap is good; widening the engine's vocabulary with use-case nouns is not.
+
+The cel/comic look in the glTF viewer is built **entirely** on these generic primitives —
+a flat-albedo `ShaderMaterial` plus an outline `ShaderPass`, in `comic.ts`. The engine has
+no cel-shading concept.
+
 ## Layers
 
 ```
@@ -116,5 +150,16 @@ src/renderer/
   TextureManager.ts    textures → GPU textures/samplers, default resources
   MipmapGenerator.ts   blit-based mip chain
   constants.ts         vertex layout, formats
-  shaders/pbr.wgsl.ts  the WGSL shader (as a TS template string)
+  shaders/*.wgsl.ts    generic WGSL (PBR, sky, particles, post, shaderpass, …)
+  ShaderPass.ts        generic fullscreen custom post effect (app supplies effect())
+  ComputeTask.ts       generic declarative compute job
+materials/
+  ShaderMaterial.ts    generic custom surface (app supplies surface())
+
+examples/gltf-viewer/
+  comic.ts             a use-case look (cel/comic) built ON the engine, not in it
 ```
+
+Note the split: every WGSL file under `src/` is a generic capability. The comic look
+lives in the example app (`comic.ts`) precisely because it is a use case, not an engine
+feature — see "The engine stays generic" above.

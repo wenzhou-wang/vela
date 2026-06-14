@@ -289,15 +289,6 @@ export class WebGPURenderer {
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
   /**
-   * Unlit diffuse rendering with depth, normal, and color-derived outlines
-   * (comic look). Requires `postProcessing = true` and `sampleCount = 1`.
-   */
-  celShading = false;
-  /** Screen-space outline radius in device pixels. */
-  outlineThickness = 1.5;
-  /** Blend strength for outer silhouettes and interior feature lines. */
-  outlineStrength = 1.0;
-  /**
    * Custom fullscreen post effects, run in order in HDR linear space before
    * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
    * effects; reorder or splice to change the chain.
@@ -1014,7 +1005,6 @@ export class WebGPURenderer {
     }
 
     const useSSAO = this.ssao && usePost && this.sampleCount === 1 && !!this.depthSampleView;
-    const useCelShading = this.celShading && usePost && this.sampleCount === 1 && !!this.depthSampleView;
     // Resolve the HDR target through the post chain into the swap chain.
     if (usePost) {
       if (useSSAO) {
@@ -1044,6 +1034,7 @@ export class WebGPURenderer {
       }
       // Custom ShaderPasses run in HDR linear space before tonemap.
       if (this.passes.length > 0) {
+        const cam = camera as unknown as { near?: number; far?: number };
         postInput = this.post.runShaderPasses(
           encoder,
           this.passes,
@@ -1051,6 +1042,12 @@ export class WebGPURenderer {
           this.depthSampleView ?? this.post.dummyDepth,
           this.textures,
           this._elapsed,
+          {
+            proj: new Float32Array(camera.projectionMatrix.elements),
+            invProj: new Float32Array(camera.projectionMatrixInverse.elements),
+            near: cam.near ?? 0.1,
+            far: cam.far ?? 2000,
+          },
         );
       }
       this.post.run(encoder, swapView!, {
@@ -1060,11 +1057,7 @@ export class WebGPURenderer {
         bloomIntensity: this.bloomIntensity,
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
-        celShading: useCelShading,
-        outlineThickness: this.outlineThickness,
-        outlineStrength: this.outlineStrength,
-      }, postInput, useCelShading ? this.depthSampleView! : undefined,
-      useCelShading ? new Float32Array(camera.projectionMatrixInverse.elements) : undefined);
+      }, postInput);
     }
     // Save this frame's unjittered view-projection for next frame's TAA
     // reprojection (canvas renders only — offscreen cameras must not pollute it).
@@ -1232,10 +1225,10 @@ export class WebGPURenderer {
     }
 
     // Post effects requested but post pipeline off (silently inactive).
-    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.celShading || this.passes.length > 0)) {
+    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.passes.length > 0)) {
       out.push({
         code: 'post-effect-inactive',
-        message: 'A post effect (bloom/ssao/taa/oit/cel/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
+        message: 'A post effect (bloom/ssao/taa/oit/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
         fix: 'Set renderer.postProcessing = true, or disable the effect to avoid confusion.',
       });
     }
@@ -2420,13 +2413,11 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    // Bit 0: linear output; bit 1: IBL; bit 2: SSR; bit 3: unlit cel preview.
+    // Bit 0: linear output; bit 1: IBL; bit 2: SSR.
     // _usePost is false for render-target passes (direct pipeline, in-shader tonemap).
-    const celActive = this.celShading && this._usePost && this.sampleCount === 1;
     f[63] = (this._usePost ? 1 : 0) |
       (this.iblActive ? 2 : 0) |
-      (this._usePost ? 4 : 0) |
-      (celActive ? 8 : 0);
+      (this._usePost ? 4 : 0);
 
     // clusterParams (64..67) + clusterDims (68..71)
     const cam = camera as unknown as { near?: number; far?: number };

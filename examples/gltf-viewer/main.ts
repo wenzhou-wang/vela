@@ -23,6 +23,7 @@ import {
   AnimationMixer,
   type GLTFResult,
 } from 'vela';
+import { ComicEffect } from './comic';
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const statsEl = document.getElementById('stats') as HTMLDivElement;
@@ -338,11 +339,18 @@ lightEl.addEventListener('input', () => {
 
 const styleEl = document.getElementById('renderStyle') as HTMLSelectElement;
 const styleRow = document.getElementById('styleRow') as HTMLLabelElement;
-// 'pbr' (default) or 'comic' (cel shading + ink outlines).
+// Comic is an application-level effect (flat-albedo materials + outline pass)
+// built on the generic engine APIs — the engine has no cel-shading concept.
+const comic = new ComicEffect(renderer);
+comic.attach();
+// 'pbr' (default) or 'comic' (flat cel fill + ink outlines).
 function setRenderStyle(style: string): void {
-  const comic = style === 'comic';
-  renderer.celShading = comic;
-  renderer.postProcessing = comic;
+  if (style === 'comic' && currentModel) {
+    comic.enable(currentModel);
+  } else {
+    comic.disable();
+    renderer.postProcessing = false;
+  }
 }
 function setBitmojiSelected(selected: boolean, defaultStyle: RenderStyle = 'pbr'): void {
   styleRow.style.display = selected ? 'flex' : 'none';

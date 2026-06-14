@@ -3,27 +3,22 @@
  * UVs; each fragment entry samples the previous pass's color target(s).
  *
  * Module bindings (one shared layout; `bloom` is a dummy for passes that ignore it):
- *   0 src texture · 1 sampler · 2 params uniform · 3 bloom texture
- *   4 SSAO texture · 5 scene depth
+ *   0 src texture · 1 sampler · 2 params uniform · 3 bloom texture · 4 SSAO texture
  *   params.data = (1/width, 1/height, bloomThreshold, bloomIntensity)
  *
  * Entries: tonemap (ACES+sRGB), tonemapBloom (adds blurred bloom then tonemaps),
- * threshold (bright-pass), blurH/blurV (separable Gaussian), fxaa, copy.
+ * threshold (bright-pass), blurH/blurV (separable Gaussian), fxaa, copy, oitComposite.
  */
 export const POST_SHADER = /* wgsl */ `
 @group(0) @binding(0) var src      : texture_2d<f32>;
 @group(0) @binding(1) var samp     : sampler;
 struct Params {
   data : vec4<f32>,  // (1/width, 1/height, bloomThreshold, bloomIntensity)
-  ssao : vec4<f32>,  // (ssaoStrength, unused, outlineThickness, outlineStrength)
-  toon : vec4<f32>,  // (depthThreshold, normalThreshold, colorThreshold, outerWidthScale)
-  outline : vec4<f32>, // (outline RGB, celEnabled)
-  invProj : mat4x4<f32>,
+  ssao : vec4<f32>,  // (ssaoStrength, unused, unused, unused)
 };
 @group(0) @binding(2) var<uniform> params   : Params;
 @group(0) @binding(3) var bloomTex : texture_2d<f32>;
 @group(0) @binding(4) var ssaoTex  : texture_2d<f32>;
-@group(0) @binding(5) var depthTex : texture_depth_2d;
 
 struct VSOut {
   @builtin(position) clip : vec4<f32>,
@@ -56,28 +51,6 @@ fn luma(c : vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.299, 0.587, 0.114));
 }
 
-fn lipTone(c : vec3<f32>) -> f32 {
-  return smoothstep(0.26, 0.34, c.r - c.g)
-    * smoothstep(0.08, 0.16, c.g - c.b)
-    * (1.0 - smoothstep(0.68, 0.78, luma(c)));
-}
-
-fn sceneDepth(uv : vec2<f32>) -> f32 {
-  let size = vec2<i32>(textureDimensions(depthTex));
-  let coord = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1));
-  return textureLoad(depthTex, coord, 0);
-}
-
-fn viewPosition(uv : vec2<f32>, depth : f32) -> vec3<f32> {
-  let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-  let view = params.invProj * ndc;
-  return view.xyz / view.w;
-}
-
-fn isGeometry(depth : f32) -> f32 {
-  return select(1.0, 0.0, depth >= 0.9999);
-}
-
 @fragment
 fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
@@ -94,110 +67,8 @@ fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_diffuse(in : VSOut) -> @location(0) vec4<f32> {
-  return vec4<f32>(linearToSRGB(textureSample(src, samp, in.uv).rgb), 1.0);
-}
-
-@fragment
 fn fs_copy(in : VSOut) -> @location(0) vec4<f32> {
   return textureSample(src, samp, in.uv);
-}
-
-// Bitmoji-style cel treatment. Silhouettes come from depth occupancy at a
-// wider radius; interior lines combine relative depth, depth-derived normals,
-// and a Sobel color edge so texture-authored facial details stay visible.
-@fragment
-fn fs_cel(in : VSOut) -> @location(0) vec4<f32> {
-  let center = textureSample(src, samp, in.uv);
-  let innerStep = params.data.xy * max(params.ssao.z, 0.5);
-  let outerStep = innerStep * max(params.toon.w, 1.0);
-
-  let dC = sceneDepth(in.uv);
-  let object = isGeometry(dC);
-
-  let oL  = isGeometry(sceneDepth(in.uv + vec2<f32>(-outerStep.x, 0.0)));
-  let oR  = isGeometry(sceneDepth(in.uv + vec2<f32>( outerStep.x, 0.0)));
-  let oU  = isGeometry(sceneDepth(in.uv + vec2<f32>(0.0, -outerStep.y)));
-  let oD  = isGeometry(sceneDepth(in.uv + vec2<f32>(0.0,  outerStep.y)));
-  let oUL = isGeometry(sceneDepth(in.uv + vec2<f32>(-outerStep.x, -outerStep.y)));
-  let oUR = isGeometry(sceneDepth(in.uv + vec2<f32>( outerStep.x, -outerStep.y)));
-  let oDL = isGeometry(sceneDepth(in.uv + vec2<f32>(-outerStep.x,  outerStep.y)));
-  let oDR = isGeometry(sceneDepth(in.uv + vec2<f32>( outerStep.x,  outerStep.y)));
-  let outerEdge = max(
-    max(max(abs(object - oL), abs(object - oR)), max(abs(object - oU), abs(object - oD))),
-    max(max(abs(object - oUL), abs(object - oUR)), max(abs(object - oDL), abs(object - oDR))),
-  );
-
-  let uvL  = in.uv + vec2<f32>(-innerStep.x, 0.0);
-  let uvR  = in.uv + vec2<f32>( innerStep.x, 0.0);
-  let uvU  = in.uv + vec2<f32>(0.0, -innerStep.y);
-  let uvD  = in.uv + vec2<f32>(0.0,  innerStep.y);
-  let uvUL = in.uv + vec2<f32>(-innerStep.x, -innerStep.y);
-  let uvUR = in.uv + vec2<f32>( innerStep.x, -innerStep.y);
-  let uvDL = in.uv + vec2<f32>(-innerStep.x,  innerStep.y);
-  let uvDR = in.uv + vec2<f32>( innerStep.x,  innerStep.y);
-
-  let dL = sceneDepth(uvL); let dR = sceneDepth(uvR);
-  let dU = sceneDepth(uvU); let dD = sceneDepth(uvD);
-  let dUL = sceneDepth(uvUL); let dUR = sceneDepth(uvUR);
-  let dDL = sceneDepth(uvDL); let dDR = sceneDepth(uvDR);
-  let pC = viewPosition(in.uv, dC);
-  let pL = viewPosition(uvL, dL); let pR = viewPosition(uvR, dR);
-  let pU = viewPosition(uvU, dU); let pD = viewPosition(uvD, dD);
-  let pUL = viewPosition(uvUL, dUL); let pUR = viewPosition(uvUR, dUR);
-  let pDL = viewPosition(uvDL, dDL); let pDR = viewPosition(uvDR, dDR);
-
-  let neighborsAreGeometry = min(min(isGeometry(dL), isGeometry(dR)), min(isGeometry(dU), isGeometry(dD)));
-  let depthScale = max(abs(pC.z), 1e-3);
-  let relativeDepth = max(
-    max(abs(pC.z - pL.z), abs(pC.z - pR.z)),
-    max(abs(pC.z - pU.z), abs(pC.z - pD.z)),
-  ) / depthScale;
-  let depthEdge = smoothstep(params.toon.x, params.toon.x * 3.0, relativeDepth) * object * neighborsAreGeometry;
-
-  let nC = normalize(cross(pR - pL, pD - pU));
-  let nL = normalize(cross(pC - pL, pDL - pUL));
-  let nR = normalize(cross(pR - pC, pDR - pUR));
-  let nU = normalize(cross(pUR - pUL, pC - pU));
-  let nD = normalize(cross(pDR - pDL, pD - pC));
-  let normalDelta = max(
-    max(1.0 - abs(dot(nC, nL)), 1.0 - abs(dot(nC, nR))),
-    max(1.0 - abs(dot(nC, nU)), 1.0 - abs(dot(nC, nD))),
-  );
-  let normalEdge = smoothstep(params.toon.y * 0.5, params.toon.y, normalDelta) * object * neighborsAreGeometry;
-
-  let cL = textureSample(src, samp, uvL).rgb; let cR = textureSample(src, samp, uvR).rgb;
-  let cU = textureSample(src, samp, uvU).rgb; let cD = textureSample(src, samp, uvD).rgb;
-  let cUL = textureSample(src, samp, uvUL).rgb; let cUR = textureSample(src, samp, uvUR).rgb;
-  let cDL = textureSample(src, samp, uvDL).rgb; let cDR = textureSample(src, samp, uvDR).rgb;
-  let sobelX = -cUL - 2.0 * cL - cDL + cUR + 2.0 * cR + cDR;
-  let sobelY = -cUL - 2.0 * cU - cUR + cDL + 2.0 * cD + cDR;
-  let colorDelta = (length(sobelX) + length(sobelY)) * 0.25;
-  let colorEdge = smoothstep(params.toon.z, params.toon.z * 2.5, colorDelta) * object;
-
-  // Preserve authored highlights. Warm facial details use brown ink; a broad
-  // lip-colored neighborhood suppresses generated mouth contours while a dark
-  // local contrast restores the texture-authored center seam.
-  let highlightProtection = smoothstep(0.72, 0.92, luma(center.rgb));
-  let warmColor = smoothstep(0.08, 0.2, center.r - center.b)
-    * smoothstep(0.03, 0.12, center.g - center.b);
-  let lipNeighbors = (
-    lipTone(cL) + lipTone(cR) + lipTone(cU) + lipTone(cD)
-    + lipTone(cUL) + lipTone(cUR) + lipTone(cDL) + lipTone(cDR)
-  ) * 0.125;
-  let lipProtection = lipTone(center.rgb) * smoothstep(0.2, 0.45, lipNeighbors);
-  let verticalContrast = (luma(cU) + luma(cD)) * 0.5 - luma(center.rgb);
-  let lipSeam = lipTone(center.rgb) * smoothstep(0.72, 0.9, lipNeighbors)
-    * smoothstep(0.008, 0.03, verticalContrast);
-  let innerEdge = max(depthEdge, max(normalEdge, colorEdge))
-    * 0.78 * (1.0 - highlightProtection) * (1.0 - lipProtection);
-  let innerAmount = clamp(innerEdge * params.ssao.w, 0.0, 1.0);
-  let outerAmount = clamp(outerEdge * params.ssao.w, 0.0, 1.0);
-  let brownInk = vec3<f32>(0.34, 0.15, 0.09);
-  let detailInk = mix(params.outline.rgb, brownInk, warmColor);
-  let authored = mix(center.rgb, brownInk, lipSeam * 0.9);
-  let detailed = mix(authored, detailInk, innerAmount);
-  return vec4<f32>(mix(detailed, params.outline.rgb, outerAmount), center.a);
 }
 
 // Weighted-blended OIT resolve: src = accum (rgb*aw, aw), bloomTex.r = revealage.

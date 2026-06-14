@@ -481,3 +481,13 @@ rest" — to the remaining programmable surfaces.
    (`describe()`/`report()`), and verifiable without a human looking at pixels
    (deterministic rendering + readback). Error messages name the offending object and
    the one-line fix.
+7. **The engine stays generic — no use cases in `src/`.** The engine ships general,
+   composable primitives and knows nothing about any specific look, art style, game, or
+   asset. Cel/comic shading, outlines, a named avatar's face, water, terrain — these are
+   *applications* and live in app code (e.g. `examples/gltf-viewer/comic.ts`), built on
+   `ShaderMaterial` / `ShaderPass` / `ComputeTask`. No shader branch keyed to an asset,
+   no renderer flag named after a look (`celShading`, `outline*`, `toon*`, `anime*`), no
+   magic numbers tuned for one scene. If an app can't express a use case, that is an API
+   gap: surface it and fill it with a *standard, general* capability any app could use —
+   never by teaching the engine the use case. See docs/ARCHITECTURE.md → "The engine
+   stays generic."

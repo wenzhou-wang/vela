@@ -8,8 +8,11 @@
 
 const PASS_HEADER = /* wgsl */ `
 struct PassParams {
-  resolution : vec4<f32>,  // xy = pixels, zw = 1/pixels
-  time       : vec4<f32>,  // x = elapsed seconds
+  resolution : vec4<f32>,    // xy = pixels, zw = 1/pixels
+  time       : vec4<f32>,    // x = elapsed seconds
+  proj       : mat4x4<f32>,  // camera projection
+  invProj    : mat4x4<f32>,  // inverse projection (depth -> view space)
+  camera     : vec4<f32>,    // x = near, y = far
 };
 
 @group(0) @binding(0) var sceneTex : texture_2d<f32>;
@@ -39,6 +42,14 @@ fn sceneDepth(uv : vec2<f32>) -> f32 {
   let dim = vec2<i32>(pp.resolution.xy);
   let px = clamp(vec2<i32>(uv * pp.resolution.xy), vec2<i32>(0), dim - vec2<i32>(1));
   return textureLoad(depthTex, px, 0);
+}
+
+// View-space position from a UV + non-linear depth (for normal reconstruction,
+// SSAO-style effects, fog, depth of field, ...).
+fn viewPosition(uv : vec2<f32>, depth : f32) -> vec3<f32> {
+  let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+  let view = pp.invProj * ndc;
+  return view.xyz / view.w;
 }
 `;
 
