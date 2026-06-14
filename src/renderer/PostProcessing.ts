@@ -23,6 +23,9 @@ interface ShaderPassResources {
   textureSig: string;
 }
 
+/** Output transform applied at the end of the post chain. */
+export type ToneMapping = 'aces' | 'none';
+
 export interface PostOptions {
   fxaa: boolean;
   bloom: boolean;
@@ -30,6 +33,8 @@ export interface PostOptions {
   bloomIntensity: number;
   ssao: boolean;
   ssaoStrength: number;
+  /** 'aces' = filmic curve (default); 'none' = sRGB-only (flat/stylized). */
+  toneMapping: ToneMapping;
 }
 
 /**
@@ -698,7 +703,11 @@ export class PostProcessing {
     }
 
     const ssaoView = opts.ssao ? this.ssaoAView : this.dummyWhiteView;
-    const baseEntry = opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
+    // 'none' skips the filmic curve (bloom is filmic-paired, so it only adds
+    // under ACES); otherwise pick the bloom/plain ACES tonemap.
+    const baseEntry = opts.toneMapping === 'none'
+      ? 'fs_linear'
+      : opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
     if (opts.fxaa) {
       this.pass(encoder, baseEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);

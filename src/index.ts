@@ -72,6 +72,7 @@ export { SpotLight } from './lights/SpotLight';
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';
 export type { RendererOptions, PixelData } from './renderer/WebGPURenderer';
+export type { ToneMapping } from './renderer/PostProcessing';
 export { diagnoseScene } from './renderer/diagnose';
 export type { Diagnostic, DiagnoseState } from './renderer/diagnose';
 export { describeScene } from './core/describe';

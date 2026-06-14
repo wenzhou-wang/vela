@@ -36,7 +36,7 @@ import { LINE_SHADER } from './shaders/line.wgsl';
 import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
-import { PostProcessing } from './PostProcessing';
+import { PostProcessing, type ToneMapping } from './PostProcessing';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
 import { HIZ_COPY_SHADER, HIZ_DOWN_SHADER } from './shaders/hiz.wgsl';
@@ -288,6 +288,12 @@ export class WebGPURenderer {
   bloom = false;
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
+  /**
+   * Output transform for the post pipeline: `'aces'` filmic (default) or
+   * `'none'` for sRGB-only output (flat/stylized looks). Applies when
+   * `postProcessing` is on.
+   */
+  toneMapping: ToneMapping = 'aces';
   /**
    * Custom fullscreen post effects, run in order in HDR linear space before
    * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
@@ -1057,6 +1063,7 @@ export class WebGPURenderer {
         bloomIntensity: this.bloomIntensity,
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
+        toneMapping: this.toneMapping,
       }, postInput);
     }
     // Save this frame's unjittered view-projection for next frame's TAA

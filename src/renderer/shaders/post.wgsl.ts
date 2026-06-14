@@ -66,6 +66,16 @@ fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(linearToSRGB(acesFilmic(hdr + bloom)), 1.0);
 }
 
+// No-tonemap output: exposure already applied upstream; just sRGB-encode (with
+// the SSAO multiply, like the tonemap entries). For flat/stylized looks that
+// should not get the filmic curve.
+@fragment
+fn fs_linear(in : VSOut) -> @location(0) vec4<f32> {
+  let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
+  let hdr = textureSample(src, samp, in.uv).rgb * ao;
+  return vec4<f32>(linearToSRGB(hdr), 1.0);
+}
+
 @fragment
 fn fs_copy(in : VSOut) -> @location(0) vec4<f32> {
   return textureSample(src, samp, in.uv);

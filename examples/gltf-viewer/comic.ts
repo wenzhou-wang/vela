@@ -14,6 +14,7 @@
  */
 import {
   Object3D, Mesh, StandardMaterial, ShaderMaterial, ShaderPass, Texture, Color,
+  type ToneMapping,
 } from 'vela';
 
 // Flat unlit albedo: no lit diffuse/specular; emissive carries the base color.
@@ -109,7 +110,7 @@ export class ComicEffect {
   private whiteTex: Texture | null = null;
   private active = false;
 
-  constructor(private renderer: { passes: ShaderPass[]; postProcessing: boolean }) {
+  constructor(private renderer: { passes: ShaderPass[]; postProcessing: boolean; toneMapping: ToneMapping }) {
     this.outlinePass = new ShaderPass({
       name: 'comic-outline',
       effect: OUTLINE_EFFECT,
@@ -171,6 +172,8 @@ export class ComicEffect {
     });
     this.outlinePass.enabled = true;
     this.renderer.postProcessing = true;
+    // Flat comic fill should not get the filmic curve (it washes the colors out).
+    this.renderer.toneMapping = 'none';
     this.active = true;
   }
 
@@ -178,6 +181,7 @@ export class ComicEffect {
     for (const [mesh, original] of this.swapped) mesh.material = original;
     this.swapped.clear();
     this.outlinePass.enabled = false;
+    if (this.active) this.renderer.toneMapping = 'aces';
     this.active = false;
   }
 
