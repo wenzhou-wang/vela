@@ -466,6 +466,132 @@ rest" — to the remaining programmable surfaces.
 
 ---
 
+## v0.10 — Generic hooks that unblock NPR ⬜
+
+Cel/comic/anime looks are **applications**, not engine features (principle #7): they live
+in app code on `ShaderMaterial` / `ShaderPass` / `ComputeTask`, as the gltf-viewer's
+`comic.*` already demonstrates. This tier is the inverse of the now-removed `celShading`
+flag — it closes the *general* API gaps those apps hit, with capabilities any renderer
+client could use, never a built-in style.
+
+- ⬜ **Lighting terms inside `ShaderMaterial`** — a custom `surface()` today gets material
+      inputs but not the lit result; toon ramps, wrap, and posterized highlights have to
+      re-derive lighting. Expose the engine's per-light evaluation (per-light N·L, visibility
+      from the shadow/cluster path, ambient/IBL split) to a custom shade function so an app
+      can remap it however it likes — generic, not a ramp baked into the engine.
+- ⬜ **Normal / linear-depth targets for `ShaderPass`** — `sceneColor()`/`sceneDepth()`
+      exist; add an opt-in world/view **normal** buffer (and linearized depth) so app-side
+      edge detection, outlines, and SSAO-like effects don't reconstruct normals from depth
+      derivatives. A general G-buffer-lite, useful well beyond NPR.
+- ⬜ **Shell / inverted-hull draw** — a general "draw back-faces extruded along the normal"
+      capability (one render-state variant), the standard primitive behind outline shells,
+      fur, and selection highlights. Configured per-mesh as data; the *outline look* stays
+      in app code, the *shell draw* is the engine capability.
+- ⬜ **1-D ramp / LUT texture ergonomics** — verify gradient (1×N) textures work cleanly as
+      `ShaderMaterial`/`ShaderPass` texture uniforms with a `ramp(t)` sampling helper, so
+      app-authored toon ramps, gradient maps, and color LUTs need no boilerplate. If
+      they don't, that's the API gap to fill.
+
+## v0.11 — Advanced lighting & global illumination ⬜
+
+The lighting model tops out at punctual lights + a single environment. Real scenes want
+local reflections and bounced light. Each item leans on existing GPU machinery (clustered
+binning, the IBL prefilter compute path, RenderTarget cube capture).
+
+- ⬜ **Screen-space reflections (SSR)** — the `envParams.w` bit-2 SSR slot is already
+      reserved. Implement an HDR-space ray march against the depth buffer (reuse the hi-Z
+      pyramid built for occlusion culling for cheap long marches), fall back to the IBL
+      specular probe on miss/off-screen, composite before tonemap. Requires
+      `postProcessing = true`, `sampleCount = 1`.
+- ⬜ **Reflection probes** — `ReflectionProbe` captures the scene into a cubemap via six
+      RenderTarget passes (reusing the RTT pipeline), runs it through `IBLPrefilter` for
+      mip-prefiltered specular, and blends the nearest probes per-cluster so local rooms
+      reflect their own walls instead of the global env. Static (baked once) and
+      `every-N-frames` refresh modes.
+- ⬜ **Diffuse GI via irradiance probes** — a grid of SH-L2 probes (captured + projected
+      on the GPU), trilinearly sampled in `shadeSurface()` to replace flat ambient with
+      bounced light. Bake offline (deterministic mode makes this reproducible) and
+      serialize the coefficients through `SceneSerializer`.
+- ⬜ **Cascaded shadow maps (CSM)** — the directional shadow auto-fits one frustum to the
+      whole scene, which starves large worlds of resolution. Split the view frustum into
+      3–4 logarithmic cascades, each with its own light matrix into atlas tiles (the spot/
+      point atlas already proves the tiling), selected per-fragment by view depth with a
+      blend band across the seam.
+- ⬜ **Volumetric fog & light shafts** — a froxel (frozen-frustum voxel) compute pass that
+      ray-marches the existing fog + per-light scattering into a 3-D `rgba16float` volume,
+      then composites it in `applyFog()`. Reuses clustered light lists for the in-scatter
+      loop; god-rays come free from shadow-map occlusion along the march.
+
+## v0.12 — Cinematic camera & color ⬜
+
+Camera-domain effects and final-image control — the layer between a correct render and a
+shot. All slot into the existing HDR post chain before/after tonemap.
+
+- ⬜ **Motion vectors → motion blur** — emit a per-pixel velocity target (current vs.
+      previous clip position, including skinned/instanced transforms) in the scene pass;
+      this also upgrades TAA from camera-only reprojection to true per-object reprojection,
+      killing the current ghosting on moving meshes. A tile-max + reconstruction post pass
+      gives per-object motion blur.
+- ⬜ **Depth of field** — a circle-of-confusion pass from depth + physical
+      aperture/focus-distance, near/far blurred with a bokeh kernel (reuse the half-res
+      Gaussian targets from bloom for the cheap path).
+- ⬜ **Color grading & display transforms** — `renderer.toneMapping` already selects the
+      output transform (`'aces'` filmic / `'none'` linear); extend it with an **AgX**
+      operator and add a **3-D LUT** node (`.cube`) plus lift/gamma/gain + saturation as
+      cheap analytic ops in the post chain. Keeps the "linear output" flag contract so
+      material shaders stay tonemap-agnostic.
+- ⬜ **Lens & exposure** — **auto-exposure** (a compute histogram of the HDR target →
+      adapted EV, smoothed over time; deterministic mode pins it), plus vignette,
+      chromatic aberration, and an optional lens-flare/bloom-streak — all small
+      `ShaderPass`-shaped effects gated on `postProcessing`.
+
+## v0.13 — Animation systems ⬜
+
+Playback exists (`AnimationMixer`); authoring runtime motion does not. This tier makes the
+mixer a real animation system, staying data-first so an agent can wire state without a UI.
+
+- ⬜ **Blending & cross-fade** — weighted multi-clip blending, `crossFadeTo(clip, dur)`,
+      and **additive layers** (e.g. a wave on top of a walk) on the mixer; per-bone masks
+      so an upper-body action overrides only its joints.
+- ⬜ **Blend trees / state machine** — a declarative `{ states, transitions, parameters }`
+      graph (1-D/2-D blend spaces by a `speed`/`direction` param), evaluated to mixer
+      weights each frame; introspectable via `describe()` so the active state is readable.
+- ⬜ **Two-bone IK** — analytic limb IK (foot/hand targets, pole vector) applied after the
+      mixer writes the pose, for foot-planting and look-at; offline-verifiable as pure math.
+- ⬜ **Animation events** — time-stamped callbacks on clips (footstep, hit-frame) fired by
+      the mixer, so gameplay can hang off the timeline without polling.
+
+## v0.14 — Geometry detail & world scale ⬜
+
+Surface and world-building detail the renderer currently can't express.
+
+- ⬜ **Decals** — projector-box decals composited in a deferred-style screen pass (or
+      mesh-clipped for the forward path), reading the depth buffer to wrap onto opaque
+      geometry — bullet holes, blood, signage — without editing the target mesh.
+- ⬜ **Parallax occlusion mapping** — a height-map ray-march in the fragment stage as an
+      opt-in material flag (one more material-uniform bit), for deep brick/stone without
+      the triangle count.
+- ⬜ **Terrain / heightfield** — a `Terrain` node: GPU-clipmap or quadtree LOD heightfield
+      with splat-mapped material layers, built on the existing LOD + instancing primitives.
+- ⬜ **Trails & ribbons** — a `TrailRenderer` that extrudes a camera-facing strip along an
+      object's motion history (GPU-updated ring buffer, like the particle pool), for
+      sword arcs, tracers, and motion streaks.
+
+## Beyond — under consideration ⬜
+
+Bigger bets that need a design pass before they earn a tier. Listed so the trajectory is
+visible, not committed.
+
+- ⬜ **WebXR** — a stereo/multiview render path (instanced two-eye draw) and XR input,
+      the largest deviation from the single-camera assumption baked through the renderer.
+- ⬜ **GPU-driven scene submission** — push culling → indirect draw further toward a fully
+      GPU-built draw list (per-meshlet culling) once WebGPU exposes the needed primitives.
+- ⬜ **Node/clip-graph editor surface for agents** — not a visual editor (explicitly out
+      of scope), but a structured, `describe()`-style read/write API over post chains and
+      animation graphs so an agent can edit the pipeline as data and diff the result.
+
+---
+
 ## Design principles (don't regress these)
 
 1. **One modern path.** No `#ifdef`-style capability forks; target WebGPU's baseline.
@@ -491,3 +617,9 @@ rest" — to the remaining programmable surfaces.
    gap: surface it and fill it with a *standard, general* capability any app could use —
    never by teaching the engine the use case. See docs/ARCHITECTURE.md → "The engine
    stays generic."
+8. **Colors are structured values, not CSS hex.** Public color inputs take a `Color`
+   (or a plain `vec3`/`vec4`/number-array) — explicit channels in a known color space —
+   never a packed `0xRRGGBB` integer. Hex hides the color space and isn't introspectable
+   as data; `Color.setHex()` stays available as an opt-in sRGB convenience, but it is not
+   the API surface. New color-touching work (color grading, lights, materials) must
+   accept and report colors this way.
