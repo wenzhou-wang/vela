@@ -102,6 +102,7 @@ export { SceneSerializer } from './loaders/SceneSerializer';
 // animation
 export { AnimationClip } from './animation/AnimationClip';
 export { AnimationMixer } from './animation/AnimationMixer';
+export { AnimationAction } from './animation/AnimationAction';
 export { KeyframeTrack } from './animation/KeyframeTrack';
 export type { InterpolationMode, TrackPath } from './animation/KeyframeTrack';
 

@@ -551,9 +551,19 @@ shot. All slot into the existing HDR post chain before/after tonemap.
 Playback exists (`AnimationMixer`); authoring runtime motion does not. This tier makes the
 mixer a real animation system, staying data-first so an agent can wire state without a UI.
 
-- ⬜ **Blending & cross-fade** — weighted multi-clip blending, `crossFadeTo(clip, dur)`,
-      and **additive layers** (e.g. a wave on top of a walk) on the mixer; per-bone masks
-      so an upper-body action overrides only its joints.
+- ✅ **Blending & cross-fade** — the mixer is action-based: each clip runs as an
+      `AnimationAction` (own time/weight/loop/mask). `update()` samples every enabled action
+      and blends per (node, path) — weighted average for translation/scale/morph weights,
+      hemisphere-aligned normalized weighted sum (nlerp) for rotation. `mixer.add(clip, w)`,
+      `mixer.crossFadeTo(clip, dur)` (fades the new action 0→1 while current actions fade out
+      and prune), and `action.setMask(targets)` per-bone masks (e.g. an upper-body action
+      over a full-body walk). `KeyframeTrack.evaluate(time, out)` was split out from `sample`
+      so tracks feed the blend without touching the node; single-clip `play(clip)` is
+      unchanged. Bindings are cached, so a steady action set allocates nothing per frame.
+      Offline-verified (average / weighted / nlerp / crossfade-prune / mask).
+- ⬜ **Additive layers** — an `additive` action mode that adds a clip's delta from a
+      reference pose on top of the blended base (e.g. a recoil or breathing layer), rather
+      than averaging into it. Needs a reference-pose capture; builds on the action model.
 - ⬜ **Blend trees / state machine** — a declarative `{ states, transitions, parameters }`
       graph (1-D/2-D blend spaces by a `speed`/`direction` param), evaluated to mixer
       weights each frame; introspectable via `describe()` so the active state is readable.

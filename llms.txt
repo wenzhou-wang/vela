@@ -589,16 +589,36 @@ A named set of keyframe tracks with a shared duration.
 - duration: number
 
 ### class AnimationMixer
-Plays one `AnimationClip` at a time, sampling its tracks into the target nodes each `update`. Lightweight by design — enough to drive glTF transform and skeletal animation in the viewer.
-- clip: AnimationClip | null
-- time: number
-- timeScale: number
+Plays and blends `AnimationClip`s. Each clip runs as an `AnimationAction` with its own time/weight; the mixer samples every enabled action and blends the results per (node, path) by weight — weighted average for translation/ scale/morph weights, normalized weighted sum (nlerp) for rotation. Bindings are cached, so a steady action set costs no per-frame allocation.
+- actions: AnimationAction[]
+- timeScale: number — Global speed multiplier applied on top of each action's `timeScale`.
+- paused: boolean
+- loop: boolean — Default loop mode applied to actions created by `play`.
+- play(clip: AnimationClip): AnimationMixer — Play `clip` exclusively at full weight (replaces any current actions).
+- add(clip: AnimationClip, weight?: number): AnimationAction — Add another clip as an action (for blending); returns it for tuning.
+- crossFadeTo(clip: AnimationClip, duration: number): AnimationAction — Cross-fade to `clip` over `duration` seconds: the new action fades in from 0→1 while every currently-enabled action fades out to 0 (and is pruned once gone).
+- stop(): AnimationMixer
+- clip: AnimationClip | null — The primary (first) action's clip, or null — for single-clip callers.
+- time: number — The primary (first) action's time, or 0.
+- setTime(t: number): AnimationMixer — Jump every action to absolute time `t` (seconds) and re-blend.
+- update(dt: number): void — Advance all actions by `dt` seconds, then blend them into the targets.
+
+### class AnimationAction
+One playing instance of an `AnimationClip` inside an `AnimationMixer`: its own playback time, weight, and (optional) per-bone mask. The mixer blends all enabled actions by weight each frame. Drive playback through the mixer; tweak `weight` / `timeScale` / `loop` directly, or use `fadeTo` for ramps.
+- new AnimationAction(clip: AnimationClip)
+- clip: AnimationClip
+- weight: number — Blend weight; the mixer normalizes across enabled actions.
+- time: number — Playback time in seconds.
+- timeScale: number — Per-action speed multiplier (combined with the mixer's `timeScale`).
 - loop: boolean
 - paused: boolean
-- play(clip: AnimationClip): AnimationMixer
-- stop(): AnimationMixer
-- setTime(time: number): AnimationMixer — Jump to an absolute time (seconds) and sample.
-- update(dt: number): void — Advance by `dt` seconds and sample all tracks.
+- enabled: boolean — Disabled actions are skipped by the blend and pruned once faded to 0.
+- mask: Set<Object3D> | null — When set, only tracks targeting a node in this set contribute — a per-bone mask (e.g.
+- setMask(targets: Object3D[] | null): AnimationAction — Restrict this action to the given target nodes (per-bone mask).
+- fadeTo(target: number, duration: number): AnimationAction — Ramp `weight` toward `target` over `duration` seconds (0 = instant).
+- fadeIn(duration: number): AnimationAction
+- fadeOut(duration: number): AnimationAction
+- advanceFade(dt: number): boolean — Advance any active weight ramp by `dt`; returns true while still fading.
 
 ### class KeyframeTrack
 A single animated channel: keyframe `times` driving one transform `path` (translation/scale = vec3, rotation = quaternion) of a target node.
@@ -611,6 +631,7 @@ A single animated channel: keyframe `times` driving one transform `path` (transl
 - stride: number — Components per value: 3 for translation/scale, 4 for rotation, or the morph-target count for weights (supplied via `valueSize`).
 - duration: number
 - sample(time: number): void — Evaluate at `time` and write the result into the target transform.
+- evaluate(time: number, out: Float32Array<ArrayBufferLike>): void — Evaluate at `time` into `out` (length ≥ `stride`) as raw components — translation/scale = xyz, rotation = xyzw (unit), weights = per-target — without touching the target node.
 
 ### class Vector2
 - new Vector2(x: number, y: number)
