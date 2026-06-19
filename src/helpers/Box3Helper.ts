@@ -2,6 +2,7 @@ import { LineSegments } from '../core/LineSegments';
 import { BufferGeometry } from '../core/BufferGeometry';
 import { BufferAttribute } from '../core/BufferAttribute';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
+import { Color, type ColorInput } from '../math/Color';
 import type { Box3 } from '../math/Box3';
 
 // The 12 edges of a box as pairs of corner indices (corner bit n = axis n max).
@@ -13,7 +14,7 @@ const EDGES = [
 
 /** A wireframe box outlining a {@link Box3}; call {@link update} to re-fit. */
 export class Box3Helper extends LineSegments {
-  constructor(box: Box3, color = 0xffff00) {
+  constructor(box: Box3, color: ColorInput = new Color(1, 1, 0)) {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(new Float32Array(EDGES.length * 2 * 3), 3));
     super(geometry, new LineBasicMaterial({ color }));

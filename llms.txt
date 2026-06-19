@@ -348,7 +348,7 @@ A declarative GPU compute job: WGSL plus named storage/uniform buffers, with aut
 
 ### class GridHelper extends LineSegments
 A wireframe grid on the XZ plane, centered at the origin. The two center lines (the X and Z axes) use `centerColor`; the rest use `gridColor`.
-- new GridHelper(size: number, divisions: number, centerColor: number, gridColor: number)
+- new GridHelper(size: number, divisions: number, centerColor: ColorInput, gridColor: ColorInput)
 
 ### class AxesHelper extends LineSegments
 Three lines from the origin: +X red, +Y green, +Z blue.
@@ -356,18 +356,18 @@ Three lines from the origin: +X red, +Y green, +Z blue.
 
 ### class Box3Helper extends LineSegments
 A wireframe box outlining a {@link Box3}; call {@link update} to re-fit.
-- new Box3Helper(box: Box3, color: number)
+- new Box3Helper(box: Box3, color: ColorInput)
 - update(box: Box3): void — Rebuild the edge positions from `box` (in the box's own coordinate space).
 
 ### class DirectionalLightHelper extends LineSegments
 A square at the light's position plus a line pointing toward its target. Add it to the scene root and call {@link update} each frame to track the light.
-- new DirectionalLightHelper(light: DirectionalLight, size: number, color: number | undefined)
+- new DirectionalLightHelper(light: DirectionalLight, size: number, color: ColorInput | undefined)
 - light: DirectionalLight
 - update(): void — Re-position/orient the gizmo from the light's current transform.
 
 ### class PointLightHelper extends LineSegments
 A small octahedron wireframe at the point light's position.
-- new PointLightHelper(light: PointLight, size: number, color: number | undefined)
+- new PointLightHelper(light: PointLight, size: number, color: ColorInput | undefined)
 - light: PointLight
 - update(): void — Re-position the gizmo at the light and refresh its color.
 
@@ -416,26 +416,26 @@ A GPU block-compressed texture (BC7 / ASTC 4×4 / ETC2). Uploaded directly to th
 
 ### class Light extends Object3D
 Base light: a colored, intensity-scaled emitter in the scene graph.
-- new Light(color: number | Color, intensity: number)
+- new Light(color: ColorInput | undefined, intensity: number)
 - isLight: true
 - color: Color
 - intensity: number
 
 ### class AmbientLight extends Light
 Uniform ambient fill applied equally to all surfaces.
-- new AmbientLight(color: number | Color, intensity: number)
+- new AmbientLight(color: ColorInput | undefined, intensity: number)
 - isAmbientLight: true
 
 ### class DirectionalLight extends Light
 A light infinitely far away, casting parallel rays toward its target.
-- new DirectionalLight(color: number | Color, intensity: number)
+- new DirectionalLight(color: ColorInput | undefined, intensity: number)
 - isDirectionalLight: true
 - target: Object3D — Direction is from this object's world position toward the target.
 - castShadow: boolean — When true and `renderer.shadows` is on, this light casts a shadow map.
 
 ### class PointLight extends Light
 An omnidirectional light with physically-based inverse-square falloff.
-- new PointLight(color: number | Color, intensity: number, distance: number, decay: number)
+- new PointLight(color: ColorInput | undefined, intensity: number, distance: number, decay: number)
 - isPointLight: true
 - distance: number — Maximum range of influence; 0 = infinite.
 - decay: number — Additional falloff exponent (2 = physically correct).
@@ -443,7 +443,7 @@ An omnidirectional light with physically-based inverse-square falloff.
 
 ### class SpotLight extends Light
 A cone-shaped light with perspective falloff, angular attenuation, and optional shadow mapping. Direction is from this object's world position toward `target`.
-- new SpotLight(color: number | Color, intensity: number, distance: number, angle: number, penumbra: number, decay: number)
+- new SpotLight(color: ColorInput | undefined, intensity: number, distance: number, angle: number, penumbra: number, decay: number)
 - isSpotLight: true
 - angle: number — Half-angle of the light cone in radians (default = 60° full → PI/3 half).
 - penumbra: number — Fraction of `angle` used for the penumbra (soft edge).
@@ -465,9 +465,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - bloom: boolean — Apply bloom in the post pipeline (only when `postProcessing` is on).
 - bloomThreshold: number
 - bloomIntensity: number
-- celShading: boolean — Unlit diffuse rendering with depth, normal, and color-derived outlines.
-- outlineThickness: number — Screen-space outline radius in device pixels.
-- outlineStrength: number — Blend strength for outer silhouettes and interior feature lines.
+- toneMapping: ToneMapping — Output transform for the post pipeline: `'aces'` filmic (default) or `'none'` for sRGB-only output (flat/stylized looks).
 - passes: ShaderPass[] — Custom fullscreen post effects, run in order in HDR linear space before tonemap (requires `postProcessing`).
 - oit: boolean — Order-independent transparency (weighted-blended).
 - ssao: boolean — Screen-space ambient occlusion.
@@ -748,6 +746,7 @@ A linear-space RGB color. Hex/CSS inputs are assumed sRGB and converted.
 - copy(c: Color): Color
 - clone(): Color
 - setHex(hex: number): Color — Set from a packed 0xRRGGBB integer (sRGB), converting to linear.
+- setFrom(value: ColorInput): Color — Copy from a {@link Color}, or read linear channels from an `[r, g, b]` array.
 - setRGB(r: number, g: number, b: number): Color — Set directly in linear space (no conversion).
 - getHex(): number
 - multiplyScalar(s: number): Color
@@ -940,10 +939,10 @@ export type TypedArray =
 ### StandardMaterialParams
 ```ts
 export interface StandardMaterialParams {
-  color?: Color | number;
+  color?: ColorInput;
   metalness?: number;
   roughness?: number;
-  emissive?: Color | number;
+  emissive?: ColorInput;
   emissiveIntensity?: number;
   map?: Texture | null;
   normalMap?: Texture | null;
@@ -962,20 +961,20 @@ export interface StandardMaterialParams {
   clearcoatRoughnessMap?: Texture | null;
   ior?: number;
   specularIntensity?: number;
-  specularColor?: Color | number;
-  sheenColor?: Color | number;
+  specularColor?: ColorInput;
+  sheenColor?: ColorInput;
   sheenRoughness?: number;
   transmission?: number;
   thickness?: number;
   attenuationDistance?: number;
-  attenuationColor?: Color | number;
+  attenuationColor?: ColorInput;
 }
 ```
 
 ### LineBasicMaterialParams
 ```ts
 export interface LineBasicMaterialParams {
-  color?: Color | number;
+  color?: ColorInput;
   vertexColors?: boolean;
   transparent?: boolean;
   opacity?: number;
@@ -1082,6 +1081,12 @@ export interface PixelData {
   width: number;
   height: number;
 }
+```
+
+### ToneMapping
+Output transform applied at the end of the post chain.
+```ts
+export type ToneMapping = 'aces' | 'none';
 ```
 
 ### Diagnostic
@@ -1288,4 +1293,10 @@ export type TrackPath = 'translation' | 'rotation' | 'scale' | 'weights';
 ### EulerOrder
 ```ts
 export type EulerOrder = 'XYZ' | 'YXZ' | 'ZXY' | 'ZYX' | 'YZX' | 'XZY';
+```
+
+### ColorInput
+Anything accepted where a color is expected: a {@link Color}, or a linear `[r, g, b]` (optionally `[r, g, b, a]`) array. Packed `0xRRGGBB` hex is deliberately not accepted — use `new Color().setHex(...)` to opt into sRGB hex.
+```ts
+export type ColorInput = Color | readonly number[];
 ```

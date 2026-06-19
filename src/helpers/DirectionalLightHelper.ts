@@ -3,6 +3,7 @@ import { BufferGeometry } from '../core/BufferGeometry';
 import { BufferAttribute } from '../core/BufferAttribute';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { Vector3 } from '../math/Vector3';
+import type { ColorInput } from '../math/Color';
 import type { DirectionalLight } from '../lights/DirectionalLight';
 
 const _pos = new Vector3();
@@ -17,7 +18,7 @@ export class DirectionalLightHelper extends LineSegments {
   /** When false, the gizmo color is fixed; otherwise it follows the light color. */
   private readonly trackColor: boolean;
 
-  constructor(light: DirectionalLight, size = 1, color?: number) {
+  constructor(light: DirectionalLight, size = 1, color?: ColorInput) {
     const h = size / 2;
     // square in the XY plane (4 edges) + a -Z direction line. `lookAt` (non-camera
     // convention) leaves -Z pointing toward the target, so the line aims at it.

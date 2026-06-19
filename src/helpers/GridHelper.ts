@@ -2,18 +2,23 @@ import { LineSegments } from '../core/LineSegments';
 import { BufferGeometry } from '../core/BufferGeometry';
 import { BufferAttribute } from '../core/BufferAttribute';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
-import { Color } from '../math/Color';
+import { Color, type ColorInput } from '../math/Color';
 
 /**
  * A wireframe grid on the XZ plane, centered at the origin. The two center lines
  * (the X and Z axes) use `centerColor`; the rest use `gridColor`.
  */
 export class GridHelper extends LineSegments {
-  constructor(size = 10, divisions = 10, centerColor = 0x888888, gridColor = 0x444444) {
+  constructor(
+    size = 10,
+    divisions = 10,
+    centerColor: ColorInput = new Color().setHex(0x888888),
+    gridColor: ColorInput = new Color().setHex(0x444444),
+  ) {
     const step = size / divisions;
     const half = size / 2;
-    const center = new Color().setHex(centerColor);
-    const grid = new Color().setHex(gridColor);
+    const center = new Color().setFrom(centerColor);
+    const grid = new Color().setFrom(gridColor);
 
     const positions: number[] = [];
     const colors: number[] = [];

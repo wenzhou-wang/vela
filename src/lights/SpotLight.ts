@@ -1,6 +1,6 @@
 import { Light } from './Light';
 import { Object3D } from '../core/Object3D';
-import { Color } from '../math/Color';
+import type { ColorInput } from '../math/Color';
 
 /**
  * A cone-shaped light with perspective falloff, angular attenuation, and
@@ -23,7 +23,7 @@ export class SpotLight extends Light {
   readonly target: Object3D;
 
   constructor(
-    color: number | Color = 0xffffff,
+    color?: ColorInput,
     intensity = 1,
     distance = 0,
     angle = Math.PI / 3,

@@ -3,6 +3,7 @@ import { BufferGeometry } from '../core/BufferGeometry';
 import { BufferAttribute } from '../core/BufferAttribute';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { Vector3 } from '../math/Vector3';
+import type { ColorInput } from '../math/Color';
 import type { PointLight } from '../lights/PointLight';
 
 const _pos = new Vector3();
@@ -12,7 +13,7 @@ export class PointLightHelper extends LineSegments {
   readonly light: PointLight;
   private readonly trackColor: boolean;
 
-  constructor(light: PointLight, size = 0.5, color?: number) {
+  constructor(light: PointLight, size = 0.5, color?: ColorInput) {
     // Octahedron: 6 vertices on the axes, 12 edges.
     const r = size;
     const px = [r, 0, 0], nx = [-r, 0, 0];

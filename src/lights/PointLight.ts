@@ -1,5 +1,5 @@
 import { Light } from './Light';
-import { Color } from '../math/Color';
+import type { ColorInput } from '../math/Color';
 
 /** An omnidirectional light with physically-based inverse-square falloff. */
 export class PointLight extends Light {
@@ -11,7 +11,7 @@ export class PointLight extends Light {
   /** Render this light's shadow into the cube-face shadow atlas (requires `renderer.shadows`). */
   castShadow = false;
 
-  constructor(color: number | Color = 0xffffff, intensity = 1, distance = 0, decay = 2) {
+  constructor(color?: ColorInput, intensity = 1, distance = 0, decay = 2) {
     super(color, intensity);
     this.type = 'PointLight';
     this.distance = distance;

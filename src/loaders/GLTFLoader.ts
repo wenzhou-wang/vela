@@ -139,7 +139,11 @@ export class GLTFLoader {
     const images = preloaded?.images ?? await this.loadImages(json, baseUrl, buffers);
     const textures = await this.buildTextures(json, images, buffers);
     const materials = (json.materials ?? []).map((m) => this.buildMaterial(m, textures));
-    if (materials.length === 0) materials.push(new StandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.8 }));
+    if (materials.length === 0) {
+      const fallback = new StandardMaterial({ metalness: 0.1, roughness: 0.8 });
+      fallback.color.setRGB(0.6, 0.6, 0.6);
+      materials.push(fallback);
+    }
 
     if (this.dracoDecoder?.ready) await this.dracoDecoder.ready;
     const ctx: BuildContext = {

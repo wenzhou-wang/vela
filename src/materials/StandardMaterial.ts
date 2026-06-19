@@ -1,12 +1,12 @@
 import { Material } from './Material';
-import { Color } from '../math/Color';
+import { Color, type ColorInput } from '../math/Color';
 import type { Texture } from '../textures/Texture';
 
 export interface StandardMaterialParams {
-  color?: Color | number;
+  color?: ColorInput;
   metalness?: number;
   roughness?: number;
-  emissive?: Color | number;
+  emissive?: ColorInput;
   emissiveIntensity?: number;
   map?: Texture | null;
   normalMap?: Texture | null;
@@ -32,9 +32,9 @@ export interface StandardMaterialParams {
   /** Dielectric specular strength [0,1] (KHR_materials_specular). */
   specularIntensity?: number;
   /** Dielectric specular tint (KHR_materials_specular). */
-  specularColor?: Color | number;
+  specularColor?: ColorInput;
   /** Sheen tint (KHR_materials_sheen); black (default) disables sheen. */
-  sheenColor?: Color | number;
+  sheenColor?: ColorInput;
   /** Sheen roughness [0,1] (KHR_materials_sheen). */
   sheenRoughness?: number;
   /** Transmission factor [0,1] (KHR_materials_transmission). */
@@ -44,7 +44,7 @@ export interface StandardMaterialParams {
   /** Attenuation distance (KHR_materials_volume); 0 = none. */
   attenuationDistance?: number;
   /** Attenuation color (KHR_materials_volume). */
-  attenuationColor?: Color | number;
+  attenuationColor?: ColorInput;
 }
 
 /**
@@ -125,9 +125,8 @@ export class StandardMaterial extends Material {
     if (params.attenuationColor !== undefined) this.setColor(this.attenuationColor, params.attenuationColor);
   }
 
-  private setColor(target: Color, value: Color | number): void {
-    if (typeof value === 'number') target.setHex(value);
-    else target.copy(value);
+  private setColor(target: Color, value: ColorInput): void {
+    target.setFrom(value);
   }
 
   /** Bitmask describing which texture maps are present (drives shader variants). */

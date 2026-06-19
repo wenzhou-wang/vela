@@ -6,6 +6,13 @@ function linearToSRGB(c: number): number {
   return c < 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 0.41666) - 0.055;
 }
 
+/**
+ * Anything accepted where a color is expected: a {@link Color}, or a linear
+ * `[r, g, b]` (optionally `[r, g, b, a]`) array. Packed `0xRRGGBB` hex is
+ * deliberately not accepted — use `new Color().setHex(...)` to opt into sRGB hex.
+ */
+export type ColorInput = Color | readonly number[];
+
 /** A linear-space RGB color. Hex/CSS inputs are assumed sRGB and converted. */
 export class Color {
   r: number;
@@ -42,6 +49,12 @@ export class Color {
     this.g = srgbToLinear(((hex >> 8) & 255) / 255);
     this.b = srgbToLinear((hex & 255) / 255);
     return this;
+  }
+
+  /** Copy from a {@link Color}, or read linear channels from an `[r, g, b]` array. */
+  setFrom(value: ColorInput): this {
+    if (value instanceof Color) return this.copy(value);
+    return this.fromArray(value);
   }
 
   /** Set directly in linear space (no conversion). */

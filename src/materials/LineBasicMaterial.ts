@@ -1,8 +1,8 @@
 import { Material } from './Material';
-import { Color } from '../math/Color';
+import { Color, type ColorInput } from '../math/Color';
 
 export interface LineBasicMaterialParams {
-  color?: Color | number;
+  color?: ColorInput;
   /** Multiply the base color by the geometry's per-vertex `color` attribute. */
   vertexColors?: boolean;
   transparent?: boolean;
@@ -23,10 +23,7 @@ export class LineBasicMaterial extends Material {
 
   constructor(params: LineBasicMaterialParams = {}) {
     super();
-    if (params.color !== undefined) {
-      if (typeof params.color === 'number') this.color.setHex(params.color);
-      else this.color.copy(params.color);
-    }
+    if (params.color !== undefined) this.color.setFrom(params.color);
     if (params.vertexColors !== undefined) this.vertexColors = params.vertexColors;
     if (params.transparent !== undefined) this.transparent = params.transparent;
     if (params.opacity !== undefined) this.opacity = params.opacity;

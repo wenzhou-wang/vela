@@ -103,19 +103,19 @@ const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 
 // ---- Lighting rig ----
-const key = new DirectionalLight(0xfff4e6, 3.0);
+const key = new DirectionalLight(new Color().setHex(0xfff4e6), 3.0);
 key.position.set(5, 8, 6);
 scene.add(key, key.target);
 
-const fill = new DirectionalLight(0xa9c7ff, 1.1);
+const fill = new DirectionalLight(new Color().setHex(0xa9c7ff), 1.1);
 fill.position.set(-6, 3, -4);
 scene.add(fill, fill.target);
 
-const rim = new PointLight(0xffffff, 12, 30, 2);
+const rim = new PointLight(new Color().setHex(0xffffff), 12, 30, 2);
 rim.position.set(-3, 4, -5);
 scene.add(rim);
 
-const ambient = new AmbientLight(0x6677aa, 0.4);
+const ambient = new AmbientLight(new Color().setHex(0x6677aa), 0.4);
 scene.add(ambient);
 
 // ---- Default showcase scene (until a model is loaded) ----
@@ -157,7 +157,7 @@ function buildShowcase(): Object3D {
       const roughness = Math.max(0.05, j / (cols - 1));
       const sphere = new Mesh(
         new SphereGeometry(0.42, 48, 32),
-        new StandardMaterial({ color: 0x9aa7ff, metalness, roughness }),
+        new StandardMaterial({ color: new Color().setHex(0x9aa7ff), metalness, roughness }),
       );
       sphere.position.set((j - (cols - 1) / 2) * 1.1, (i - (rows - 1) / 2) * 1.1 + 0.4, 0);
       group.add(sphere);
@@ -417,7 +417,7 @@ document.getElementById('instDemo')!.addEventListener('click', () => {
   const group = new Object3D();
   const inst = new InstancedMesh(
     new BoxGeometry(0.55, 0.55, 0.55),
-    new StandardMaterial({ color: 0x88aaff, metalness: 0.7, roughness: 0.3 }),
+    new StandardMaterial({ color: new Color().setHex(0x88aaff), metalness: 0.7, roughness: 0.3 }),
     n,
   );
   const m = new Matrix4();

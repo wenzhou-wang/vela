@@ -1,6 +1,6 @@
 import { Light } from './Light';
 import { Object3D } from '../core/Object3D';
-import { Color } from '../math/Color';
+import type { ColorInput } from '../math/Color';
 
 /** A light infinitely far away, casting parallel rays toward its target. */
 export class DirectionalLight extends Light {
@@ -10,7 +10,7 @@ export class DirectionalLight extends Light {
   /** When true and `renderer.shadows` is on, this light casts a shadow map. */
   castShadow = false;
 
-  constructor(color: number | Color = 0xffffff, intensity = 1) {
+  constructor(color?: ColorInput, intensity = 1) {
     super(color, intensity);
     this.type = 'DirectionalLight';
     this.position.set(0, 1, 0);

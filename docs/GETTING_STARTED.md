@@ -41,15 +41,15 @@ const controls = new OrbitControls(camera, canvas);
 // 3. A PBR mesh
 const mesh = new Mesh(
   new SphereGeometry(1, 48, 32),
-  new StandardMaterial({ color: 0x4f9dff, metalness: 0.2, roughness: 0.35 }),
+  new StandardMaterial({ color: new Color().setHex(0x4f9dff), metalness: 0.2, roughness: 0.35 }),
 );
 scene.add(mesh);
 
 // 4. Lights
-const key = new DirectionalLight(0xffffff, 3);
+const key = new DirectionalLight(new Color().setHex(0xffffff), 3);
 key.position.set(5, 8, 6);
 scene.add(key, key.target);
-scene.add(new AmbientLight(0x6677aa, 0.4));
+scene.add(new AmbientLight(new Color().setHex(0x6677aa), 0.4));
 
 // 5. Render loop
 function frame() {
@@ -104,6 +104,8 @@ onResize();
 - **Transparency**: set `material.transparent = true`; transparent meshes are drawn after
   opaque ones, back-to-front.
 - **Double-sided**: `material.side = 'double'`. **Alpha cutout**: `material.alphaTest = 0.5`.
+- **Colors**: every color input takes a `Color` or a linear `[r, g, b]` array — never a
+  packed `0xRRGGBB` integer. For sRGB hex, opt in explicitly: `new Color().setHex(0x4f9dff)`.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the renderer works under the hood, and
 [../ROADMAP.md](../ROADMAP.md) for what's planned.
