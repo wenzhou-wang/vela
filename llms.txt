@@ -163,6 +163,18 @@ A GPU-simulated particle emitter: a compute pass integrates a fixed-capacity poo
 - options: ParticleSystemOptions
 - emitting: boolean — Pause emission (existing particles keep simulating).
 
+### class TrailRenderer extends Mesh
+A ribbon that trails an object's motion: each `update(cameraPosition)` samples `target`'s world position into a fixed-capacity history and rebuilds a camera-facing triangle strip through it (world space — keep the trail itself at the scene root). Reuses the standard mesh path, so any `Material` works; drive it from your loop like `controls.update()`. Geometry is offline-verifiable.
+- new TrailRenderer(options: TrailOptions)
+- isTrail: true
+- target: Object3D — Emitter sampled each update.
+- maxPoints: number
+- width: number
+- widthTail: number
+- minDistance: number
+- reset(): void — Clear the history (the ribbon disappears until points accumulate again).
+- update(cameraPosition: Vector3): void — Sample `target`, append a point if it moved far enough, and rebuild the ribbon.
+
 ### class Sprite extends Object3D
 A camera-facing textured quad. World-space by default (sized in world units, depth-tested against the scene — labels, pickups, billboards); set `screenSpace = true` for HUD elements sized in CSS pixels and drawn on top of everything.
 - new Sprite(texture: Texture | null)
@@ -950,6 +962,17 @@ export interface ParticleSystemOptions {
   color?: Color | [Color, Color];
   opacity?: number | [number, number];
   blending?: 'additive' | 'alpha';
+}
+```
+
+### TrailOptions
+```ts
+export interface TrailOptions {
+  material?: Material;
+  maxPoints?: number;
+  width?: number;
+  widthTail?: number;
+  minDistance?: number;
 }
 ```
 

@@ -600,9 +600,13 @@ Surface and world-building detail the renderer currently can't express.
       the triangle count.
 - ⬜ **Terrain / heightfield** — a `Terrain` node: GPU-clipmap or quadtree LOD heightfield
       with splat-mapped material layers, built on the existing LOD + instancing primitives.
-- ⬜ **Trails & ribbons** — a `TrailRenderer` that extrudes a camera-facing strip along an
-      object's motion history (GPU-updated ring buffer, like the particle pool), for
-      sword arcs, tracers, and motion streaks.
+- ✅ **Trails & ribbons** — `TrailRenderer` (a `Mesh`) samples `target`'s world position
+      into a fixed-capacity history each `update(cameraPosition)` and rebuilds a camera-facing
+      triangle strip through it (central-difference tangent × view → ribbon side), with width
+      taper (`width`→`widthTail`) and length-wise UVs. Reuses the standard mesh path (any
+      `Material`); spare index quads stay degenerate so the draw count is constant and
+      allocation-free per frame. For sword arcs, tracers, motion streaks. Offline-verified
+      (strip positions, UVs, billboard normal, taper, ring buffer, degenerate fill).
 
 ## Beyond — under consideration ⬜
 

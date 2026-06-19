@@ -21,6 +21,8 @@ export { SkinnedMesh } from './core/SkinnedMesh';
 export { InstancedMesh } from './core/InstancedMesh';
 export { ParticleSystem } from './core/ParticleSystem';
 export type { ParticleSystemOptions } from './core/ParticleSystem';
+export { TrailRenderer } from './core/TrailRenderer';
+export type { TrailOptions } from './core/TrailRenderer';
 export { Sprite } from './core/Sprite';
 export { LOD } from './core/LOD';
 export { TextMesh } from './core/TextMesh';
