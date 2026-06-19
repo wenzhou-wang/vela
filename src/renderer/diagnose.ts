@@ -29,6 +29,7 @@ export interface DiagnoseState {
   sampleCount: number;
   oit: boolean;
   ssao: boolean;
+  ssr: boolean;
   taa: boolean;
   shadows: boolean;
   canvasWidth: number;
@@ -259,6 +260,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
   const needsPost: Array<[string, boolean]> = [
     ['oit', state.oit],
     ['ssao', state.ssao],
+    ['ssr', state.ssr],
     ['taa', state.taa],
   ];
   for (const [flag, enabled] of needsPost) {
@@ -269,7 +271,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
         fix: 'Set renderer.postProcessing = true.',
       });
     }
-    if (enabled && (flag === 'ssao' || flag === 'taa') && state.sampleCount !== 1) {
+    if (enabled && (flag === 'ssao' || flag === 'ssr' || flag === 'taa') && state.sampleCount !== 1) {
       out.push({
         severity: 'warning', code: `${flag}-needs-samplecount-1`,
         message: `renderer.${flag} requires sampleCount 1, but the renderer uses ${state.sampleCount}× MSAA — ${flag} is silently inactive.`,

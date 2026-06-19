@@ -199,7 +199,7 @@ export interface RenderReport {
   shadowDraws: number;
   /** Estimated GPU texture memory in bytes. */
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean };
   /** Actionable performance suggestions for the last frame (may be empty). */
   suggestions: PerfSuggestion[];
 }
@@ -320,6 +320,14 @@ export class WebGPURenderer {
   ssaoRadius = 0.5;
   ssaoBias = 0.025;
   ssaoStrength = 1.0;
+  /** Screen-space reflections. Requires `postProcessing = true` and `sampleCount = 1`. */
+  ssr = false;
+  /** Strength of the reflected HDR contribution. */
+  ssrIntensity = 0.5;
+  /** Maximum view-space ray length in world units. */
+  ssrMaxDistance = 50;
+  /** View-space hit tolerance in world units. */
+  ssrThickness = 0.2;
   /**
    * Temporal anti-aliasing: a sub-pixel Halton jitter is baked into the
    * projection matrix and a resolve pass blends the reprojected history
@@ -348,6 +356,8 @@ export class WebGPURenderer {
   private _jitterY = 0;
   private _prevViewProj = new Float32Array(16);
   private _invViewProj = new Matrix4();
+  private _jitteredProj = new Matrix4();
+  private _invJitteredProj = new Matrix4();
   /** Record the opaque draws into a render bundle to amortize encoding cost. */
   renderBundles = false;
   private opaqueBundle: GPURenderBundle | null = null;
@@ -874,7 +884,8 @@ export class WebGPURenderer {
     const rt = target ? this.getRenderTargetResources(target) : null;
     const usePost = this.postProcessing && !rt;
     this._usePost = usePost;
-    this._sceneInputs = usePost && this.passes.some((p) => p.enabled && p.inputs.length > 0);
+    const useSSR = this.ssr && usePost && this.sampleCount === 1 && !!this.depthSampleView;
+    this._sceneInputs = usePost && (useSSR || this.passes.some((p) => p.enabled && p.inputs.length > 0));
     this._renderWidth = target ? target.width : this.canvas.width;
     this._renderHeight = target ? target.height : this.canvas.height;
     // The scene pass renders into the HDR target when post-processing is on,
@@ -1033,6 +1044,12 @@ export class WebGPURenderer {
     }
 
     const useSSAO = this.ssao && usePost && this.sampleCount === 1 && !!this.depthSampleView;
+    // SSR needs the current frame's full hi-Z chain. Occlusion culling consumes
+    // the previous contents earlier in this command buffer, before this rebuild.
+    if (!rt && (useSSR || (this.gpuCulling && this.occlusionCulling)) &&
+        this.sampleCount === 1 && this.depthSampleView) {
+      this.buildHiZ(encoder);
+    }
     // Resolve the HDR target through the post chain into the swap chain.
     if (usePost) {
       if (useSSAO) {
@@ -1045,13 +1062,32 @@ export class WebGPURenderer {
           this.ssaoBias,
         );
       }
-      // TAA resolve: blend reprojected history into a ping-pong target that
-      // replaces the HDR view as the post-chain input.
-      let postInput: GPUTextureView | undefined;
+      let postInput = this.post.hdrTargetView;
+      if (useSSR) {
+        this._jitteredProj.fromArray(this.frameData, 16);
+        this._invJitteredProj.copy(this._jitteredProj).invert();
+        postInput = this.post.runSSR(
+          encoder,
+          postInput,
+          this.post.sceneNormalDepthView,
+          this.hizSampleView!,
+          {
+            proj: new Float32Array(this._jitteredProj.elements),
+            invProj: new Float32Array(this._invJitteredProj.elements),
+            view: new Float32Array(camera.matrixWorldInverse.elements),
+          },
+          this.ssrMaxDistance,
+          this.ssrThickness,
+          this.ssrIntensity,
+          this.hizMipCount,
+        );
+      }
+      // TAA resolve runs after SSR so its history stabilizes ray-march shimmer.
       if (useTAA) {
         this._invViewProj.copy(this._viewProjection).invert();
         postInput = this.post.runTAA(
           encoder,
+          postInput,
           this.depthSampleView!,
           this._prevViewProj,
           new Float32Array(this._invViewProj.elements),
@@ -1066,7 +1102,7 @@ export class WebGPURenderer {
         postInput = this.post.runShaderPasses(
           encoder,
           this.passes,
-          postInput ?? this.post.hdrTargetView,
+          postInput,
           this.depthSampleView ?? this.post.dummyDepth,
           this._sceneInputs ? this.post.sceneNormalDepthView : this.post.dummyNormalDepth,
           this.textures,
@@ -1094,12 +1130,6 @@ export class WebGPURenderer {
     // Save this frame's unjittered view-projection for next frame's TAA
     // reprojection (canvas renders only — offscreen cameras must not pollute it).
     if (!rt) this._prevViewProj.set(this._viewProjection.elements);
-
-    // Build the hi-Z pyramid from this frame's depth for next frame's occlusion
-    // cull (canvas renders only; needs sampleable depth → sampleCount 1).
-    if (!rt && this.gpuCulling && this.occlusionCulling && this.sampleCount === 1 && this.depthSampleView) {
-      this.buildHiZ(encoder);
-    }
 
     // Pending readPixels(): copy the final frame into a mappable buffer before
     // the swap texture is presented.
@@ -1201,6 +1231,7 @@ export class WebGPURenderer {
       flags: {
         postProcessing: this.postProcessing,
         clusteredLighting: this.clusteredLighting,
+        ssr: this.ssr && this.postProcessing && this.sampleCount === 1,
         msaa: this.sampleCount,
         shadows: this.shadows,
       },
@@ -1257,20 +1288,20 @@ export class WebGPURenderer {
     }
 
     // Post effects requested but post pipeline off (silently inactive).
-    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.colorLUT || this.passes.length > 0)) {
+    if (!this.postProcessing && (this.bloom || this.ssao || this.ssr || this.taa || this.oit || this.colorLUT || this.passes.length > 0)) {
       out.push({
         code: 'post-effect-inactive',
-        message: 'A post effect (bloom/ssao/taa/oit/colorLUT/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
+        message: 'A post effect (bloom/ssao/ssr/taa/oit/colorLUT/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
         fix: 'Set renderer.postProcessing = true, or disable the effect to avoid confusion.',
       });
     }
 
     // Heavy MSAA while features that need sampleCount 1 are requested.
-    if (this.sampleCount > 1 && (this.ssao || this.taa)) {
+    if (this.sampleCount > 1 && (this.ssao || this.ssr || this.taa)) {
       out.push({
         code: 'msaa-blocks-effect',
-        message: `sampleCount is ${this.sampleCount}× but SSAO/TAA require sampleCount 1 — those effects are inactive.`,
-        fix: 'Recreate the renderer with { sampleCount: 1 } to use SSAO/TAA (they include their own AA).',
+        message: `sampleCount is ${this.sampleCount}× but SSAO/SSR/TAA require sampleCount 1 — those effects are inactive.`,
+        fix: 'Recreate the renderer with { sampleCount: 1 } to use SSAO/SSR/TAA.',
       });
     }
 
@@ -1289,6 +1320,7 @@ export class WebGPURenderer {
       sampleCount: this.sampleCount,
       oit: this.oit,
       ssao: this.ssao,
+      ssr: this.ssr,
       taa: this.taa,
       shadows: this.shadows,
       canvasWidth: this.canvas.width,
@@ -2232,8 +2264,8 @@ export class WebGPURenderer {
   /**
    * Build the hi-Z max-depth pyramid from this frame's depth (mip 0 = copy of
    * depth, each finer→coarser mip = 2×2 max). Runs after the main pass; the
-   * result is consumed by next frame's cull. Records the viewProj it was built
-   * with so the cull can reproject against it.
+   * result is consumed immediately by SSR and by next frame's cull. Records the
+   * viewProj it was built with so the cull can reproject against it.
    */
   private buildHiZ(encoder: GPUCommandEncoder): void {
     if (this.sampleCount !== 1 || !this.depthSampleView) return;
@@ -2447,7 +2479,7 @@ export class WebGPURenderer {
     f[60] = this.envEnabled ? 1 : 0;
     f[61] = this.envIntensity;
     f[62] = this.envMaxMip;
-    // Bit 0: linear output; bit 1: IBL; bit 2: SSR.
+    // Bit 0: linear output; bit 1: IBL; bit 2: screen-space scene capture.
     // _usePost is false for render-target passes (direct pipeline, in-shader tonemap).
     f[63] = (this._usePost ? 1 : 0) |
       (this.iblActive ? 2 : 0) |

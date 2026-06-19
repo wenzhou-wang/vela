@@ -1,6 +1,7 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
+import { SSR_SHADER } from './shaders/ssr.wgsl';
 import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
 import { computeUniformLayout, packUniforms, type UniformLayout } from '../materials/ShaderMaterial';
@@ -79,6 +80,13 @@ export class PostProcessing {
   private taaFlip = false;
   private taaHistoryValid = false;
 
+  // Screen-space reflection pass.
+  private ssrModule: GPUShaderModule;
+  private ssrBindLayout: GPUBindGroupLayout;
+  private ssrParamsBuffer: GPUBuffer;
+  private ssrPipeline: GPURenderPipeline | null = null;
+  private nearestSampler: GPUSampler;
+
   private width = 0;
   private height = 0;
   private hdrMSAA: GPUTexture | null = null;
@@ -142,6 +150,7 @@ export class PostProcessing {
       ],
     });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    this.nearestSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest', mipmapFilter: 'nearest' });
     // 32 bytes: data + ssao parameter blocks.
     this.paramsBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
@@ -227,6 +236,22 @@ export class PostProcessing {
     });
     // prevViewProj(64) + invViewProj(64) + info(16) = 144 bytes
     this.taaParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    // Screen-space reflections: params + HDR scene + packed normal/depth + hi-Z.
+    this.ssrModule = device.createShaderModule({ code: SSR_SHADER, label: 'ssr' });
+    this.ssrBindLayout = device.createBindGroupLayout({
+      label: 'ssr',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
+      ],
+    });
+    // proj + invProj + view (192) + resolution (16) + ray params (16) = 224 bytes.
+    this.ssrParamsBuffer = device.createBuffer({ size: 224, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     // Custom ShaderPass group-0 layout: scene color + sampler + depth + params + normal/linear depth.
     this.passBindLayout = device.createBindGroupLayout({
@@ -548,6 +573,7 @@ export class PostProcessing {
    */
   runTAA(
     encoder: GPUCommandEncoder,
+    input: GPUTextureView,
     depthView: GPUTextureView,
     prevViewProj: Float32Array,
     invViewProj: Float32Array,
@@ -569,7 +595,7 @@ export class PostProcessing {
       layout: this.taaBindLayout,
       entries: [
         { binding: 0, resource: { buffer: this.taaParamsBuffer } },
-        { binding: 1, resource: this.hdrView },
+        { binding: 1, resource: input },
         { binding: 2, resource: historyView },
         { binding: 3, resource: depthView },
         { binding: 4, resource: this.sampler },
@@ -591,6 +617,60 @@ export class PostProcessing {
   /** Drop the TAA history (e.g. when TAA is toggled off) so re-enabling starts clean. */
   invalidateTAAHistory(): void {
     this.taaHistoryValid = false;
+  }
+
+  /** Ray-march the current HDR frame against its hi-Z depth and composite SSR hits. */
+  runSSR(
+    encoder: GPUCommandEncoder,
+    input: GPUTextureView,
+    normalDepthView: GPUTextureView,
+    hiZView: GPUTextureView,
+    camera: { proj: Float32Array; invProj: Float32Array; view: Float32Array },
+    maxDistance: number,
+    thickness: number,
+    intensity: number,
+    mipCount: number,
+  ): GPUTextureView {
+    const data = new Float32Array(56);
+    data.set(camera.proj, 0);
+    data.set(camera.invProj, 16);
+    data.set(camera.view, 32);
+    data.set([this.width, this.height, 1 / this.width, 1 / this.height], 48);
+    data.set([maxDistance, thickness, intensity, mipCount], 52);
+    this.device.queue.writeBuffer(this.ssrParamsBuffer, 0, data);
+
+    const output = input === this.passAView ? this.passBView : this.passAView;
+    const bindGroup = this.device.createBindGroup({
+      layout: this.ssrBindLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.ssrParamsBuffer } },
+        { binding: 1, resource: input },
+        { binding: 2, resource: normalDepthView },
+        { binding: 3, resource: hiZView },
+        { binding: 4, resource: this.sampler },
+        { binding: 5, resource: this.nearestSampler },
+      ],
+    });
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: output, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+    });
+    pass.setPipeline(this.getSSRPipeline());
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3);
+    pass.end();
+    return output;
+  }
+
+  private getSSRPipeline(): GPURenderPipeline {
+    if (this.ssrPipeline) return this.ssrPipeline;
+    this.ssrPipeline = this.device.createRenderPipeline({
+      label: 'ssr',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.ssrBindLayout] }),
+      vertex: { module: this.ssrModule, entryPoint: 'vs_main' },
+      fragment: { module: this.ssrModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    return this.ssrPipeline;
   }
 
   /**

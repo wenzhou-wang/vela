@@ -501,6 +501,10 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - ssaoRadius: number
 - ssaoBias: number
 - ssaoStrength: number
+- ssr: boolean — Screen-space reflections.
+- ssrIntensity: number — Strength of the reflected HDR contribution.
+- ssrMaxDistance: number — Maximum view-space ray length in world units.
+- ssrThickness: number — View-space hit tolerance in world units.
 - taa: boolean — Temporal anti-aliasing: a sub-pixel Halton jitter is baked into the projection matrix and a resolve pass blends the reprojected history (camera-motion only).
 - taaBlend: number — TAA blend factor: weight of the current frame (lower = smoother, more ghosting).
 - deterministic: boolean — Deterministic rendering: identical scenes produce identical pixels.
@@ -1219,6 +1223,7 @@ export interface DiagnoseState {
   sampleCount: number;
   oit: boolean;
   ssao: boolean;
+  ssr: boolean;
   taa: boolean;
   shadows: boolean;
   canvasWidth: number;
@@ -1262,7 +1267,7 @@ export interface RenderReport {
   sprites: { batches: number; instances: number };
   shadowDraws: number;
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; msaa: number; shadows: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean };
   suggestions: PerfSuggestion[];
 }
 ```

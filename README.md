@@ -65,6 +65,8 @@ Forward renderer, one pass:
 - **Post-processing** (opt-in) — render to an HDR offscreen target, then fullscreen passes
   (bloom, ACES tonemap, optional FXAA) resolve to the swap chain; custom `ShaderPass`
   effects can opt into packed world-normal + linear-depth scene data.
+- **Screen-space reflections** (opt-in) — HDR view-space ray marching against the shared
+  hi-Z depth pyramid, with IBL-lit PBR as the fallback for misses and off-screen rays.
 - **Order-independent transparency** (opt-in, weighted-blended) — accumulate + composite
   transparent fragments in the HDR pass to reduce sort artifacts.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
@@ -156,6 +158,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **ShaderPass scene inputs** — StandardMaterial and ShaderMaterial modules expose both
   single-target and packed normal/linear-depth MRT entries across all vertex variants;
   the pass wrapper parses with the normal/depth helpers and five group-0 bindings.
+- **SSR** — the HDR ray-march shader parses with six bindings and a 224-byte parameter
+  block; the shared current-frame hi-Z path remains compatible with next-frame occlusion.
 - **Shell / inverted-hull** — the per-object `Model` struct is 144 bytes with the shell
   thickness at offset 128; the PBR (static/skinned/morph), shadow, id, and Surface shaders
   all still parse with the enlarged model binding.

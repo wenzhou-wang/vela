@@ -104,6 +104,13 @@ and normalized linear depth in A (with an MSAA resolve when needed). Mesh pipeli
 switch to their `fs_scene` entry; non-mesh scene draws keep the attachment unchanged.
 Without a requested input, the render pass and pipeline keys remain single-target.
 
+`renderer.ssr` requests that target automatically and builds the current frame's hi-Z
+pyramid immediately after scene/OIT rendering. The SSR pass ray-marches in view space,
+writes to the HDR ping-pong target, then TAA consumes that result before custom
+`ShaderPass` effects and tonemapping. GPU occlusion culling still reads the pyramid's
+previous contents earlier in the command buffer, so the same allocation serves both
+features without a second depth hierarchy.
+
 ## Bind group layout
 
 Three bind groups, fixed across all pipelines so they bind once and stay stable:

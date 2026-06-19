@@ -519,11 +519,17 @@ The lighting model tops out at punctual lights + a single environment. Real scen
 local reflections and bounced light. Each item leans on existing GPU machinery (clustered
 binning, the IBL prefilter compute path, RenderTarget cube capture).
 
-- ⬜ **Screen-space reflections (SSR)** — the `envParams.w` bit-2 SSR slot is already
-      reserved. Implement an HDR-space ray march against the depth buffer (reuse the hi-Z
-      pyramid built for occlusion culling for cheap long marches), fall back to the IBL
-      specular probe on miss/off-screen, composite before tonemap. Requires
-      `postProcessing = true`, `sampleCount = 1`.
+- ✅ **Screen-space reflections (SSR)** — `renderer.ssr` adds a 48-step, quadratic-spaced
+      view-space ray march in HDR before TAA/custom passes/tonemap. It consumes the packed
+      world-normal target and the current frame's max-depth hi-Z pyramid (shared with
+      occlusion culling), chooses coarse mips from each step's screen footprint, then
+      binary-refines candidate hits at mip 0. Hits sample the HDR scene with edge/distance/
+      Schlick-Fresnel fading; miss/off-screen rays leave the original PBR result untouched,
+      preserving its IBL specular fallback. `ssrIntensity`, `ssrMaxDistance`, and
+      `ssrThickness` tune it. Requires `postProcessing = true`, `sampleCount = 1`; both
+      prerequisites are covered by `diagnose()`/performance suggestions. Offline-verified
+      (WGSL parse, six bindings, 224-byte params); TAA consumes the SSR result to stabilize
+      ray-march shimmer.
 - ⬜ **Reflection probes** — `ReflectionProbe` captures the scene into a cubemap via six
       RenderTarget passes (reusing the RTT pipeline), runs it through `IBLPrefilter` for
       mip-prefiltered specular, and blends the nearest probes per-cluster so local rooms

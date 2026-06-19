@@ -67,7 +67,7 @@ export const HEADER = FRAME_DEFS + /* wgsl */ `
 @group(0) @binding(10) var<storage, read> shadowTiles : array<ShadowTile>;
 @group(0) @binding(11) var spotAtlas    : texture_depth_2d;
 @group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
-@group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for SSR
+@group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for screen-space refraction
 @group(0) @binding(14) var<storage, read> clusterLights : array<u32>; // per-cluster light counts + indices
 
 struct VSOut {
@@ -635,15 +635,15 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
 
   // Transmission: refract through the surface, attenuate by Beer-Lambert volume.
-  // When SSR is active (bit 2 of envParams.w), sample the opaque scene capture at
+  // When screen-space scene sampling is active (bit 2 of envParams.w), sample the opaque scene capture at
   // a screen-space UV perturbed by the refraction direction; otherwise fall back to
   // the environment map.
   let transmissionFactor = material.transmission.x;
   if (transmissionFactor > 0.0) {
     let refr = refract(-V, N, 1.0 / max(ior, 1.0001));
     var background = frame.ambient.rgb;
-    let useSSR = (u32(frame.envParams.w) & 4u) != 0u;
-    if (useSSR) {
+    let useSceneCapture = (u32(frame.envParams.w) & 4u) != 0u;
+    if (useSceneCapture) {
       // Project (worldPos + refr * thickness) to screen UV and sample the opaque snapshot.
       let thickness = max(material.transmission.y, 0.05);
       let refractedWorld = in.worldPos + refr * thickness;

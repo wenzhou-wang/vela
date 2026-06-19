@@ -103,6 +103,8 @@ onResize();
   or `renderer.setPixelRatio(n)`.
 - **Transparency**: set `material.transparent = true`; transparent meshes are drawn after
   opaque ones, back-to-front.
+- **Screen-space reflections**: use `renderer.postProcessing = true`, `renderer.ssr = true`
+  with `sampleCount: 1`; tune `ssrIntensity`, `ssrMaxDistance`, and `ssrThickness`.
 - **Double-sided**: `material.side = 'double'`. **Alpha cutout**: `material.alphaTest = 0.5`.
 - **Colors**: every color input takes a `Color` or a linear `[r, g, b]` array — never a
   packed `0xRRGGBB` integer. For sRGB hex, opt in explicitly: `new Color().setHex(0x4f9dff)`.
