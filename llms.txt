@@ -345,6 +345,7 @@ A custom fullscreen post-processing effect. Push instances into `renderer.passes
 - enabled: boolean
 - name: string
 - uniforms: Record<string, UniformValue>
+- inputs: ShaderPassInput[] — Additional scene buffers this pass needs.
 - version: number — Bumped by `setEffect()`; part of the pipeline cache key.
 - id: string — Stable id for caching GPU resources.
 - effectCode: string
@@ -1102,9 +1103,16 @@ export type UniformValue = number | Vector2 | Vector3 | Vector4 | Color | Textur
 export interface ShaderPassOptions {
   effect: string;
   uniforms?: Record<string, UniformValue>;
+  inputs?: ShaderPassInput[];
   enabled?: boolean;
   name?: string;
 }
+```
+
+### ShaderPassInput
+Optional scene buffers a ShaderPass can request.
+```ts
+export type ShaderPassInput = 'normal' | 'linearDepth';
 ```
 
 ### ComputeTaskOptions

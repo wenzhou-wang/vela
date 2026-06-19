@@ -48,7 +48,7 @@ export type { LineBasicMaterialParams } from './materials/LineBasicMaterial';
 export { ShaderMaterial } from './materials/ShaderMaterial';
 export type { ShaderMaterialOptions, UniformValue } from './materials/ShaderMaterial';
 export { ShaderPass } from './renderer/ShaderPass';
-export type { ShaderPassOptions } from './renderer/ShaderPass';
+export type { ShaderPassOptions, ShaderPassInput } from './renderer/ShaderPass';
 export { ComputeTask, storage, uniform } from './renderer/ComputeTask';
 export type { ComputeTaskOptions, ComputeBinding, StorageBinding, UniformBinding } from './renderer/ComputeTask';
 

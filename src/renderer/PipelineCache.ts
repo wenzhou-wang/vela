@@ -213,11 +213,11 @@ export class PipelineCache {
   }
 
   /** Compile/cache the `line-list` pipeline for a line material's render state. */
-  getLine(material: LineBasicMaterial, format: GPUTextureFormat = this.format): GPURenderPipeline {
+  getLine(material: LineBasicMaterial, format: GPUTextureFormat = this.format, sceneInputs = false): GPURenderPipeline {
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
     const depthTest = material.depthTest ? 'dt1' : 'dt0';
-    const key = `line|${blend}|${depthWrite}|${depthTest}|${format}`;
+    const key = `line|${blend}|${depthWrite}|${depthTest}|${format}|si${sceneInputs ? 1 : 0}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -233,7 +233,7 @@ export class PipelineCache {
       label: key,
       layout: this.lineLayout,
       vertex: { module: this.lineModule, entryPoint: 'vs_main', buffers: LINE_VERTEX_BUFFER_LAYOUT },
-      fragment: { module: this.lineModule, entryPoint: 'fs_main', targets: [target] },
+      fragment: { module: this.lineModule, entryPoint: 'fs_main', targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }] : [target] },
       primitive: { topology: 'line-list' },
       depthStencil: {
         format: DEPTH_FORMAT,
@@ -347,6 +347,7 @@ export class PipelineCache {
     textureCount: number,
     label = 'ShaderMaterial',
     cullOverride?: GPUCullMode,
+    sceneInputs = false,
   ): GPURenderPipeline {
     const pipelineLayout = this.customPipelineLayout(variant, hasBuffer, textureCount);
     const cull = cullOverride ?? (material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back');
@@ -354,7 +355,7 @@ export class PipelineCache {
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
     const key = oit
       ? `cust|${cacheKey}|${variant}|${cull}|oit|sc${oitSampleCount}`
-      : `cust|${cacheKey}|${variant}|${cull}|${blend}|${depthWrite}|${format}`;
+      : `cust|${cacheKey}|${variant}|${cull}|${blend}|${depthWrite}|${format}|si${sceneInputs ? 1 : 0}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -420,7 +421,11 @@ export class PipelineCache {
           entryPoint: 'vs_main',
           buffers: variant === 'skinned' ? SKINNED_VERTEX_BUFFER_LAYOUT : VERTEX_BUFFER_LAYOUT,
         },
-        fragment: { module, entryPoint: 'fs_main', targets: [target] },
+        fragment: {
+          module,
+          entryPoint: sceneInputs ? 'fs_scene' : 'fs_main',
+          targets: sceneInputs ? [target, { format: 'rgba16float' }] : [target],
+        },
         primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
         depthStencil: {
           format: DEPTH_FORMAT,
@@ -438,8 +443,8 @@ export class PipelineCache {
    * Skybox pipeline: fullscreen triangle at depth 1, depth-tested (less-equal)
    * but not written, drawn inside the scene pass after the opaques.
    */
-  getSky(format: GPUTextureFormat): GPURenderPipeline {
-    const key = `sky|${format}`;
+  getSky(format: GPUTextureFormat, sceneInputs = false): GPURenderPipeline {
+    const key = `sky|${format}|si${sceneInputs ? 1 : 0}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -448,7 +453,7 @@ export class PipelineCache {
       label: key,
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.skyLayout] }),
       vertex: { module: this.skyModule, entryPoint: 'vs_sky' },
-      fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: [{ format }] },
+      fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: sceneInputs ? [{ format }, { format: 'rgba16float', writeMask: 0 }] : [{ format }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
       multisample: { count: this.sampleCount },
@@ -462,8 +467,8 @@ export class PipelineCache {
    * written, premultiplied blending — additive (one,one) or alpha
    * (one, one-minus-src-alpha).
    */
-  getParticles(format: GPUTextureFormat, additive: boolean): GPURenderPipeline {
-    const key = `particles|${format}|${additive ? 'add' : 'alpha'}`;
+  getParticles(format: GPUTextureFormat, additive: boolean, sceneInputs = false): GPURenderPipeline {
+    const key = `particles|${format}|${additive ? 'add' : 'alpha'}|si${sceneInputs ? 1 : 0}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -481,7 +486,7 @@ export class PipelineCache {
       label: key,
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.particleLayout] }),
       vertex: { module: this.particleModule, entryPoint: 'vs_main' },
-      fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: [{ format, blend }] },
+      fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: sceneInputs ? [{ format, blend }, { format: 'rgba16float', writeMask: 0 }] : [{ format, blend }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
       multisample: { count: this.sampleCount },
@@ -495,12 +500,19 @@ export class PipelineCache {
    * batches are depth-tested (no write), screen-space batches skip the depth
    * test entirely (HUD overlay).
    */
-  getSprites(format: GPUTextureFormat, screen: boolean): GPURenderPipeline {
-    const key = `sprites|${format}|${screen ? 'screen' : 'world'}`;
+  getSprites(format: GPUTextureFormat, screen: boolean, sceneInputs = false): GPURenderPipeline {
+    const key = `sprites|${format}|${screen ? 'screen' : 'world'}|si${sceneInputs ? 1 : 0}`;
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
     this.spriteModule ??= this.device.createShaderModule({ code: SPRITE_SHADER, label: 'sprites' });
+    const target: GPUColorTargetState = {
+      format,
+      blend: {
+        color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      },
+    };
     pipeline = this.device.createRenderPipeline({
       label: key,
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.spriteLayout] }),
@@ -508,13 +520,7 @@ export class PipelineCache {
       fragment: {
         module: this.spriteModule,
         entryPoint: 'fs_main',
-        targets: [{
-          format,
-          blend: {
-            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          },
-        }],
+        targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }] : [target],
       },
       primitive: { topology: 'triangle-list' },
       depthStencil: {
@@ -545,11 +551,11 @@ export class PipelineCache {
     });
   }
 
-  private keyFor(material: StandardMaterial, variant: PipelineVariant, format: GPUTextureFormat, cullOverride?: GPUCullMode): string {
+  private keyFor(material: StandardMaterial, variant: PipelineVariant, format: GPUTextureFormat, cullOverride?: GPUCullMode, sceneInputs = false): string {
     const cull = cullOverride ?? (material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back');
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
-    return `${variant}|${cull}|${blend}|${depthWrite}|${format}`;
+    return `${variant}|${cull}|${blend}|${depthWrite}|${format}|si${sceneInputs ? 1 : 0}`;
   }
 
   /**
@@ -557,8 +563,8 @@ export class PipelineCache {
    * `cullOverride` forces a cull mode regardless of `material.side` — used by
    * the shell pass to draw back faces ('front' cull) of the extruded hull.
    */
-  get(material: StandardMaterial, variant: PipelineVariant = 'static', format: GPUTextureFormat = this.format, cullOverride?: GPUCullMode): GPURenderPipeline {
-    const key = this.keyFor(material, variant, format, cullOverride);
+  get(material: StandardMaterial, variant: PipelineVariant = 'static', format: GPUTextureFormat = this.format, cullOverride?: GPUCullMode, sceneInputs = false): GPURenderPipeline {
+    const key = this.keyFor(material, variant, format, cullOverride, sceneInputs);
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 
@@ -583,8 +589,8 @@ export class PipelineCache {
       },
       fragment: {
         module,
-        entryPoint: 'fs_main',
-        targets: [target],
+        entryPoint: sceneInputs ? 'fs_scene' : 'fs_main',
+        targets: sceneInputs ? [target, { format: 'rgba16float' }] : [target],
       },
       primitive: {
         topology: 'triangle-list',

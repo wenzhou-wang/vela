@@ -57,6 +57,7 @@ export class PostProcessing {
   private dummyView: GPUTextureView;
   private dummyWhiteView: GPUTextureView;
   private dummyDepthView: GPUTextureView;
+  private dummyNormalDepthView: GPUTextureView;
 
   // SSAO resources
   private ssaoModule: GPUShaderModule;
@@ -107,6 +108,9 @@ export class PostProcessing {
   private passAView!: GPUTextureView;
   private passB: GPUTexture | null = null;
   private passBView!: GPUTextureView;
+  private normalDepthMSAA: GPUTexture | null = null;
+  private normalDepth: GPUTexture | null = null;
+  private normalDepthView: GPUTextureView | null = null;
   private passBindLayout: GPUBindGroupLayout;
   private passParamsBuffer: GPUBuffer;
 
@@ -174,6 +178,21 @@ export class PostProcessing {
     depthPass.end();
     device.queue.submit([depthEncoder.finish()]);
 
+    const dummyNormalDepth = device.createTexture({
+      size: [1, 1], format: HDR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.dummyNormalDepthView = dummyNormalDepth.createView();
+    const normalEncoder = device.createCommandEncoder();
+    const normalPass = normalEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: this.dummyNormalDepthView,
+        loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      }],
+    });
+    normalPass.end();
+    device.queue.submit([normalEncoder.finish()]);
+
     // Dummy scene-capture (1×1) — replaced by ensureSize(); keeps sceneCaptureView valid.
     const capDummy = device.createTexture({
       size: [1, 1], format: HDR_FORMAT,
@@ -209,7 +228,7 @@ export class PostProcessing {
     // prevViewProj(64) + invViewProj(64) + info(16) = 144 bytes
     this.taaParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-    // Custom ShaderPass group-0 layout: scene color + sampler + depth + params.
+    // Custom ShaderPass group-0 layout: scene color + sampler + depth + params + normal/linear depth.
     this.passBindLayout = device.createBindGroupLayout({
       label: 'shaderpass',
       entries: [
@@ -217,11 +236,11 @@ export class PostProcessing {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
-    // resolution(16) + time(16) = 32 bytes
-    // resolution + time (32) + proj (64) + invProj (64) + camera near/far (16) = 176.
-    this.passParamsBuffer = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // resolution + time (32) + proj/invProj/view (192) + camera near/far (16) = 240.
+    this.passParamsBuffer = device.createBuffer({ size: 240, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     // Color-grading LUT pass (3-D texture needs its own bind layout).
     this.lutModule = device.createShaderModule({ code: LUT_SHADER, label: 'lut' });
@@ -318,6 +337,11 @@ export class PostProcessing {
     this.passAView = this.passA.createView();
     this.passB = attach(HDR_FORMAT, [w, h]);
     this.passBView = this.passB.createView();
+    this.normalDepthMSAA?.destroy();
+    this.normalDepth?.destroy();
+    this.normalDepthMSAA = null;
+    this.normalDepth = null;
+    this.normalDepthView = null;
   }
 
   /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
@@ -325,6 +349,9 @@ export class PostProcessing {
 
   /** A 1×1 cleared depth view, for passes that have no real scene depth. */
   get dummyDepth(): GPUTextureView { return this.dummyDepthView; }
+
+  /** A 1×1 (zero normal, far depth) view used when no pass requests scene inputs. */
+  get dummyNormalDepth(): GPUTextureView { return this.dummyNormalDepthView; }
 
   /** View of the HDR snapshot taken before transparent draws (screen-space refraction). */
   get sceneCaptureView(): GPUTextureView { return this._sceneCaptureView; }
@@ -418,6 +445,31 @@ export class PostProcessing {
     return this.sampleCount > 1
       ? { view: this.hdrMSAA!.createView(), resolveTarget: this.hdrView, loadOp: 'clear', storeOp: 'store', clearValue }
       : { view: this.hdrView, loadOp: 'clear', storeOp: 'store', clearValue };
+  }
+
+  /** Lazily allocate and return the packed world-normal + linear-depth scene attachment. */
+  sceneNormalDepthAttachment(): GPURenderPassColorAttachment {
+    if (!this.normalDepth) {
+      this.normalDepth = this.device.createTexture({
+        size: [this.width, this.height], format: HDR_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.normalDepthView = this.normalDepth.createView();
+      if (this.sampleCount > 1) {
+        this.normalDepthMSAA = this.device.createTexture({
+          size: [this.width, this.height], format: HDR_FORMAT, sampleCount: this.sampleCount,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+      }
+    }
+    const clearValue = { r: 0, g: 0, b: 0, a: 1 };
+    return this.sampleCount > 1
+      ? { view: this.normalDepthMSAA!.createView(), resolveTarget: this.normalDepthView!, loadOp: 'clear', storeOp: 'store', clearValue }
+      : { view: this.normalDepthView!, loadOp: 'clear', storeOp: 'store', clearValue };
+  }
+
+  get sceneNormalDepthView(): GPUTextureView {
+    return this.normalDepthView ?? this.dummyNormalDepthView;
   }
 
   /**
@@ -553,20 +605,22 @@ export class PostProcessing {
     passes: ShaderPass[],
     input: GPUTextureView,
     depthView: GPUTextureView,
+    normalDepthView: GPUTextureView,
     textures: TextureManager,
     time: number,
-    camera: { proj: Float32Array; invProj: Float32Array; near: number; far: number },
+    camera: { proj: Float32Array; invProj: Float32Array; view: Float32Array; near: number; far: number },
   ): GPUTextureView {
     const active = passes.filter((p) => p.enabled);
     if (active.length === 0) return input;
 
-    // PassParams: resolution(4) + time(4) + proj(16) + invProj(16) + camera(4) = 44 floats.
-    const params = new Float32Array(44);
+    // PassParams: resolution(4) + time(4) + proj/invProj/view(48) + camera(4) = 60 floats.
+    const params = new Float32Array(60);
     params.set([this.width, this.height, 1 / this.width, 1 / this.height, time, 0, 0, 0], 0);
     params.set(camera.proj, 8);
     params.set(camera.invProj, 24);
-    params[40] = camera.near;
-    params[41] = camera.far;
+    params.set(camera.view, 40);
+    params[56] = camera.near;
+    params[57] = camera.far;
     this.device.queue.writeBuffer(this.passParamsBuffer, 0, params);
 
     let src = input;
@@ -586,6 +640,7 @@ export class PostProcessing {
           { binding: 1, resource: this.sampler },
           { binding: 2, resource: depthView },
           { binding: 3, resource: { buffer: this.passParamsBuffer } },
+          { binding: 4, resource: normalDepthView },
         ],
       });
       const rp = encoder.beginRenderPass({

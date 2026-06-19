@@ -99,7 +99,12 @@ fn defaultIndirect(s : Surface, ind : IndirectSample) -> vec3<f32> {
 // exposure/tonemap and OIT weighting so ShaderMaterial meshes composite
 // identically to StandardMaterial ones in every render path.
 const SURFACE_SHADE = /* wgsl */ `
-fn smShade(in : VSOut, frontFacing : bool) -> vec4<f32> {
+struct ShadedSurface {
+  color : vec4<f32>,
+  normal : vec3<f32>,
+};
+
+fn smShade(in : VSOut, frontFacing : bool) -> ShadedSurface {
   var s = surface(in);
   var N = normalize(s.normal);
   if (!frontFacing) { N = -N; }
@@ -132,19 +137,45 @@ fn smShade(in : VSOut, frontFacing : bool) -> vec4<f32> {
   color = color + velaIndirect(s, ind);
   color = color + s.emissive;
   color = applyFog(color, in.worldPos);
-  return vec4<f32>(color, clamp(s.alpha, 0.0, 1.0));
+  var out : ShadedSurface;
+  out.color = vec4<f32>(color, clamp(s.alpha, 0.0, 1.0));
+  out.normal = N;
+  return out;
 }
 
 @fragment
 fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
   let s = smShade(in, frontFacing);
-  var color = s.rgb * frame.ambient.w; // exposure
+  var color = s.color.rgb * frame.ambient.w; // exposure
   // envParams.w bit 0: linear output (post pipeline tonemaps later).
   if ((u32(frame.envParams.w) & 1u) == 0u) {
     color = acesFilmic(color);
     color = linearToSRGB(color);
   }
-  return vec4<f32>(color, s.a);
+  return vec4<f32>(color, s.color.a);
+}
+
+struct SceneOut {
+  @location(0) color : vec4<f32>,
+  @location(1) normalDepth : vec4<f32>,
+};
+
+@fragment
+fn fs_scene(in : VSOut, @builtin(front_facing) frontFacing : bool) -> SceneOut {
+  let s = smShade(in, frontFacing);
+  var color = s.color.rgb * frame.ambient.w;
+  if ((u32(frame.envParams.w) & 1u) == 0u) {
+    color = linearToSRGB(acesFilmic(color));
+  }
+  let viewDepth = -(frame.view * vec4<f32>(in.worldPos, 1.0)).z;
+  let linearDepth = clamp(
+    (viewDepth - frame.clusterParams.y) / max(frame.clusterParams.z - frame.clusterParams.y, 1e-6),
+    0.0, 1.0,
+  );
+  var out : SceneOut;
+  out.color = vec4<f32>(color, s.color.a);
+  out.normalDepth = vec4<f32>(s.normal, linearDepth);
+  return out;
 }
 
 struct OITOut {
@@ -155,8 +186,8 @@ struct OITOut {
 @fragment
 fn fs_oit(in : VSOut, @builtin(front_facing) frontFacing : bool) -> OITOut {
   let s = smShade(in, frontFacing);
-  let color = s.rgb * frame.ambient.w;
-  let a = clamp(s.a, 0.0, 1.0);
+  let color = s.color.rgb * frame.ambient.w;
+  let a = clamp(s.color.a, 0.0, 1.0);
   let viewZ = abs((frame.view * vec4<f32>(in.worldPos, 1.0)).z);
   let weight = a * clamp(0.03 / (1e-5 + pow(viewZ / 200.0, 4.0)), 1e-2, 3e3);
   var out : OITOut;

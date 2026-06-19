@@ -312,6 +312,10 @@ that pixel (`uv` is 0..1, origin top-left). In scope:
   `sceneSmp` if you want manual sampling.
 - `sceneDepth(uv)` — non-linear depth in `[0,1]` (1 = background), for
   depth-aware effects like fog or DoF.
+- `sceneWorldNormal(uv)` / `sceneViewNormal(uv)` — the scene's shading normal,
+  when the pass requests the `normal` input.
+- `sceneLinearDepth(uv)` — positive view-space distance in world units (the
+  camera far plane for background), when the pass requests `linearDepth`.
 - `pp.resolution` — `vec4` (xy = pixels, zw = 1/pixels); `pp.time` — seconds.
 - `u.<name>` / `t_<name>` + `s_<name>` — your `uniforms`, same types and rules
   as ShaderMaterial.
@@ -331,3 +335,28 @@ renderer.passes = [];          // clear all
 Passes execute in array order; reorder the array to reorder effects. Like
 ShaderMaterial, an invalid `effect` throws on construction, and WGSL compile
 errors print the failing generated line to the console.
+
+## Normal and linear-depth inputs
+
+Request geometry-aware inputs explicitly:
+
+```ts
+const edges = new ShaderPass({
+  inputs: ['normal', 'linearDepth'],
+  effect: /* wgsl */ `
+    fn effect(uv : vec2<f32>) -> vec4<f32> {
+      let px = pp.resolution.zw;
+      let normalEdge = length(sceneViewNormal(uv) - sceneViewNormal(uv + vec2(px.x, 0.0)));
+      let depthEdge = abs(sceneLinearDepth(uv) - sceneLinearDepth(uv + vec2(0.0, px.y)));
+      let edge = clamp(max(normalEdge, depthEdge * 0.1), 0.0, 1.0);
+      return vec4(sceneColor(uv).rgb * (1.0 - edge), 1.0);
+    }
+  `,
+});
+```
+
+When any enabled pass requests one of these inputs, the scene pass writes one
+additional RGBA16F target: RGB stores the world-space shading normal and alpha
+stores normalized linear depth. Both helpers are available to every pass in
+that frame. Without a request, the renderer keeps the original single-target
+scene path and incurs no attachment bandwidth.

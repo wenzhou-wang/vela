@@ -528,8 +528,13 @@ fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
 
 // PBR fragment stage: decode StandardMaterial inputs, shade, tonemap.
 const FRAGMENT = SHADE_HELPERS + /* wgsl */ `
-// Shared shading: returns linear HDR color (before exposure/tonemap) + alpha.
-fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
+struct ShadedSurface {
+  color : vec4<f32>,
+  normal : vec3<f32>,
+};
+
+// Shared shading: returns linear HDR color (before exposure/tonemap), alpha, and shading normal.
+fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
   let flags = u32(material.misc.y);
   let hasNormalMap = (flags & 2u) != 0u;
 
@@ -660,19 +665,45 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> vec4<f32> {
   }
 
   color = applyFog(color, in.worldPos);
-  return vec4<f32>(color, alpha);
+  var out : ShadedSurface;
+  out.color = vec4<f32>(color, alpha);
+  out.normal = N;
+  return out;
 }
 
 @fragment
 fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
   let s = shadeSurface(in, frontFacing);
-  var color = s.rgb * frame.ambient.w; // exposure
+  var color = s.color.rgb * frame.ambient.w; // exposure
   // envParams.w bit 0: linear output (post pipeline tonemaps later).
   if ((u32(frame.envParams.w) & 1u) == 0u) {
     color = acesFilmic(color);
     color = linearToSRGB(color);
   }
-  return vec4<f32>(color, s.a);
+  return vec4<f32>(color, s.color.a);
+}
+
+struct SceneOut {
+  @location(0) color : vec4<f32>,
+  @location(1) normalDepth : vec4<f32>,
+};
+
+@fragment
+fn fs_scene(in : VSOut, @builtin(front_facing) frontFacing : bool) -> SceneOut {
+  let s = shadeSurface(in, frontFacing);
+  var color = s.color.rgb * frame.ambient.w;
+  if ((u32(frame.envParams.w) & 1u) == 0u) {
+    color = linearToSRGB(acesFilmic(color));
+  }
+  let viewDepth = -(frame.view * vec4<f32>(in.worldPos, 1.0)).z;
+  let linearDepth = clamp(
+    (viewDepth - frame.clusterParams.y) / max(frame.clusterParams.z - frame.clusterParams.y, 1e-6),
+    0.0, 1.0,
+  );
+  var out : SceneOut;
+  out.color = vec4<f32>(color, s.color.a);
+  out.normalDepth = vec4<f32>(s.normal, linearDepth);
+  return out;
 }
 
 // Weighted-blended OIT (McGuire/Bavoil). Accumulates premultiplied linear color
@@ -685,8 +716,8 @@ struct OITOut {
 @fragment
 fn fs_oit(in : VSOut, @builtin(front_facing) frontFacing : bool) -> OITOut {
   let s = shadeSurface(in, frontFacing);
-  let color = s.rgb * frame.ambient.w; // exposure
-  let a = clamp(s.a, 0.0, 1.0);
+  let color = s.color.rgb * frame.ambient.w; // exposure
+  let a = clamp(s.color.a, 0.0, 1.0);
   let viewZ = abs((frame.view * vec4<f32>(in.worldPos, 1.0)).z);
   let weight = a * clamp(0.03 / (1e-5 + pow(viewZ / 200.0, 4.0)), 1e-2, 3e3);
   var out : OITOut;

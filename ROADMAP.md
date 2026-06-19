@@ -485,10 +485,15 @@ client could use, never a built-in style.
       `defaultLight(s, l)` / `defaultIndirect(s, ind)` reproduce the engine's PBR result for
       blending. Generic — no ramp or style baked into the engine. Offline-verified (all four
       vertex variants × {none, light, ambient, both} parse with the right entry points).
-- ⬜ **Normal / linear-depth targets for `ShaderPass`** — `sceneColor()`/`sceneDepth()`
-      exist; add an opt-in world/view **normal** buffer (and linearized depth) so app-side
-      edge detection, outlines, and SSAO-like effects don't reconstruct normals from depth
-      derivatives. A general G-buffer-lite, useful well beyond NPR.
+- ✅ **Normal / linear-depth targets for `ShaderPass`** — a pass declares
+      `inputs: ['normal', 'linearDepth']` to opt into one packed RGBA16F scene target
+      (world-space shading normal in RGB, normalized linear depth in A). Helpers expose
+      `sceneWorldNormal()`, `sceneViewNormal()`, and positive world-unit
+      `sceneLinearDepth()`; background depth is the camera far plane. The renderer adds
+      the MRT + pipeline bit only while an enabled pass requests it, with one lazy cached
+      target (including MSAA resolve), so the default single-target path is unchanged.
+      StandardMaterial normal maps and ShaderMaterial custom normals both feed the target.
+      Offline-verified across all four vertex variants and both single/MRT entry points.
 - ✅ **Shell / inverted-hull draw** — `mesh.shell = { material, thickness }` re-draws the
       geometry after the opaque pass with back faces (front-culled) extruded `thickness`
       world units along the vertex normal. The extrusion is folded into the shared vertex

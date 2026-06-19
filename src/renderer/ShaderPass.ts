@@ -1,17 +1,24 @@
 import type { UniformValue } from '../materials/ShaderMaterial';
 
+/** Optional scene buffers a ShaderPass can request. */
+export type ShaderPassInput = 'normal' | 'linearDepth';
+
 export interface ShaderPassOptions {
   /**
    * WGSL defining `fn effect(uv : vec2<f32>) -> vec4<f32>`, returning the
    * output color for that pixel. Available in scope:
    * - `sceneColor(uv)` / `sceneTex` + `sceneSmp` — the previous stage (HDR linear).
    * - `sceneDepth(uv)` — non-linear depth in [0,1] (1 = background).
+   * - `sceneWorldNormal(uv)` / `sceneViewNormal(uv)` — when `inputs` requests `normal`.
+   * - `sceneLinearDepth(uv)` — view-space distance when `inputs` requests `linearDepth`.
    * - `pp.resolution` (xy = pixels, zw = 1/pixels), `pp.time` (seconds).
    * - `u.<name>` scalars and `t_<name>`/`s_<name>` textures from `uniforms`.
    */
   effect: string;
   /** Custom uniforms (same types as ShaderMaterial): `u.<name>` / `t_<name>`. */
   uniforms?: Record<string, UniformValue>;
+  /** Opt into additional scene buffers used by this pass. */
+  inputs?: ShaderPassInput[];
   /** Skip this pass without removing it from the chain. */
   enabled?: boolean;
   name?: string;
@@ -42,6 +49,8 @@ export class ShaderPass {
   enabled: boolean;
   name: string;
   uniforms: Record<string, UniformValue>;
+  /** Additional scene buffers this pass needs. Mutate freely between frames. */
+  inputs: ShaderPassInput[];
   /** Bumped by `setEffect()`; part of the pipeline cache key. */
   version = 0;
   /** Stable id for caching GPU resources. */
@@ -54,6 +63,7 @@ export class ShaderPass {
     this.id = `shaderpass-${ShaderPass._nextId++}`;
     this._effect = options.effect;
     this.uniforms = options.uniforms ?? {};
+    this.inputs = options.inputs ?? [];
     this.enabled = options.enabled ?? true;
     this.name = options.name ?? 'ShaderPass';
   }

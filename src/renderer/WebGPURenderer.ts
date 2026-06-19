@@ -475,6 +475,7 @@ export class WebGPURenderer {
   private _renderWidth = 1;
   private _renderHeight = 1;
   private _usePost = false;
+  private _sceneInputs = false;
   private renderTargets = new WeakMap<RenderTarget, RenderTargetResources>();
   // readPixels() waiters fulfilled with the next presented canvas frame.
   private pendingCapture: Array<(p: PixelData) => void> = [];
@@ -873,6 +874,7 @@ export class WebGPURenderer {
     const rt = target ? this.getRenderTargetResources(target) : null;
     const usePost = this.postProcessing && !rt;
     this._usePost = usePost;
+    this._sceneInputs = usePost && this.passes.some((p) => p.enabled && p.inputs.length > 0);
     this._renderWidth = target ? target.width : this.canvas.width;
     this._renderHeight = target ? target.height : this.canvas.height;
     // The scene pass renders into the HDR target when post-processing is on,
@@ -954,7 +956,9 @@ export class WebGPURenderer {
     }
 
     const pass = encoder.beginRenderPass({
-      colorAttachments: [colorAttachment],
+      colorAttachments: this._sceneInputs
+        ? [colorAttachment, this.post.sceneNormalDepthAttachment()]
+        : [colorAttachment],
       depthStencilAttachment: {
         view: rt ? rt.depthView : this.depthTexture.createView(),
         depthClearValue: 1.0,
@@ -993,7 +997,7 @@ export class WebGPURenderer {
         });
         this.skyBindGroupKey = this.envKey;
       }
-      pass.setPipeline(this.pipelines.getSky(this.sceneTargetFormat));
+      pass.setPipeline(this.pipelines.getSky(this.sceneTargetFormat, this._sceneInputs));
       pass.setBindGroup(0, this.skyBindGroup);
       pass.draw(3);
       pass.setBindGroup(0, this.frameBindGroup); // restore for transparent draws
@@ -1064,11 +1068,13 @@ export class WebGPURenderer {
           this.passes,
           postInput ?? this.post.hdrTargetView,
           this.depthSampleView ?? this.post.dummyDepth,
+          this._sceneInputs ? this.post.sceneNormalDepthView : this.post.dummyNormalDepth,
           this.textures,
           this._elapsed,
           {
             proj: new Float32Array(camera.projectionMatrix.elements),
             invProj: new Float32Array(camera.projectionMatrixInverse.elements),
+            view: new Float32Array(camera.matrixWorldInverse.elements),
             near: cam.near ?? 0.1,
             far: cam.far ?? 2000,
           },
@@ -1894,7 +1900,7 @@ export class WebGPURenderer {
       const res = this.particleResources.get(sys);
       if (!res) continue;
       const additive = (sys.options.blending ?? 'additive') === 'additive';
-      pass.setPipeline(this.pipelines.getParticles(this.sceneTargetFormat, additive));
+      pass.setPipeline(this.pipelines.getParticles(this.sceneTargetFormat, additive, this._sceneInputs));
       pass.setBindGroup(0, this.frameBindGroup);
       pass.setBindGroup(1, res.drawBindGroup);
       pass.draw(6, res.capacity);
@@ -2029,7 +2035,7 @@ export class WebGPURenderer {
     for (const screenPhase of [false, true]) {
       for (const batch of this.spriteBatches.values()) {
         if (batch.count === 0 || batch.screen !== screenPhase) continue;
-        pass.setPipeline(this.pipelines.getSprites(this.sceneTargetFormat, batch.screen));
+        pass.setPipeline(this.pipelines.getSprites(this.sceneTargetFormat, batch.screen, this._sceneInputs));
         pass.setBindGroup(0, this.frameBindGroup);
         pass.setBindGroup(1, batch.bindGroup);
         pass.draw(6, batch.count);
@@ -2511,13 +2517,15 @@ export class WebGPURenderer {
         () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode, sm.lightCode, sm.ambientCode),
         hasBuffer, textureCount,
         sm.name || sm.type,
+        undefined,
+        this._sceneInputs && !oit,
       ));
       pass.setBindGroup(2, res.bindGroup);
     } else {
       const std = material as StandardMaterial;
       pass.setPipeline(oit
         ? this.pipelines.getOIT(std, variant, oitSampleCount)
-        : this.pipelines.get(std, variant, this.sceneTargetFormat));
+        : this.pipelines.get(std, variant, this.sceneTargetFormat, undefined, this._sceneInputs));
       pass.setBindGroup(2, this.getMaterialResources(std).bindGroup);
     }
 
@@ -2590,12 +2598,12 @@ export class WebGPURenderer {
         cacheKey, variant, sm, this.sceneTargetFormat, false, 1,
         () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode, sm.lightCode, sm.ambientCode),
         res.layout.fields.length > 0, res.layout.textures.length,
-        sm.name || sm.type, 'front',
+        sm.name || sm.type, 'front', this._sceneInputs,
       ));
       pass.setBindGroup(2, res.bindGroup);
     } else {
       const std = material as StandardMaterial;
-      pass.setPipeline(this.pipelines.get(std, variant, this.sceneTargetFormat, 'front'));
+      pass.setPipeline(this.pipelines.get(std, variant, this.sceneTargetFormat, 'front', this._sceneInputs));
       pass.setBindGroup(2, this.getMaterialResources(std).bindGroup);
     }
 
@@ -2628,7 +2636,7 @@ export class WebGPURenderer {
     // The color stream is always present (white default), so lines need no setup.
     const geometry = this.geometries.get(mesh.geometry);
 
-    pass.setPipeline(this.pipelines.getLine(material, this.sceneTargetFormat));
+    pass.setPipeline(this.pipelines.getLine(material, this.sceneTargetFormat, this._sceneInputs));
     const slot = this.getMeshSlot(mesh);
     pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
     pass.setBindGroup(2, this.getLineResources(material).bindGroup);
@@ -2646,7 +2654,7 @@ export class WebGPURenderer {
   /** Get (or re-record) the opaque render bundle when its draw set changes. */
   private getOpaqueBundle(): GPURenderBundle {
     const colorFormat = this.postProcessing ? 'rgba16float' : this.format;
-    let key = `${colorFormat}|${this.frameBindGroupVersion}|`;
+    let key = `${colorFormat}|si${this._sceneInputs ? 1 : 0}|${this.frameBindGroupVersion}|`;
     for (const mesh of this.opaque) {
       const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
       key += `${mesh.id},${mesh.geometry.id},${(m as Material).id}`;
@@ -2657,7 +2665,7 @@ export class WebGPURenderer {
     if (this.opaqueBundle && key === this.bundleKey) return this.opaqueBundle;
 
     const encoder = this.device.createRenderBundleEncoder({
-      colorFormats: [colorFormat],
+      colorFormats: this._sceneInputs ? [colorFormat, 'rgba16float'] : [colorFormat],
       depthStencilFormat: DEPTH_FORMAT,
       sampleCount: this.sampleCount,
     });

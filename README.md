@@ -63,7 +63,8 @@ Forward renderer, one pass:
 - **Tangent-space normal mapping**, generated tangents when a mesh lacks them.
 - **ACES filmic** tonemap + linear→sRGB encode in-shader; adjustable exposure.
 - **Post-processing** (opt-in) — render to an HDR offscreen target, then fullscreen passes
-  (bloom, ACES tonemap, optional FXAA) resolve to the swap chain.
+  (bloom, ACES tonemap, optional FXAA) resolve to the swap chain; custom `ShaderPass`
+  effects can opt into packed world-normal + linear-depth scene data.
 - **Order-independent transparency** (opt-in, weighted-blended) — accumulate + composite
   transparent fragments in the HDR pass to reduce sort artifacts.
 - **4× MSAA**, depth-tested, with separate opaque / back-to-front transparent passes.
@@ -152,6 +153,9 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **ShaderMaterial lighting hooks** — the generated module parses (with the right
   vertex/fragment entry points) for every vertex variant crossed with the optional
   `light`/`ambient` hooks present or absent.
+- **ShaderPass scene inputs** — StandardMaterial and ShaderMaterial modules expose both
+  single-target and packed normal/linear-depth MRT entries across all vertex variants;
+  the pass wrapper parses with the normal/depth helpers and five group-0 bindings.
 - **Shell / inverted-hull** — the per-object `Model` struct is 144 bytes with the shell
   thickness at offset 128; the PBR (static/skinned/morph), shadow, id, and Surface shaders
   all still parse with the enlarged model binding.

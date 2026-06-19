@@ -98,6 +98,12 @@ graph. The renderer is the only place that talks to WebGPU.
 MSAA (4× by default) renders into a multisampled color target and resolves into the swap
 chain texture; a matching multisampled depth texture is used for depth testing.
 
+An enabled `ShaderPass` with `inputs: ['normal']` or `['linearDepth']` adds one
+lazy RGBA16F MRT to the scene pass. It packs the world-space shading normal in RGB
+and normalized linear depth in A (with an MSAA resolve when needed). Mesh pipelines
+switch to their `fs_scene` entry; non-mesh scene draws keep the attachment unchanged.
+Without a requested input, the render pass and pipeline keys remain single-target.
+
 ## Bind group layout
 
 Three bind groups, fixed across all pipelines so they bind once and stay stable:
