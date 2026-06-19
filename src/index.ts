@@ -63,6 +63,8 @@ export { Stats } from './helpers/Stats';
 export { Texture } from './textures/Texture';
 export type { TextureOptions } from './textures/Texture';
 export { DataTexture, CompressedDataTexture } from './textures/DataTexture';
+export { gradientTexture } from './textures/gradientTexture';
+export type { GradientStop } from './textures/gradientTexture';
 
 // lights
 export { Light } from './lights/Light';

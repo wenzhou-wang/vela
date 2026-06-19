@@ -875,6 +875,9 @@ A ray with an origin and a normalized direction.
 ### function uniform(values: Record<string, UniformValue>): UniformBinding
 
 
+### function gradientTexture(stops: GradientStop[], width?: number): DataTexture
+Build a 1-D gradient as a `width × 1` linear `DataTexture` (clamp-wrapped, linearly filtered) — the generic primitive behind toon ramps, gradient maps, and color LUTs. Stops take `ColorInput` (a `Color` or linear `[r, g, b]`), so there is no hidden color space. Plug it into a `ShaderMaterial`/`ShaderPass` texture uniform and sample it at `(t, 0.5)`:
+
 ### function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState): Diagnostic[]
 Triage why a scene "renders but looks wrong" — especially the classic black screen. Pure scene-graph math: runs without a GPU. Returns an empty array when nothing looks suspicious.
 
@@ -1123,6 +1126,16 @@ export interface TextureOptions {
   generateMipmaps?: boolean;
   colorSpace?: 'srgb' | 'linear';
   flipY?: boolean;
+}
+```
+
+### GradientStop
+One color stop along a gradient: a `position` in [0, 1] with a linear `color`.
+```ts
+export interface GradientStop {
+  position: number;
+  color: ColorInput;
+  opacity?: number;
 }
 ```
 

@@ -487,10 +487,12 @@ client could use, never a built-in style.
       capability (one render-state variant), the standard primitive behind outline shells,
       fur, and selection highlights. Configured per-mesh as data; the *outline look* stays
       in app code, the *shell draw* is the engine capability.
-- ⬜ **1-D ramp / LUT texture ergonomics** — verify gradient (1×N) textures work cleanly as
-      `ShaderMaterial`/`ShaderPass` texture uniforms with a `ramp(t)` sampling helper, so
-      app-authored toon ramps, gradient maps, and color LUTs need no boilerplate. If
-      they don't, that's the API gap to fill.
+- ✅ **1-D ramp / LUT texture ergonomics** — `gradientTexture(stops, width?)` builds a
+      `width × 1` linear `DataTexture` (clamp-wrapped, linearly filtered) from `ColorInput`
+      stops (+ optional per-stop opacity) — the generic primitive behind toon ramps,
+      gradient maps, and color LUTs. Drops straight into a `ShaderMaterial`/`ShaderPass`
+      texture uniform, sampled at `(t, 0.5)`. No hidden color space (stops are linear).
+      Offline-verified (endpoints, midpoint, multi-stop, opacity, clamp, unsorted input).
 
 ## v0.11 — Advanced lighting & global illumination ⬜
 
