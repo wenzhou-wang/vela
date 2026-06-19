@@ -54,7 +54,7 @@ const MAX_LIGHTS = 256;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
 const FRAME_SIZE = 320; // bytes (view/proj/lightViewProj mat4s + cameraPos..fogParams vec4s)
-const MODEL_SIZE = 128;
+const MODEL_SIZE = 144; // model mat4 (64) + normalMat mat4 (64) + params vec4 (16)
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
 
@@ -435,6 +435,7 @@ export class WebGPURenderer {
   private modelPoolBindGroup: GPUBindGroup | null = null;
   private modelPoolCapacity = 0;
   private meshSlots = new WeakMap<Mesh, number>();
+  private shellSlots = new WeakMap<Mesh, number>();
   private nextMeshSlot = 0;
 
   // Lifecycle.
@@ -509,6 +510,8 @@ export class WebGPURenderer {
   // scratch render lists
   private opaque: Mesh[] = [];
   private transparent: Mesh[] = [];
+  /** Whether any collected mesh has a shell (skips the shell loop otherwise). */
+  private hasShells = false;
   private lights: Light[] = [];
 
   constructor(options: RendererOptions) {
@@ -587,6 +590,7 @@ export class WebGPURenderer {
     this.particleResources = new WeakMap();
     this.renderTargets = new WeakMap();
     this.meshSlots = new WeakMap();
+    this.shellSlots = new WeakMap();
     this.nextMeshSlot = 0;
     this.spriteBatches.clear();
     this.fontAtlases.clear();
@@ -966,6 +970,13 @@ export class WebGPURenderer {
       pass.executeBundles([this.getOpaqueBundle()]);
     } else {
       for (const mesh of this.opaque) this.drawMesh(pass, mesh);
+    }
+
+    // Inverted-hull shells (outlines/fur/highlights): extruded back-face draws
+    // after the opaques, so the depth test keeps only the silhouette ring.
+    if (this.hasShells) {
+      for (const mesh of this.opaque) if (mesh.shell) this.drawShell(pass, mesh);
+      for (const mesh of this.transparent) if (mesh.shell) this.drawShell(pass, mesh);
     }
 
     // Skybox: draws the environment where depth is still 1 (after opaques, so
@@ -2274,6 +2285,7 @@ export class WebGPURenderer {
     this.sprites.length = 0;
     this.texts.length = 0;
     this.culledCount = 0;
+    this.hasShells = false;
 
     scene.traverseVisible((object: Object3D) => {
       if (object instanceof Light) {
@@ -2293,6 +2305,7 @@ export class WebGPURenderer {
         const transparent = materials.some((m) => m.transparent);
         if (transparent) this.transparent.push(object);
         else this.opaque.push(object);
+        if (object.shell) this.hasShells = true;
       }
     });
   }
@@ -2547,6 +2560,70 @@ export class WebGPURenderer {
     }
   }
 
+  /**
+   * Inverted-hull shell: re-draw the mesh's geometry with back faces (front
+   * cull), extruded along the normal by `shell.thickness`, using the shell
+   * material. The standard PBR/Surface fragment shades it, so the look comes
+   * entirely from `shell.material`. Drawn after the opaque pass so the depth
+   * test leaves only the silhouette ring visible. InstancedMesh is unsupported.
+   */
+  private drawShell(pass: DrawEncoder, mesh: Mesh): void {
+    const shell = mesh.shell;
+    if (!shell || shell.thickness === 0 || mesh instanceof InstancedMesh) return;
+    const material = shell.material;
+    const isShader = material instanceof ShaderMaterial;
+    if (!isShader && !(material instanceof StandardMaterial)) return;
+    const geometry = this.geometries.get(mesh.geometry);
+
+    const skinned = mesh instanceof SkinnedMesh && geometry.joints !== null && geometry.weights !== null;
+    const morphed =
+      !skinned &&
+      mesh.morphTargetInfluences.length > 0 &&
+      !!mesh.geometry.morphAttributes.position?.length;
+    const variant = skinned ? 'skinned' : morphed ? 'morph' : 'static';
+
+    if (isShader) {
+      const sm = material as ShaderMaterial;
+      const res = this.getShaderMaterialResources(sm);
+      const cacheKey = `sm:${sm.id}:v${sm.version}:${res.shapeKey}`;
+      pass.setPipeline(this.pipelines.getCustom(
+        cacheKey, variant, sm, this.sceneTargetFormat, false, 1,
+        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode, sm.lightCode, sm.ambientCode),
+        res.layout.fields.length > 0, res.layout.textures.length,
+        sm.name || sm.type, 'front',
+      ));
+      pass.setBindGroup(2, res.bindGroup);
+    } else {
+      const std = material as StandardMaterial;
+      pass.setPipeline(this.pipelines.get(std, variant, this.sceneTargetFormat, 'front'));
+      pass.setBindGroup(2, this.getMaterialResources(std).bindGroup);
+    }
+
+    const slot = this.getMeshShellSlot(mesh, shell.thickness);
+    pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
+
+    pass.setVertexBuffer(0, geometry.position);
+    pass.setVertexBuffer(1, geometry.normal);
+    pass.setVertexBuffer(2, geometry.uv);
+    pass.setVertexBuffer(3, geometry.tangent);
+    if (skinned) {
+      pass.setBindGroup(3, this.getSkinnedResources(mesh as SkinnedMesh).bindGroup);
+      pass.setVertexBuffer(4, geometry.joints!);
+      pass.setVertexBuffer(5, geometry.weights!);
+      pass.setVertexBuffer(6, geometry.color);
+    } else {
+      pass.setVertexBuffer(4, geometry.color);
+      if (morphed) pass.setBindGroup(3, this.getMorphResources(mesh).bindGroup);
+    }
+
+    if (geometry.index) {
+      pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+      pass.drawIndexed(geometry.drawCount);
+    } else {
+      pass.draw(geometry.drawCount);
+    }
+  }
+
   private drawLine(pass: DrawEncoder, mesh: Mesh, material: LineBasicMaterial): void {
     // The color stream is always present (white default), so lines need no setup.
     const geometry = this.geometries.get(mesh.geometry);
@@ -2770,8 +2847,28 @@ export class WebGPURenderer {
       slot = this.nextMeshSlot++;
       this.meshSlots.set(mesh, slot);
     }
-    this.ensureModelPool(slot + 1);
+    this.writeModelSlot(slot, mesh, 0);
+    return slot;
+  }
 
+  /**
+   * Assign a stable pool slot for a mesh's shell draw and upload its model
+   * matrix with the shell thickness in params.x. A separate slot from the main
+   * draw, since both are encoded in one frame (the main draw needs thickness 0).
+   */
+  private getMeshShellSlot(mesh: Mesh, thickness: number): number {
+    let slot = this.shellSlots.get(mesh);
+    if (slot === undefined) {
+      slot = this.nextMeshSlot++;
+      this.shellSlots.set(mesh, slot);
+    }
+    this.writeModelSlot(slot, mesh, thickness);
+    return slot;
+  }
+
+  /** Pack a mesh's world/normal matrix + shell thickness into a model-pool slot. */
+  private writeModelSlot(slot: number, mesh: Mesh, thickness: number): void {
+    this.ensureModelPool(slot + 1);
     const data = new Float32Array(MODEL_SIZE / 4);
     data.set(mesh.matrixWorld.elements, 0);
     this._normalMatrix.getNormalMatrix(mesh.matrixWorld);
@@ -2780,8 +2877,8 @@ export class WebGPURenderer {
     data[20] = nm[3]; data[21] = nm[4]; data[22] = nm[5]; data[23] = 0;
     data[24] = nm[6]; data[25] = nm[7]; data[26] = nm[8]; data[27] = 0;
     data[28] = 0; data[29] = 0; data[30] = 0; data[31] = 1;
+    data[32] = thickness; // params.x
     this.device.queue.writeBuffer(this.modelPoolBuffer!, slot * 256, data);
-    return slot;
   }
 
   private getMaterialResources(material: StandardMaterial): MaterialResources {

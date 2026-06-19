@@ -489,10 +489,18 @@ client could use, never a built-in style.
       exist; add an opt-in world/view **normal** buffer (and linearized depth) so app-side
       edge detection, outlines, and SSAO-like effects don't reconstruct normals from depth
       derivatives. A general G-buffer-lite, useful well beyond NPR.
-- ⬜ **Shell / inverted-hull draw** — a general "draw back-faces extruded along the normal"
-      capability (one render-state variant), the standard primitive behind outline shells,
-      fur, and selection highlights. Configured per-mesh as data; the *outline look* stays
-      in app code, the *shell draw* is the engine capability.
+- ✅ **Shell / inverted-hull draw** — `mesh.shell = { material, thickness }` re-draws the
+      geometry after the opaque pass with back faces (front-culled) extruded `thickness`
+      world units along the vertex normal. The extrusion is folded into the shared vertex
+      stages as a per-object `params.x` (0 for normal draws), so it works for static,
+      skinned, and morph meshes — not just the ones `ShaderMaterial.displace` reaches — and
+      adds no extra pipeline variant (the only render-state change is a forced `front` cull,
+      threaded through `PipelineCache.get`/`getCustom` as a cull override). The shell uses
+      its own model-pool slot (the main draw needs thickness 0 in the same frame) and reuses
+      the standard PBR/Surface fragment, so the *look* lives entirely in `material` (flat
+      emissive = outline, fresnel = rim, texture = fur); the engine only provides the
+      extruded back-face draw. Not supported on `InstancedMesh`. Offline-verified (Model
+      struct 144 B with thickness at offset 128; all PBR/shadow/id/Surface shaders parse).
 - ✅ **1-D ramp / LUT texture ergonomics** — `gradientTexture(stops, width?)` builds a
       `width × 1` linear `DataTexture` (clamp-wrapped, linearly filtered) from `ColorInput`
       stops (+ optional per-stop opacity) — the generic primitive behind toon ramps,

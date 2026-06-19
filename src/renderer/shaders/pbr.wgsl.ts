@@ -122,10 +122,13 @@ struct MaterialU {
 `;
 
 // Static vertex stage: transform by the per-object model matrix.
+// model.params.x is the shell extrusion distance (world units, 0 for normal
+// draws): vertices push out along the world normal to form an inverted hull.
 export const VERTEX_STATIC = /* wgsl */ `
 struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
+  params : vec4<f32>,  // x = shell thickness
 };
 @group(1) @binding(0) var<uniform> model : Model;
 
@@ -133,10 +136,10 @@ struct Model {
 fn vs_main(in : VSIn) -> VSOut {
   var out : VSOut;
   let worldPos4 = model.model * vec4<f32>(in.position, 1.0);
-  out.worldPos = worldPos4.xyz;
-  out.clipPosition = frame.proj * frame.view * worldPos4;
-
   out.worldNormal = normalize((model.normalMat * vec4<f32>(in.normal, 0.0)).xyz);
+  out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
+  out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
@@ -172,6 +175,15 @@ fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
 export const VERTEX_SKINNED = /* wgsl */ `
 @group(3) @binding(0) var<storage, read> bones : array<mat4x4<f32>>;
 
+// Bound for the shell extrusion distance (params.x); model matrices come from
+// the skin (joint matrices are already world-space, per the glTF spec).
+struct Model {
+  model : mat4x4<f32>,
+  normalMat : mat4x4<f32>,
+  params : vec4<f32>,  // x = shell thickness
+};
+@group(1) @binding(0) var<uniform> model : Model;
+
 struct VSInSkinned {
   @location(0) position : vec3<f32>,
   @location(1) normal : vec3<f32>,
@@ -192,10 +204,10 @@ fn vs_main(in : VSInSkinned) -> VSOut {
     in.weights.w * bones[in.joints.w];
 
   let worldPos4 = skin * vec4<f32>(in.position, 1.0);
-  out.worldPos = worldPos4.xyz;
-  out.clipPosition = frame.proj * frame.view * worldPos4;
-
   out.worldNormal = normalize((skin * vec4<f32>(in.normal, 0.0)).xyz);
+  out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
+  out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+
   out.worldTangent = normalize((skin * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;
@@ -211,6 +223,7 @@ export const VERTEX_MORPH = /* wgsl */ `
 struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
+  params : vec4<f32>,  // x = shell thickness
 };
 @group(1) @binding(0) var<uniform> model : Model;
 
@@ -241,10 +254,10 @@ fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   }
 
   let worldPos4 = model.model * vec4<f32>(position, 1.0);
-  out.worldPos = worldPos4.xyz;
-  out.clipPosition = frame.proj * frame.view * worldPos4;
-
   out.worldNormal = normalize((model.normalMat * vec4<f32>(normal, 0.0)).xyz);
+  out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
+  out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
   out.uv = in.uv;

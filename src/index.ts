@@ -16,6 +16,7 @@ export { Camera } from './core/Camera';
 export { PerspectiveCamera } from './core/PerspectiveCamera';
 export { OrthographicCamera } from './core/OrthographicCamera';
 export { Mesh } from './core/Mesh';
+export type { Shell } from './core/Mesh';
 export { LineSegments } from './core/LineSegments';
 export { SkinnedMesh } from './core/SkinnedMesh';
 export { InstancedMesh } from './core/InstancedMesh';

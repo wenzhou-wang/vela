@@ -37,6 +37,29 @@ The cel/comic look in the glTF viewer is built **entirely** on these generic pri
 a flat-albedo `ShaderMaterial` plus an outline `ShaderPass`, in `comic.ts`. The engine has
 no cel-shading concept.
 
+One more generic render primitive sits alongside them: the **inverted-hull shell**.
+`mesh.shell = { material, thickness }` re-draws the mesh's geometry after the opaque pass
+with its back faces (front-culled), extruded `thickness` world units along the vertex
+normal — the standard draw behind outline shells, fur, and selection highlights. The
+*look* lives in `material` (any `StandardMaterial`/`ShaderMaterial`, e.g. flat emissive for
+an outline); the engine only provides the extruded back-face draw. The extrusion is built
+into the shared vertex stages (a per-object `params.x` thickness that is 0 for normal
+draws), so it works for static, skinned, and morph-target meshes alike — not just meshes a
+`ShaderMaterial.displace` hook could reach. Not supported on `InstancedMesh`.
+
+```ts
+mesh.shell = {
+  thickness: 0.03,
+  material: new ShaderMaterial({
+    surface: `fn surface(in : VSOut) -> Surface {
+      var s = defaultSurface(in);
+      s.emissive = vec3(0.0); s.baseColor = vec3(0.0); return s;  // flat black outline
+    }`,
+  }),
+};
+mesh.shell = null; // remove
+```
+
 ## Layers
 
 ```

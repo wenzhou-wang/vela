@@ -152,6 +152,9 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **ShaderMaterial lighting hooks** — the generated module parses (with the right
   vertex/fragment entry points) for every vertex variant crossed with the optional
   `light`/`ambient` hooks present or absent.
+- **Shell / inverted-hull** — the per-object `Model` struct is 144 bytes with the shell
+  thickness at offset 128; the PBR (static/skinned/morph), shadow, id, and Surface shaders
+  all still parse with the enlarged model binding.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 
 ## Roadmap

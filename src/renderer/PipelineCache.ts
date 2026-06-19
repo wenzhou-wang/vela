@@ -346,9 +346,10 @@ export class PipelineCache {
     hasBuffer: boolean,
     textureCount: number,
     label = 'ShaderMaterial',
+    cullOverride?: GPUCullMode,
   ): GPURenderPipeline {
     const pipelineLayout = this.customPipelineLayout(variant, hasBuffer, textureCount);
-    const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
+    const cull = cullOverride ?? (material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back');
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
     const key = oit
@@ -544,15 +545,20 @@ export class PipelineCache {
     });
   }
 
-  private keyFor(material: StandardMaterial, variant: PipelineVariant, format: GPUTextureFormat): string {
-    const cull = material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back';
+  private keyFor(material: StandardMaterial, variant: PipelineVariant, format: GPUTextureFormat, cullOverride?: GPUCullMode): string {
+    const cull = cullOverride ?? (material.side === 'double' ? 'none' : material.side === 'back' ? 'front' : 'back');
     const blend = material.transparent ? 'blend' : 'opaque';
     const depthWrite = material.depthWrite && !material.transparent ? 'dw1' : 'dw0';
     return `${variant}|${cull}|${blend}|${depthWrite}|${format}`;
   }
 
-  get(material: StandardMaterial, variant: PipelineVariant = 'static', format: GPUTextureFormat = this.format): GPURenderPipeline {
-    const key = this.keyFor(material, variant, format);
+  /**
+   * Compile/cache the opaque/transparent pipeline for a StandardMaterial.
+   * `cullOverride` forces a cull mode regardless of `material.side` — used by
+   * the shell pass to draw back faces ('front' cull) of the extruded hull.
+   */
+  get(material: StandardMaterial, variant: PipelineVariant = 'static', format: GPUTextureFormat = this.format, cullOverride?: GPUCullMode): GPURenderPipeline {
+    const key = this.keyFor(material, variant, format, cullOverride);
     let pipeline = this.cache.get(key);
     if (pipeline) return pipeline;
 

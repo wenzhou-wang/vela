@@ -131,6 +131,7 @@ A renderable: geometry paired with one (or more) materials.
 - isMesh: true
 - geometry: BufferGeometry
 - material: Material | Material[]
+- shell: Shell | null — Optional inverted-hull overlay draw (outlines, fur, highlights).
 - morphTargetInfluences: number[] — Per-morph-target blend weights, parallel to `geometry.morphAttributes.position`.
 - morphTargetDictionary: Record<string, number> | null — Optional name → target-index map (from glTF `mesh.extras.targetNames`).
 
@@ -963,6 +964,15 @@ export interface FogOptions {
   far?: number;
   density?: number;
   heightFalloff?: number;
+}
+```
+
+### Shell
+Inverted-hull shell pass for a mesh: after the mesh draws, the same geometry is drawn again with back faces (front-culled), extruded `thickness` world units along the vertex normal, using `material`. This is the generic draw primitive behind outline shells, fur, and selection highlights — the look (flat color, fresnel, fur texture, …) lives in `material` (any `StandardMaterial`/`ShaderMaterial`); the engine only provides the extruded back-face draw. Not supported on `InstancedMesh`.
+```ts
+export interface Shell {
+  material: Material;
+  thickness: number;
 }
 ```
 
