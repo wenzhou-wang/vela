@@ -109,15 +109,21 @@ export class AnimationMixer {
       if (!a.enabled) continue;
       a.advanceFade(dt);
       if (a.paused) continue;
-      a.time += dt * a.timeScale * this.timeScale;
       const d = a.clip.duration;
+      const prev = a.time;
+      const delta = dt * a.timeScale * this.timeScale;
+      let next = prev + delta;
       if (d > 0) {
         if (a.loop) {
-          a.time %= d;
-          if (a.time < 0) a.time += d;
+          next %= d;
+          if (next < 0) next += d;
         } else {
-          a.time = Math.max(0, Math.min(a.time, d));
+          next = Math.max(0, Math.min(next, d));
         }
+      }
+      a.time = next;
+      if (a.onEvent && a.clip.events.length > 0 && delta !== 0 && d > 0) {
+        this.fireEvents(a, prev, prev + delta, d);
       }
     }
 
@@ -131,6 +137,26 @@ export class AnimationMixer {
     if (pruned) this.bindingsDirty = true;
 
     this.evaluate();
+  }
+
+  /**
+   * Fire the clip's events crossed in (`prev`, `rawNext`] (loop-aware; `rawNext`
+   * is the unwrapped target time). One fire per event per update — a `dt` larger
+   * than the clip can skip repeats, not the events themselves.
+   */
+  private fireEvents(a: AnimationAction, prev: number, rawNext: number, d: number): void {
+    const onEvent = a.onEvent!;
+    const forward = rawNext >= prev;
+    for (const ev of a.clip.events) {
+      const e = ev.time;
+      let hit: boolean;
+      if (forward) {
+        hit = (!a.loop || rawNext <= d) ? (e > prev && e <= rawNext) : (e > prev || e <= rawNext - d);
+      } else {
+        hit = (!a.loop || rawNext >= 0) ? (e <= prev && e > rawNext) : (e <= prev || e > rawNext + d);
+      }
+      if (hit) onEvent(ev.name, e);
+    }
   }
 
   /** Sample every enabled action and blend the results into the target nodes. */

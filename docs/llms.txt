@@ -587,6 +587,8 @@ A named set of keyframe tracks with a shared duration.
 - name: string
 - tracks: KeyframeTrack[]
 - duration: number
+- events: AnimationEvent[] — Sorted timeline markers (footstep, hit-frame, …) fired by the mixer.
+- addEvent(time: number, name: string): AnimationClip — Add a timeline marker at `time` seconds; events stay sorted by time.
 
 ### class AnimationMixer
 Plays and blends `AnimationClip`s. Each clip runs as an `AnimationAction` with its own time/weight; the mixer samples every enabled action and blends the results per (node, path) by weight — weighted average for translation/ scale/morph weights, normalized weighted sum (nlerp) for rotation. Bindings are cached, so a steady action set costs no per-frame allocation.
@@ -614,6 +616,7 @@ One playing instance of an `AnimationClip` inside an `AnimationMixer`: its own p
 - paused: boolean
 - enabled: boolean — Disabled actions are skipped by the blend and pruned once faded to 0.
 - mask: Set<Object3D> | null — When set, only tracks targeting a node in this set contribute — a per-bone mask (e.g.
+- onEvent: ((name: string, time: number) => void) | null — Fired by the mixer when playback crosses one of the clip's `events` (loop-aware).
 - setMask(targets: Object3D[] | null): AnimationAction — Restrict this action to the given target nodes (per-bone mask).
 - fadeTo(target: number, duration: number): AnimationAction — Ramp `weight` toward `target` over `duration` seconds (0 = instant).
 - fadeIn(duration: number): AnimationAction
@@ -1298,6 +1301,15 @@ Result of an export: the glTF JSON plus the packed binary (a `.glb`).
 export interface GLTFExportResult {
   json: Record<string, unknown>;
   glb: ArrayBuffer;
+}
+```
+
+### AnimationEvent
+A timeline marker on a clip; the mixer fires it when playback crosses `time`.
+```ts
+export interface AnimationEvent {
+  time: number;
+  name: string;
 }
 ```
 

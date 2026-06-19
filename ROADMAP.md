@@ -569,8 +569,11 @@ mixer a real animation system, staying data-first so an agent can wire state wit
       weights each frame; introspectable via `describe()` so the active state is readable.
 - ⬜ **Two-bone IK** — analytic limb IK (foot/hand targets, pole vector) applied after the
       mixer writes the pose, for foot-planting and look-at; offline-verifiable as pure math.
-- ⬜ **Animation events** — time-stamped callbacks on clips (footstep, hit-frame) fired by
-      the mixer, so gameplay can hang off the timeline without polling.
+- ✅ **Animation events** — `clip.addEvent(time, name)` adds sorted timeline markers;
+      `action.onEvent = (name, time) => …` fires as the mixer crosses them, loop-aware
+      (a wrap from near the end past 0 still fires early events) and direction-aware.
+      Gameplay (footsteps, hit-frames) hangs off the timeline without polling.
+      Offline-verified (ordering, crossing, no-double-fire, loop-wrap).
 
 ## v0.14 — Geometry detail & world scale ⬜
 

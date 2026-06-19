@@ -24,6 +24,11 @@ export class AnimationAction {
    * mask (e.g. an upper-body action layered over a full-body walk).
    */
   mask: Set<Object3D> | null = null;
+  /**
+   * Fired by the mixer when playback crosses one of the clip's `events`
+   * (loop-aware). Hang gameplay (footsteps, hit-frames) off the timeline.
+   */
+  onEvent: ((name: string, time: number) => void) | null = null;
 
   // Linear weight ramp (crossfade): inactive when _fadeRate is 0.
   private _fadeTarget = 0;

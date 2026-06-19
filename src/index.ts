@@ -101,6 +101,7 @@ export { SceneSerializer } from './loaders/SceneSerializer';
 
 // animation
 export { AnimationClip } from './animation/AnimationClip';
+export type { AnimationEvent } from './animation/AnimationClip';
 export { AnimationMixer } from './animation/AnimationMixer';
 export { AnimationAction } from './animation/AnimationAction';
 export { KeyframeTrack } from './animation/KeyframeTrack';
