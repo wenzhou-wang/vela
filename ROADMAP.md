@@ -546,7 +546,7 @@ shot. All slot into the existing HDR post chain before/after tonemap.
       chromatic aberration, and an optional lens-flare/bloom-streak — all small
       `ShaderPass`-shaped effects gated on `postProcessing`.
 
-## v0.13 — Animation systems ⬜
+## v0.13 — Animation systems 🚧
 
 Playback exists (`AnimationMixer`); authoring runtime motion does not. This tier makes the
 mixer a real animation system, staying data-first so an agent can wire state without a UI.
@@ -564,9 +564,14 @@ mixer a real animation system, staying data-first so an agent can wire state wit
 - ⬜ **Additive layers** — an `additive` action mode that adds a clip's delta from a
       reference pose on top of the blended base (e.g. a recoil or breathing layer), rather
       than averaging into it. Needs a reference-pose capture; builds on the action model.
-- ⬜ **Blend trees / state machine** — a declarative `{ states, transitions, parameters }`
-      graph (1-D/2-D blend spaces by a `speed`/`direction` param), evaluated to mixer
-      weights each frame; introspectable via `describe()` so the active state is readable.
+- ✅ **Blend trees / state machine** — `AnimationStateMachine` takes a declarative
+      `{ states, transitions, parameters }` graph: states are single clips or **1-D blend
+      spaces** (nearest-two weighting by a `speed`-style parameter), transitions fire on
+      parameter `Condition`s (`from: '*'` = any) and crossfade. Each frame it accumulates
+      per-clip weights into its `AnimationMixer` (reusing all the blend/crossfade math) and
+      `describe()` returns a JSON snapshot (current state, parameters, active transition +
+      progress, active clip weights). Offline-verified (blend interpolation, clamping,
+      crossfade, transitions). 2-D blend spaces and phase-synced blending are follow-ups.
 - ✅ **Two-bone IK** — `solveTwoBoneIK(root, mid, end, target, { pole })` rotates the two
       joint local quaternions so `end` reaches a world-space `target`, bending toward an
       optional `pole`. Geometric solve: place the mid joint on the law-of-cosines circle in

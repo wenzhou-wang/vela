@@ -106,6 +106,10 @@ export { AnimationMixer } from './animation/AnimationMixer';
 export { AnimationAction } from './animation/AnimationAction';
 export { solveTwoBoneIK } from './animation/IK';
 export type { TwoBoneIKOptions } from './animation/IK';
+export { AnimationStateMachine } from './animation/AnimationStateMachine';
+export type {
+  StateMachineDef, StateDef, TransitionDef, Condition, BlendSample,
+} from './animation/AnimationStateMachine';
 export { KeyframeTrack } from './animation/KeyframeTrack';
 export type { InterpolationMode, TrackPath } from './animation/KeyframeTrack';
 

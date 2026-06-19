@@ -623,6 +623,17 @@ One playing instance of an `AnimationClip` inside an `AnimationMixer`: its own p
 - fadeOut(duration: number): AnimationAction
 - advanceFade(dt: number): boolean — Advance any active weight ramp by `dt`; returns true while still fading.
 
+### class AnimationStateMachine
+A declarative animation state machine over an `AnimationMixer`. States are single clips or 1-D blend spaces; transitions fire on parameter conditions and crossfade. Each frame it sets the mixer's per-clip action weights, so all the blending/cross-fade machinery is reused. Introspect with `describe()`.
+- new AnimationStateMachine(def: StateMachineDef)
+- mixer: AnimationMixer
+- parameters: Record<string, number>
+- current: string
+- setParameter(name: string, value: number): AnimationStateMachine
+- play(name: string, duration?: number): AnimationStateMachine — Immediately switch to `name` with an optional crossfade (no condition check).
+- update(dt: number): void — Evaluate transitions, accumulate state weights into the mixer, and advance it.
+- describe(): { current: string; parameters: Record<string, number>; transition: { from: string; to: string; progress: number; } | null; active: { clip: string; weight: number; }[]; } — JSON-friendly snapshot: current state, parameters, transition, active clips.
+
 ### class KeyframeTrack
 A single animated channel: keyframe `times` driving one transform `path` (translation/scale = vec3, rotation = quaternion) of a target node.
 - new KeyframeTrack(target: Object3D, path: TrackPath, times: Float32Array<ArrayBufferLike>, values: Float32Array<ArrayBufferLike>, interpolation: InterpolationMode, valueSize: number | undefined)
@@ -1320,6 +1331,56 @@ export interface AnimationEvent {
 ```ts
 export interface TwoBoneIKOptions {
   pole?: Vector3;
+}
+```
+
+### StateMachineDef
+```ts
+export interface StateMachineDef {
+  states: StateDef[];
+  transitions: TransitionDef[];
+  initial?: string;
+  parameters?: Record<string, number>;
+}
+```
+
+### StateDef
+A graph node: either a single `clip`, or a 1-D `blend` space that mixes its samples by the value of `parameter` (nearest two, linearly weighted).
+```ts
+export interface StateDef {
+  name: string;
+  clip?: AnimationClip;
+  blend?: { parameter: string; samples: BlendSample[] };
+}
+```
+
+### TransitionDef
+`from → to` when every condition in `when` holds; `from: '*'` matches any state.
+```ts
+export interface TransitionDef {
+  from: string;
+  to: string;
+  when: Condition[];
+  duration?: number;
+}
+```
+
+### Condition
+A comparison on a named parameter; a transition fires when all of its conditions hold.
+```ts
+export interface Condition {
+  parameter: string;
+  op: '<' | '<=' | '>' | '>=' | '==' | '!=';
+  value: number;
+}
+```
+
+### BlendSample
+A 1-D blend-space sample: a clip placed at `position` along the blend parameter.
+```ts
+export interface BlendSample {
+  clip: AnimationClip;
+  position: number;
 }
 ```
 
