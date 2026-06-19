@@ -65,6 +65,7 @@ export type { TextureOptions } from './textures/Texture';
 export { DataTexture, CompressedDataTexture } from './textures/DataTexture';
 export { gradientTexture } from './textures/gradientTexture';
 export type { GradientStop } from './textures/gradientTexture';
+export { ColorLUT } from './textures/ColorLUT';
 
 // lights
 export { Light } from './lights/Light';

@@ -1,10 +1,13 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
+import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
 import { computeUniformLayout, packUniforms, type UniformLayout } from '../materials/ShaderMaterial';
+import { floatToHalfArray } from './TextureManager';
 import type { ShaderPass } from './ShaderPass';
 import type { Texture } from '../textures/Texture';
+import type { ColorLUT } from '../textures/ColorLUT';
 import type { TextureManager } from './TextureManager';
 import { DEPTH_FORMAT, OIT_ACCUM_FORMAT, OIT_REVEAL_FORMAT } from './constants';
 
@@ -35,6 +38,8 @@ export interface PostOptions {
   ssaoStrength: number;
   /** 'aces' = filmic curve (default); 'agx' = AgX operator; 'none' = sRGB-only (flat/stylized). */
   toneMapping: ToneMapping;
+  /** Optional 3-D color-grading LUT applied after tonemap (display space). */
+  colorLUT?: ColorLUT | null;
 }
 
 /**
@@ -80,6 +85,8 @@ export class PostProcessing {
   private hdrView!: GPUTextureView;
   private ldrPing!: GPUTexture;
   private ldrView!: GPUTextureView;
+  private ldrPong!: GPUTexture;
+  private ldrView2!: GPUTextureView;
   private bloomA!: GPUTexture;
   private bloomAView!: GPUTextureView;
   private bloomB!: GPUTexture;
@@ -102,6 +109,16 @@ export class PostProcessing {
   private passBView!: GPUTextureView;
   private passBindLayout: GPUBindGroupLayout;
   private passParamsBuffer: GPUBuffer;
+
+  // Color-grading LUT resources (lazily built 3-D texture).
+  private lutModule: GPUShaderModule;
+  private lutBindLayout: GPUBindGroupLayout;
+  private lutParamsBuffer: GPUBuffer;
+  private lutTexture: GPUTexture | null = null;
+  private lutView: GPUTextureView | null = null;
+  private lutSource: ColorLUT | null = null;
+  private lutSize = 0;
+  private lutVersion = -1;
   private passResources = new Map<string, ShaderPassResources>();
 
   constructor(
@@ -205,6 +222,20 @@ export class PostProcessing {
     // resolution(16) + time(16) = 32 bytes
     // resolution + time (32) + proj (64) + invProj (64) + camera near/far (16) = 176.
     this.passParamsBuffer = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    // Color-grading LUT pass (3-D texture needs its own bind layout).
+    this.lutModule = device.createShaderModule({ code: LUT_SHADER, label: 'lut' });
+    this.lutBindLayout = device.createBindGroupLayout({
+      label: 'lut',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    // info(16) + domain min/max (vec4 each, 32) = 48 bytes.
+    this.lutParamsBuffer = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
 
   /** (Re)allocate size-dependent targets. `w`/`h` are device pixels. */
@@ -241,6 +272,9 @@ export class PostProcessing {
     this._sceneCaptureView = this.sceneCapture.createView();
     this.ldrPing = attach(LDR_FORMAT, [w, h]);
     this.ldrView = this.ldrPing.createView();
+    this.ldrPong?.destroy();
+    this.ldrPong = attach(LDR_FORMAT, [w, h]);
+    this.ldrView2 = this.ldrPong.createView();
     // Half-resolution bloom targets (cheaper, naturally softer).
     const bw = Math.max(1, w >> 1), bh = Math.max(1, h >> 1);
     this.bloomA = attach(HDR_FORMAT, [bw, bh]);
@@ -709,12 +743,92 @@ export class PostProcessing {
     if (opts.toneMapping === 'none') baseEntry = 'fs_linear';
     else if (opts.toneMapping === 'agx') baseEntry = opts.bloom ? 'fs_tonemapAgxBloom' : 'fs_tonemapAgx';
     else baseEntry = opts.bloom ? 'fs_tonemapBloom' : 'fs_tonemap';
-    if (opts.fxaa) {
+    const lut = opts.colorLUT ?? null;
+    if (lut) {
+      // Tonemap (+ optional FXAA) into an LDR target, then grade it into the swap chain.
+      this.pass(encoder, baseEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
+      if (opts.fxaa) {
+        this.pass(encoder, 'fs_fxaa', LDR_FORMAT, this.ldrView, this.ldrView2);
+        this.runLUT(encoder, this.ldrView2, output, lut);
+      } else {
+        this.runLUT(encoder, this.ldrView, output, lut);
+      }
+    } else if (opts.fxaa) {
       this.pass(encoder, baseEntry, LDR_FORMAT, input, this.ldrView, bloomView, ssaoView);
       this.pass(encoder, 'fs_fxaa', this.swapFormat, this.ldrView, output);
     } else {
       this.pass(encoder, baseEntry, this.swapFormat, input, output, bloomView, ssaoView);
     }
+  }
+
+  /** Build/refresh the 3-D LUT texture from `lut` (keyed by identity + version). */
+  private ensureLUT(lut: ColorLUT): void {
+    if (this.lutSource === lut && this.lutVersion === lut.version && this.lutTexture) return;
+    const n = lut.size;
+    if (this.lutTexture && this.lutSize !== n) { this.lutTexture.destroy(); this.lutTexture = null; }
+    if (!this.lutTexture) {
+      this.lutTexture = this.device.createTexture({
+        size: [n, n, n], dimension: '3d', format: HDR_FORMAT,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      this.lutView = this.lutTexture.createView({ dimension: '3d' });
+      this.lutSize = n;
+    }
+    // Expand RGB → RGBA and upload as rgba16float (x = R fastest, matching .cube order).
+    const rgba = new Float32Array(n * n * n * 4);
+    for (let i = 0, j = 0; i < lut.data.length; i += 3, j += 4) {
+      rgba[j] = lut.data[i]; rgba[j + 1] = lut.data[i + 1]; rgba[j + 2] = lut.data[i + 2]; rgba[j + 3] = 1;
+    }
+    this.device.queue.writeTexture(
+      { texture: this.lutTexture },
+      floatToHalfArray(rgba),
+      { bytesPerRow: n * 8, rowsPerImage: n },
+      [n, n, n],
+    );
+    this.lutSource = lut;
+    this.lutVersion = lut.version;
+  }
+
+  /** Final color-grading pass: sample `input` (tonemapped LDR), grade through the LUT. */
+  private runLUT(encoder: GPUCommandEncoder, input: GPUTextureView, output: GPUTextureView, lut: ColorLUT): void {
+    this.ensureLUT(lut);
+    const dmin = lut.domainMin, dmax = lut.domainMax;
+    this.device.queue.writeBuffer(this.lutParamsBuffer, 0, new Float32Array([
+      lut.strength, lut.size, 0, 0,
+      dmin[0], dmin[1], dmin[2], 0,
+      dmax[0], dmax[1], dmax[2], 0,
+    ]));
+    const bg = this.device.createBindGroup({
+      layout: this.lutBindLayout,
+      entries: [
+        { binding: 0, resource: input },
+        { binding: 1, resource: this.sampler },
+        { binding: 2, resource: this.lutView! },
+        { binding: 3, resource: { buffer: this.lutParamsBuffer } },
+      ],
+    });
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: output, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+    });
+    pass.setPipeline(this.lutPipeline(this.swapFormat));
+    pass.setBindGroup(0, bg);
+    pass.draw(3);
+    pass.end();
+  }
+
+  private lutPipeline(format: GPUTextureFormat): GPURenderPipeline {
+    const key = `lut|${format}`;
+    let p = this.pipelines.get(key);
+    if (p) return p;
+    p = this.device.createRenderPipeline({
+      label: key,
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.lutBindLayout] }),
+      vertex: { module: this.lutModule, entryPoint: 'vs_main' },
+      fragment: { module: this.lutModule, entryPoint: 'fs_main', targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    this.pipelines.set(key, p);
+    return p;
   }
 
   private pass(

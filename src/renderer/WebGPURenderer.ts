@@ -37,6 +37,7 @@ import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
 import { PostProcessing, type ToneMapping } from './PostProcessing';
+import type { ColorLUT } from '../textures/ColorLUT';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
 import { HIZ_COPY_SHADER, HIZ_DOWN_SHADER } from './shaders/hiz.wgsl';
@@ -294,6 +295,12 @@ export class WebGPURenderer {
    * output (flat/stylized looks). Applies when `postProcessing` is on.
    */
   toneMapping: ToneMapping = 'aces';
+  /**
+   * Optional 3-D color-grading LUT applied as the final post pass (after tonemap,
+   * in display space). Requires `postProcessing`. Load one with
+   * `ColorLUT.parseCube(text)`.
+   */
+  colorLUT: ColorLUT | null = null;
   /**
    * Custom fullscreen post effects, run in order in HDR linear space before
    * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
@@ -1064,6 +1071,7 @@ export class WebGPURenderer {
         ssao: useSSAO,
         ssaoStrength: this.ssaoStrength,
         toneMapping: this.toneMapping,
+        colorLUT: this.colorLUT,
       }, postInput);
     }
     // Save this frame's unjittered view-projection for next frame's TAA
@@ -1232,10 +1240,10 @@ export class WebGPURenderer {
     }
 
     // Post effects requested but post pipeline off (silently inactive).
-    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.passes.length > 0)) {
+    if (!this.postProcessing && (this.bloom || this.ssao || this.taa || this.oit || this.colorLUT || this.passes.length > 0)) {
       out.push({
         code: 'post-effect-inactive',
-        message: 'A post effect (bloom/ssao/taa/oit/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
+        message: 'A post effect (bloom/ssao/taa/oit/colorLUT/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
         fix: 'Set renderer.postProcessing = true, or disable the effect to avoid confusion.',
       });
     }
