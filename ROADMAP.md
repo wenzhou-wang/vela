@@ -546,7 +546,7 @@ shot. All slot into the existing HDR post chain before/after tonemap.
       chromatic aberration, and an optional lens-flare/bloom-streak — all small
       `ShaderPass`-shaped effects gated on `postProcessing`.
 
-## v0.13 — Animation systems 🚧
+## v0.13 — Animation systems ✅
 
 Playback exists (`AnimationMixer`); authoring runtime motion does not. This tier makes the
 mixer a real animation system, staying data-first so an agent can wire state without a UI.
@@ -561,9 +561,12 @@ mixer a real animation system, staying data-first so an agent can wire state wit
       so tracks feed the blend without touching the node; single-clip `play(clip)` is
       unchanged. Bindings are cached, so a steady action set allocates nothing per frame.
       Offline-verified (average / weighted / nlerp / crossfade-prune / mask).
-- ⬜ **Additive layers** — an `additive` action mode that adds a clip's delta from a
-      reference pose on top of the blended base (e.g. a recoil or breathing layer), rather
-      than averaging into it. Needs a reference-pose capture; builds on the action model.
+- ✅ **Additive layers** — `action.additive = true` (+ `referenceTime`) adds the clip's
+      delta from its reference pose on top of the blended base rather than averaging in:
+      translation/scale/weights add `weight·(cur − ref)`, rotation applies a weight-scaled
+      delta quaternion (`base · slerp(id, cur·ref⁻¹, weight)`). Evaluated in a second pass
+      after the base blend, so a recoil/breathing layer rides on a walk (drives the same
+      nodes for no drift). Offline-verified (translation, rotation, weight scaling, no drift).
 - ✅ **Blend trees / state machine** — `AnimationStateMachine` takes a declarative
       `{ states, transitions, parameters }` graph: states are single clips or **1-D blend
       spaces** (nearest-two weighting by a `speed`-style parameter), transitions fire on

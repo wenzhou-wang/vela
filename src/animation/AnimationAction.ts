@@ -20,6 +20,14 @@ export class AnimationAction {
   /** Disabled actions are skipped by the blend and pruned once faded to 0. */
   enabled = true;
   /**
+   * Additive layer: instead of averaging into the base pose, add this clip's
+   * delta from `referenceTime` on top of it (e.g. a recoil or breathing layer),
+   * scaled by `weight`. Evaluated after the normal weighted blend.
+   */
+  additive = false;
+  /** Pose subtracted to form the additive delta (the clip's rest frame). */
+  referenceTime = 0;
+  /**
    * When set, only tracks targeting a node in this set contribute — a per-bone
    * mask (e.g. an upper-body action layered over a full-body walk).
    */

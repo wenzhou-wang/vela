@@ -615,6 +615,8 @@ One playing instance of an `AnimationClip` inside an `AnimationMixer`: its own p
 - loop: boolean
 - paused: boolean
 - enabled: boolean — Disabled actions are skipped by the blend and pruned once faded to 0.
+- additive: boolean — Additive layer: instead of averaging into the base pose, add this clip's delta from `referenceTime` on top of it (e.g.
+- referenceTime: number — Pose subtracted to form the additive delta (the clip's rest frame).
 - mask: Set<Object3D> | null — When set, only tracks targeting a node in this set contribute — a per-bone mask (e.g.
 - onEvent: ((name: string, time: number) => void) | null — Fired by the mixer when playback crosses one of the clip's `events` (loop-aware).
 - setMask(targets: Object3D[] | null): AnimationAction — Restrict this action to the given target nodes (per-bone mask).

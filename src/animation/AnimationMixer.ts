@@ -2,6 +2,9 @@ import type { AnimationClip } from './AnimationClip';
 import type { KeyframeTrack, TrackPath } from './KeyframeTrack';
 import type { Object3D } from '../core/Object3D';
 import { AnimationAction } from './AnimationAction';
+import { Quaternion } from '../math/Quaternion';
+
+const _qCur = new Quaternion(), _qRef = new Quaternion(), _qDelta = new Quaternion(), _qW = new Quaternion();
 
 /** One contributor (a clip's track + the action it belongs to) to a binding. */
 interface BlendItem {
@@ -40,6 +43,7 @@ export class AnimationMixer {
   private scratch = new Float32Array(4);
   private accum = new Float32Array(4);
   private ref = new Float32Array(4);
+  private refbuf = new Float32Array(4);
 
   /** Play `clip` exclusively at full weight (replaces any current actions). */
   play(clip: AnimationClip): this {
@@ -162,17 +166,20 @@ export class AnimationMixer {
   /** Sample every enabled action and blend the results into the target nodes. */
   private evaluate(): void {
     if (this.bindingsDirty) this.rebuildBindings();
-    const { scratch, accum, ref } = this;
+    const { scratch, accum, ref, refbuf } = this;
 
     for (const b of this.bindings) {
       const s = b.stride;
       let totalW = 0;
       let haveRef = false;
+      let hasAdditive = false;
       for (let k = 0; k < s; k++) accum[k] = 0;
 
+      // Base pass: weighted blend of the normal (non-additive) actions.
       for (const item of b.items) {
         const a = item.action;
         if (!a.enabled || a.weight <= 0) continue;
+        if (a.additive) { hasAdditive = true; continue; }
         item.track.evaluate(a.time, scratch);
         const w = a.weight;
         if (b.path === 'rotation') {
@@ -187,8 +194,38 @@ export class AnimationMixer {
         totalW += w;
       }
 
-      if (totalW <= 0) continue; // no active contributor: leave the node as-is
-      this.write(b, accum, totalW);
+      if (totalW > 0) this.write(b, accum, totalW);
+
+      // Additive pass: add each additive action's delta from its reference pose.
+      if (hasAdditive) {
+        for (const item of b.items) {
+          const a = item.action;
+          if (!a.enabled || a.weight <= 0 || !a.additive) continue;
+          item.track.evaluate(a.time, scratch);
+          item.track.evaluate(a.referenceTime, refbuf);
+          this.applyAdditive(b, scratch, refbuf, a.weight);
+        }
+      }
+    }
+  }
+
+  /** Add `weight · (cur − ref)` (rotation: a weighted delta rotation) onto the target. */
+  private applyAdditive(b: Binding, cur: Float32Array, ref: Float32Array, w: number): void {
+    const t = b.target;
+    if (b.path === 'rotation') {
+      _qCur.set(cur[0], cur[1], cur[2], cur[3]);
+      _qRef.set(ref[0], ref[1], ref[2], ref[3]);
+      _qDelta.copy(_qCur).multiply(_qRef.invert());   // delta = cur · ref⁻¹
+      _qW.set(0, 0, 0, 1).slerp(_qDelta, w);          // scale the delta by weight
+      t.quaternion.multiply(_qW).normalize();         // base · weightedDelta (local)
+    } else if (b.path === 'weights') {
+      const arr = (t as Object3D & { morphTargetInfluences: number[] }).morphTargetInfluences;
+      for (let k = 0; k < b.stride; k++) arr[k] += w * (cur[k] - ref[k]);
+    } else {
+      const dst = b.path === 'translation' ? t.position : t.scale;
+      dst.x += w * (cur[0] - ref[0]);
+      dst.y += w * (cur[1] - ref[1]);
+      dst.z += w * (cur[2] - ref[2]);
     }
   }
 
@@ -234,6 +271,7 @@ export class AnimationMixer {
     if (maxStride > this.scratch.length) {
       this.scratch = new Float32Array(maxStride);
       this.accum = new Float32Array(maxStride);
+      this.refbuf = new Float32Array(maxStride);
     }
     this.bindingsDirty = false;
   }
