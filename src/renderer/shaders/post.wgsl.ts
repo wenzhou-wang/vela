@@ -7,7 +7,8 @@
  *   params.data = (1/width, 1/height, bloomThreshold, bloomIntensity)
  *
  * Entries: tonemap (ACES+sRGB), tonemapBloom (adds blurred bloom then tonemaps),
- * threshold (bright-pass), blurH/blurV (separable Gaussian), fxaa, copy, oitComposite.
+ * tonemapAgx / tonemapAgxBloom (AgX operator), threshold (bright-pass),
+ * blurH/blurV (separable Gaussian), fxaa, copy, oitComposite.
  */
 export const POST_SHADER = /* wgsl */ `
 @group(0) @binding(0) var src      : texture_2d<f32>;
@@ -40,6 +41,36 @@ fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// AgX tonemap (minimal approximation, after Troy Sobotka's AgX via bwrensch).
+// Returns a LINEAR value; the caller applies the sRGB OETF like the ACES path.
+fn agxContrast(x : vec3<f32>) -> vec3<f32> {
+  let x2 = x * x;
+  let x4 = x2 * x2;
+  return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4
+    - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+fn agxTonemap(hdr : vec3<f32>) -> vec3<f32> {
+  // Inset (input) transform, column-major.
+  let inset = mat3x3<f32>(
+    0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+    0.0784335999999992, 0.878468636469772, 0.0784336,
+    0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+  let outset = mat3x3<f32>(
+    1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+    -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+    -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+  let minEv = -12.47393;
+  let maxEv = 4.026069;
+
+  var v = inset * max(hdr, vec3<f32>(0.0));
+  v = clamp(log2(v), vec3<f32>(minEv), vec3<f32>(maxEv));
+  v = (v - minEv) / (maxEv - minEv);
+  v = agxContrast(v);              // display-encoded sigmoid output
+  v = outset * v;                  // outset (output) transform
+  return pow(max(v, vec3<f32>(0.0)), vec3<f32>(2.2));  // EOTF → linear
+}
+
 fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
   let cutoff = step(vec3<f32>(0.0031308), c);
   let lo = c * 12.92;
@@ -64,6 +95,21 @@ fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
   let hdr   = textureSample(src, samp, in.uv).rgb * ao;
   let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
   return vec4<f32>(linearToSRGB(acesFilmic(hdr + bloom)), 1.0);
+}
+
+@fragment
+fn fs_tonemapAgx(in : VSOut) -> @location(0) vec4<f32> {
+  let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
+  let hdr = textureSample(src, samp, in.uv).rgb * ao;
+  return vec4<f32>(linearToSRGB(agxTonemap(hdr)), 1.0);
+}
+
+@fragment
+fn fs_tonemapAgxBloom(in : VSOut) -> @location(0) vec4<f32> {
+  let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
+  let hdr   = textureSample(src, samp, in.uv).rgb * ao;
+  let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
+  return vec4<f32>(linearToSRGB(agxTonemap(hdr + bloom)), 1.0);
 }
 
 // No-tonemap output: exposure already applied upstream; just sRGB-encode (with

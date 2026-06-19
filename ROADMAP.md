@@ -535,10 +535,11 @@ shot. All slot into the existing HDR post chain before/after tonemap.
 - ⬜ **Depth of field** — a circle-of-confusion pass from depth + physical
       aperture/focus-distance, near/far blurred with a bokeh kernel (reuse the half-res
       Gaussian targets from bloom for the cheap path).
-- ⬜ **Color grading & display transforms** — `renderer.toneMapping` already selects the
-      output transform (`'aces'` filmic / `'none'` linear); extend it with an **AgX**
-      operator and add a **3-D LUT** node (`.cube`) plus lift/gamma/gain + saturation as
-      cheap analytic ops in the post chain. Keeps the "linear output" flag contract so
+- 🚧 **Color grading & display transforms** — ✅ `renderer.toneMapping` selects the output
+      transform: `'aces'` filmic, `'agx'` (AgX operator — minimal log-sigmoid approximation,
+      gentler highlight desaturation; bloom-paired entries `fs_tonemapAgx[Bloom]`), or
+      `'none'` linear. ⬜ Add a **3-D LUT** node (`.cube`) plus lift/gamma/gain + saturation
+      as cheap analytic ops in the post chain. Keeps the "linear output" flag contract so
       material shaders stay tonemap-agnostic.
 - ⬜ **Lens & exposure** — **auto-exposure** (a compute histogram of the HDR target →
       adapted EV, smoothed over time; deterministic mode pins it), plus vignette,

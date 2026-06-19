@@ -289,9 +289,9 @@ export class WebGPURenderer {
   bloomThreshold = 1.0;
   bloomIntensity = 0.6;
   /**
-   * Output transform for the post pipeline: `'aces'` filmic (default) or
-   * `'none'` for sRGB-only output (flat/stylized looks). Applies when
-   * `postProcessing` is on.
+   * Output transform for the post pipeline: `'aces'` filmic (default), `'agx'`
+   * (AgX operator — gentler highlight desaturation), or `'none'` for sRGB-only
+   * output (flat/stylized looks). Applies when `postProcessing` is on.
    */
   toneMapping: ToneMapping = 'aces';
   /**
