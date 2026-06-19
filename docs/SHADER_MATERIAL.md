@@ -143,6 +143,70 @@ flag.setVertex(null);     // back to undisplaced
 
 `VSIn` exposes `in.position`, `in.normal`, `in.uv`, `in.tangent`, `in.color`.
 
+## Custom lighting
+
+`surface()` produces material inputs; the engine then runs its PBR lighting over
+them. Two optional hooks let you intercept that lighting instead of re-deriving
+it — the engine still decides *which* lights reach the fragment (clustered list,
+distance/cone attenuation, shadow visibility) and hands you the per-light terms.
+This is how toon ramps, wrap / half-Lambert, and posterized highlights are
+expressed without an engine flag.
+
+`light(s, l) -> vec3<f32>` is called once per reaching light; return that light's
+contribution and the engine sums them. `LightSample` carries:
+
+| field        | meaning                                                      |
+| ------------ | ----------------------------------------------------------- |
+| `l.L`        | world-space direction to the light                          |
+| `l.radiance` | light color × distance/cone attenuation × **shadow** factor |
+| `l.N` `l.V` `l.H` | shading normal, view dir, half vector                  |
+| `l.NoL`      | **raw** `dot(N, L)` — may be negative (for wrap lighting)   |
+| `l.NoV` `l.NoH` `l.VoH` | the usual clamped dots for BRDF terms            |
+
+`ambient(s, ind) -> vec3<f32>` replaces the indirect (image-based / flat ambient)
+term; `IndirectSample` carries `ind.N`, `ind.V`, `ind.NoV`.
+
+Call `defaultLight(s, l)` / `defaultIndirect(s, ind)` to reuse (or blend with)
+the engine's PBR result.
+
+```ts
+const toon = new ShaderMaterial({
+  uniforms: { ramp: new Vector3(0.0, 0.5, 1.0) },
+  surface: /* wgsl */ `
+    fn surface(in : VSOut) -> Surface {
+      var s = defaultSurface(in);
+      s.baseColor = vec3(0.85, 0.2, 0.25);
+      return s;
+    }
+  `,
+  // Two-band cel ramp on N·L, with a hard specular dot.
+  light: /* wgsl */ `
+    fn light(s : Surface, l : LightSample) -> vec3<f32> {
+      let band = select(u.ramp.x, select(u.ramp.y, u.ramp.z, l.NoL > 0.66), l.NoL > 0.33);
+      let spec = select(0.0, 1.0, l.NoH > 0.98);
+      return (s.baseColor * band + vec3(spec)) * l.radiance;
+    }
+  `,
+  // Flat fill instead of full IBL.
+  ambient: /* wgsl */ `
+    fn ambient(s : Surface, ind : IndirectSample) -> vec3<f32> {
+      return s.baseColor * 0.15;
+    }
+  `,
+});
+toon.setLight(null);   // back to physical direct lighting
+toon.setAmbient(null); // back to the engine's indirect
+```
+
+Wrap / half-Lambert lighting uses the raw `l.NoL`:
+
+```wgsl
+fn light(s : Surface, l : LightSample) -> vec3<f32> {
+  let wrap = clamp((l.NoL + u.wrap) / (1.0 + u.wrap), 0.0, 1.0);
+  return s.baseColor * wrap * l.radiance;
+}
+```
+
 ## More recipes
 
 **Procedural stripes with a custom normal wobble:**

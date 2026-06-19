@@ -140,6 +140,21 @@ export interface ShaderMaterialOptions {
    */
   vertex?: string;
   /**
+   * Optional WGSL defining `fn light(s : Surface, l : LightSample) ->
+   * vec3<f32>` — the engine calls it once per light that reaches the fragment
+   * (clustered/attenuated/shadowed for you) and sums the results, so toon
+   * ramps, wrap/half-Lambert, and posterized highlights remap lighting instead
+   * of re-deriving it. `l.NoL` is the raw (possibly negative) dot; call
+   * `defaultLight(s, l)` for the engine's PBR contribution.
+   */
+  light?: string;
+  /**
+   * Optional WGSL defining `fn ambient(s : Surface, ind : IndirectSample) ->
+   * vec3<f32>` — replaces the indirect (image-based/flat ambient) term. Call
+   * `defaultIndirect(s, ind)` to blend with the engine default.
+   */
+  ambient?: string;
+  /**
    * Custom uniforms: scalars/vectors as `u.<name>`, Textures as
    * `t_<name>`/`s_<name>` pairs. Values are re-read every frame.
    */
@@ -185,13 +200,19 @@ export class ShaderMaterial extends Material {
 
   private _surfaceCode: string;
   private _vertexCode: string | null;
+  private _lightCode: string | null;
+  private _ambientCode: string | null;
 
   constructor(options: ShaderMaterialOptions) {
     super();
     ShaderMaterial.validateSurface(options.surface);
     if (options.vertex !== undefined) ShaderMaterial.validateVertex(options.vertex);
+    if (options.light !== undefined) ShaderMaterial.validateLight(options.light);
+    if (options.ambient !== undefined) ShaderMaterial.validateAmbient(options.ambient);
     this._surfaceCode = options.surface;
     this._vertexCode = options.vertex ?? null;
+    this._lightCode = options.light ?? null;
+    this._ambientCode = options.ambient ?? null;
     this.uniforms = options.uniforms ?? {};
     if (options.name !== undefined) this.name = options.name;
     if (options.side !== undefined) this.side = options.side;
@@ -209,6 +230,14 @@ export class ShaderMaterial extends Material {
     return this._vertexCode;
   }
 
+  get lightCode(): string | null {
+    return this._lightCode;
+  }
+
+  get ambientCode(): string | null {
+    return this._ambientCode;
+  }
+
   /** Replace the surface function; the shader recompiles on next draw. */
   setSurface(code: string): void {
     ShaderMaterial.validateSurface(code);
@@ -220,6 +249,20 @@ export class ShaderMaterial extends Material {
   setVertex(code: string | null): void {
     if (code !== null) ShaderMaterial.validateVertex(code);
     this._vertexCode = code;
+    this.version++;
+  }
+
+  /** Set/replace/clear the per-light function; recompiles on next draw. */
+  setLight(code: string | null): void {
+    if (code !== null) ShaderMaterial.validateLight(code);
+    this._lightCode = code;
+    this.version++;
+  }
+
+  /** Set/replace/clear the indirect-light function; recompiles on next draw. */
+  setAmbient(code: string | null): void {
+    if (code !== null) ShaderMaterial.validateAmbient(code);
+    this._ambientCode = code;
     this.version++;
   }
 
@@ -240,6 +283,27 @@ export class ShaderMaterial extends Material {
         'ShaderMaterial: the `vertex` option must be WGSL source defining\n' +
         '  fn displace(position : vec3<f32>, in : VSIn) -> vec3<f32> { ... }\n' +
         'It runs before the model transform; return the displaced local position.',
+      );
+    }
+  }
+
+  private static validateLight(code: string): void {
+    if (typeof code !== 'string' || !/fn\s+light\s*\(/.test(code)) {
+      throw new Error(
+        'ShaderMaterial: the `light` option must be WGSL source defining\n' +
+        '  fn light(s : Surface, l : LightSample) -> vec3<f32> { ... }\n' +
+        'It runs once per reaching light; return that light\'s contribution ' +
+        '(e.g. `defaultLight(s, l)` plus your own remap of l.NoL).',
+      );
+    }
+  }
+
+  private static validateAmbient(code: string): void {
+    if (typeof code !== 'string' || !/fn\s+ambient\s*\(/.test(code)) {
+      throw new Error(
+        'ShaderMaterial: the `ambient` option must be WGSL source defining\n' +
+        '  fn ambient(s : Surface, ind : IndirectSample) -> vec3<f32> { ... }\n' +
+        'It replaces the indirect term; call `defaultIndirect(s, ind)` to blend.',
       );
     }
   }

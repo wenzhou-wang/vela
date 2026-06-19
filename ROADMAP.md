@@ -474,11 +474,17 @@ in app code on `ShaderMaterial` / `ShaderPass` / `ComputeTask`, as the gltf-view
 flag — it closes the *general* API gaps those apps hit, with capabilities any renderer
 client could use, never a built-in style.
 
-- ⬜ **Lighting terms inside `ShaderMaterial`** — a custom `surface()` today gets material
-      inputs but not the lit result; toon ramps, wrap, and posterized highlights have to
-      re-derive lighting. Expose the engine's per-light evaluation (per-light N·L, visibility
-      from the shadow/cluster path, ambient/IBL split) to a custom shade function so an app
-      can remap it however it likes — generic, not a ramp baked into the engine.
+- ✅ **Lighting terms inside `ShaderMaterial`** — two optional WGSL hooks expose the
+      engine's lighting to a custom shade function so toon ramps, wrap/half-Lambert, and
+      posterized highlights remap it instead of re-deriving it. `light(s, l : LightSample)`
+      is called once per light that reaches the fragment — the engine still resolves the
+      clustered list, distance/cone attenuation, and shadow visibility and hands them over
+      as `l.radiance`, with the **raw** (signed) `l.NoL` plus `L/V/H/NoV/NoH/VoH` so wrap
+      lighting works; the engine sums the returned per-light contributions.
+      `ambient(s, ind : IndirectSample)` replaces the indirect (IBL/flat ambient) term.
+      `defaultLight(s, l)` / `defaultIndirect(s, ind)` reproduce the engine's PBR result for
+      blending. Generic — no ramp or style baked into the engine. Offline-verified (all four
+      vertex variants × {none, light, ambient, both} parse with the right entry points).
 - ⬜ **Normal / linear-depth targets for `ShaderPass`** — `sceneColor()`/`sceneDepth()`
       exist; add an opt-in world/view **normal** buffer (and linearized depth) so app-side
       edge detection, outlines, and SSAO-like effects don't reconstruct normals from depth

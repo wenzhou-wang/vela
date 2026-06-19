@@ -149,6 +149,9 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
   `wgsl_reflect`; bind-group indices and struct byte sizes (frame 240 / model 128 /
   material 144 / light stride 48) confirmed to match the TypeScript buffer packing.
+- **ShaderMaterial lighting hooks** — the generated module parses (with the right
+  vertex/fragment entry points) for every vertex variant crossed with the optional
+  `light`/`ambient` hooks present or absent.
 - **Whole project** type-checks under `strict` and bundles via Vite.
 
 ## Roadmap

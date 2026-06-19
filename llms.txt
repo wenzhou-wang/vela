@@ -330,8 +330,12 @@ A custom-surface material: you write one WGSL function that produces PBR surface
 - version: number — Bumped by setSurface(); part of the pipeline cache key.
 - surfaceCode: string
 - vertexCode: string | null
+- lightCode: string | null
+- ambientCode: string | null
 - setSurface(code: string): void — Replace the surface function; the shader recompiles on next draw.
 - setVertex(code: string | null): void — Set/replace/clear the vertex displacement function; recompiles on next draw.
+- setLight(code: string | null): void — Set/replace/clear the per-light function; recompiles on next draw.
+- setAmbient(code: string | null): void — Set/replace/clear the indirect-light function; recompiles on next draw.
 
 ### class ShaderPass
 A custom fullscreen post-processing effect. Push instances into `renderer.passes`; they run in order in HDR linear space after the scene (and bloom/SSAO/TAA) and before tonemap, each reading the previous stage's color plus the scene depth.
@@ -426,6 +430,16 @@ A GPU block-compressed texture (BC7 / ASTC 4×4 / ETC2). Uploaded directly to th
 - isCompressedDataTexture: true
 - gpuFormat: string — The WebGPU texture format (e.g.
 
+### class ColorLUT
+A 3-D color lookup table for display-space color grading, applied as the final post pass (after tonemap). `data` is `size³ × 3` RGB, red varying fastest — the layout of a `.cube` LUT and of a WebGPU 3-D texture (x = R, y = G, z = B).
+- new ColorLUT(size: number, data: Float32Array<ArrayBufferLike>, strength: number)
+- size: number
+- data: Float32Array<ArrayBufferLike>
+- domainMin: [number, number, number] — Input domain from `.cube` DOMAIN_MIN/MAX, per channel (default [0, 1]).
+- domainMax: [number, number, number]
+- strength: number — Blend toward the graded color in [0, 1] (1 = full grade).
+- version: number — Bumped to force the post pipeline to re-upload the 3-D texture.
+
 ### class Light extends Object3D
 Base light: a colored, intensity-scaled emitter in the scene graph.
 - new Light(color: ColorInput | undefined, intensity: number)
@@ -478,6 +492,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - bloomThreshold: number
 - bloomIntensity: number
 - toneMapping: ToneMapping — Output transform for the post pipeline: `'aces'` filmic (default), `'agx'` (AgX operator — gentler highlight desaturation), or `'none'` for sRGB-only output (flat/stylized looks).
+- colorLUT: ColorLUT | null — Optional 3-D color-grading LUT applied as the final post pass (after tonemap, in display space).
 - passes: ShaderPass[] — Custom fullscreen post effects, run in order in HDR linear space before tonemap (requires `postProcessing`).
 - oit: boolean — Order-independent transparency (weighted-blended).
 - ssao: boolean — Screen-space ambient occlusion.
@@ -1054,6 +1069,8 @@ export interface LineBasicMaterialParams {
 export interface ShaderMaterialOptions {
   surface: string;
   vertex?: string;
+  light?: string;
+  ambient?: string;
   uniforms?: Record<string, UniformValue>;
   name?: string;
   side?: Side;

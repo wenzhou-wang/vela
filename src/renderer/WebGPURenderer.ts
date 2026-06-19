@@ -2495,7 +2495,7 @@ export class WebGPURenderer {
       const textureCount = res.layout.textures.length;
       pass.setPipeline(this.pipelines.getCustom(
         cacheKey, variant, sm, this.sceneTargetFormat, oit, oitSampleCount,
-        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode),
+        () => buildSurfaceShader(variant, res.layout.wgsl, sm.surfaceCode, sm.vertexCode, sm.lightCode, sm.ambientCode),
         hasBuffer, textureCount,
         sm.name || sm.type,
       ));
