@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vela · wave field</title>
+    <style>
+      :root {
+        --bg: #05060a;
+        --panel: rgba(16, 18, 26, 0.82);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #e6e8ec;
+        --muted: #9aa0aa;
+        --accent: #ffd479;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--text);
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+      .panel {
+        position: absolute;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        backdrop-filter: blur(12px);
+        padding: 14px 16px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      #info { top: 16px; left: 16px; max-width: 320px; }
+      #info h1 { margin: 0 0 4px; font-size: 16px; letter-spacing: 0.3px; }
+      #info h1 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+      #info .eq {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        color: var(--accent);
+        background: rgba(255, 212, 121, 0.08);
+        border-radius: 6px;
+        padding: 6px 8px;
+        margin: 8px 0;
+        font-size: 12px;
+      }
+      #info .hint { color: var(--muted); margin-top: 8px; }
+
+      #controls { bottom: 16px; left: 16px; display: grid; gap: 8px; min-width: 220px; }
+      #controls label { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+      #controls .name { color: var(--muted); }
+      #controls input[type="range"] { width: 130px; accent-color: var(--accent); }
+
+      #unsupported {
+        display: none;
+        position: fixed; inset: 0;
+        align-items: center; justify-content: center;
+        text-align: center; padding: 24px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="info" class="panel">
+      <h1>Wave Field <small>· vela demo</small></h1>
+      <div>An interference pattern from drifting circular sources, drawn as
+        <strong id="count">—</strong> animated pillars in a <strong>single instanced draw call</strong>.</div>
+      <div class="eq">h(p,t) = Σ&nbsp;A·sin(k·|p−sᵢ| − ω·t) / (1 + |p−sᵢ|)</div>
+      <div class="hint">Drag to orbit · scroll to zoom</div>
+    </div>
+
+    <div id="controls" class="panel">
+      <label><span class="name">Wave sources</span><input id="sources" type="range" min="1" max="6" step="1" value="3" /></label>
+      <label><span class="name">Speed</span><input id="speed" type="range" min="0" max="3" step="0.05" value="1" /></label>
+      <label><span class="name">Frequency</span><input id="freq" type="range" min="0.5" max="4" step="0.05" value="1.6" /></label>
+      <label><span class="name">Auto-orbit</span><input id="orbit" type="checkbox" checked /></label>
+    </div>
+
+    <div id="unsupported">
+      <div>
+        <h2>WebGPU not available</h2>
+        <p>This demo needs a browser with WebGPU enabled (recent Chrome, Edge, or Safari Technology Preview).</p>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
