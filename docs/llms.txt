@@ -871,6 +871,9 @@ Encode pixels as a PNG Blob. Browser-only.
 ### function expectFrame(renderer: WebGPURenderer, scene: Scene, camera: Camera, golden: string | PixelData | Blob, options?: CaptureOptions & CompareOptions): Promise<CompareResult>
 Render deterministically and assert the frame matches a golden image. On mismatch, throws `FrameMismatchError` with metrics plus the actual and diff frames as PNG blobs (also logged as object URLs for quick viewing).
 
+### function solveTwoBoneIK(root: Object3D, mid: Object3D, end: Object3D, target: Vector3, options?: TwoBoneIKOptions): void
+Analytic two-bone IK: rotate `root` and `mid` (local quaternions) so `end` reaches `target` (world space), with the joint bending toward an optional `pole`. `mid` must be a child of `root` and `end` a descendant of `mid`.
+
 ### function clamp(value: number, min: number, max: number): number
 
 
@@ -1310,6 +1313,13 @@ A timeline marker on a clip; the mixer fires it when playback crosses `time`.
 export interface AnimationEvent {
   time: number;
   name: string;
+}
+```
+
+### TwoBoneIKOptions
+```ts
+export interface TwoBoneIKOptions {
+  pole?: Vector3;
 }
 ```
 

@@ -567,8 +567,13 @@ mixer a real animation system, staying data-first so an agent can wire state wit
 - ⬜ **Blend trees / state machine** — a declarative `{ states, transitions, parameters }`
       graph (1-D/2-D blend spaces by a `speed`/`direction` param), evaluated to mixer
       weights each frame; introspectable via `describe()` so the active state is readable.
-- ⬜ **Two-bone IK** — analytic limb IK (foot/hand targets, pole vector) applied after the
-      mixer writes the pose, for foot-planting and look-at; offline-verifiable as pure math.
+- ✅ **Two-bone IK** — `solveTwoBoneIK(root, mid, end, target, { pole })` rotates the two
+      joint local quaternions so `end` reaches a world-space `target`, bending toward an
+      optional `pole`. Geometric solve: place the mid joint on the law-of-cosines circle in
+      the aim×pole plane, then orient each bone with `setFromUnitVectors` (robust to a fully
+      straight starting pose; out-of-reach extends straight). Apply after the mixer writes
+      the pose. Offline-verified (reach across targets, out-of-reach, pole direction from a
+      straight limb, re-solve stability).
 - ✅ **Animation events** — `clip.addEvent(time, name)` adds sorted timeline markers;
       `action.onEvent = (name, time) => …` fires as the mixer crosses them, loop-aware
       (a wrap from near the end past 0 still fires early events) and direction-aware.
