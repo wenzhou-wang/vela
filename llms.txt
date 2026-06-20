@@ -249,6 +249,14 @@ A depth-projected box decal. Its local -Z axis is the projection direction.
 - opacity: number
 - map: Texture | null
 
+### class Terrain extends Object3D
+A tiled heightfield whose tiles independently select ordinary `LOD` mesh levels.
+- new Terrain(options: TerrainOptions)
+- isTerrain: true
+- tiles: LOD[]
+- options: Readonly<TerrainOptions>
+- describe(): TerrainDescription
+
 ### class Skeleton
 A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
 - new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
@@ -1120,6 +1128,31 @@ export interface DecalOptions {
 }
 ```
 
+### TerrainOptions
+```ts
+export interface TerrainOptions {
+  heights: Float32Array;
+  segmentsX: number;
+  segmentsZ: number;
+  width?: number;
+  depth?: number;
+  tiles?: [number, number];
+  levels?: number;
+  material: Material;
+  hysteresis?: number;
+}
+```
+
+### TerrainDescription
+```ts
+export interface TerrainDescription {
+  segments: [number, number];
+  tiles: [number, number];
+  levels: number;
+  trianglesByLevel: number[];
+}
+```
+
 ### TypedArray
 ```ts
 export type TypedArray =
@@ -1361,6 +1394,7 @@ export interface SceneDescription {
     reflectionProbes: number;
     irradianceProbeGrids: number;
     decals: number;
+    terrains: number;
     lights: Record<string, number>;
   };
   bounds: { center: [number, number, number]; size: [number, number, number]; radius: number } | null;

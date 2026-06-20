@@ -666,8 +666,14 @@ Surface and world-building detail the renderer currently can't express.
       the WebGPU baseline 16 sampled textures with the frame group. Parameters round-trip
       through `SceneSerializer`. Offline-verified: all four PBR variants parse with the
       160-byte material block, strict typecheck, and production build.
-- ⬜ **Terrain / heightfield** — a `Terrain` node: GPU-clipmap or quadtree LOD heightfield
-      with splat-mapped material layers, built on the existing LOD + instancing primitives.
+- ✅ **Terrain / heightfield** — `Terrain` partitions a row-major CPU heightfield into a
+      configurable tile grid; each tile owns multiple downsampled `BufferGeometry` levels
+      under the existing `LOD`, so tiles independently select detail, frustum-cull, shadow,
+      and use every normal mesh path. Shared source edge samples prevent positional seams;
+      global UVs let a caller-supplied `ShaderMaterial` implement arbitrary splat layers
+      without terrain branches in `src/`. `describe()` reports segments, tiles, levels, and
+      total triangle cost per level; `describeScene()` counts terrain nodes. Offline-verified
+      topology/LOD costs (128→32→8 triangles), strict typecheck, and production build.
 - ✅ **Trails & ribbons** — `TrailRenderer` (a `Mesh`) samples `target`'s world position
       into a fixed-capacity history each `update(cameraPosition)` and rebuilds a camera-facing
       triangle strip through it (central-difference tangent × view → ribbon side), with width

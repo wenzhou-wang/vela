@@ -10,6 +10,7 @@ import { TextMesh } from './TextMesh';
 import { ReflectionProbe } from './ReflectionProbe';
 import { IrradianceProbeGrid } from './IrradianceProbeGrid';
 import { Decal } from './Decal';
+import { Terrain } from './Terrain';
 import { Light } from '../lights/Light';
 import type { Material } from '../materials/Material';
 import { Frustum } from '../math/Frustum';
@@ -28,6 +29,7 @@ export interface SceneDescription {
     reflectionProbes: number;
     irradianceProbeGrids: number;
     decals: number;
+    terrains: number;
     lights: Record<string, number>;
   };
   /** World-space bounds of all meshes (null when empty). */
@@ -67,7 +69,7 @@ export function describeScene(scene: Scene, camera?: Camera): SceneDescription {
 
   const counts = {
     nodes: 0, meshes: 0, instancedMeshes: 0, skinnedMeshes: 0,
-    particleSystems: 0, sprites: 0, texts: 0, reflectionProbes: 0, irradianceProbeGrids: 0, decals: 0,
+    particleSystems: 0, sprites: 0, texts: 0, reflectionProbes: 0, irradianceProbeGrids: 0, decals: 0, terrains: 0,
     lights: {} as Record<string, number>,
   };
   const named: SceneDescription['named'] = [];
@@ -94,6 +96,8 @@ export function describeScene(scene: Scene, camera?: Camera): SceneDescription {
       counts.irradianceProbeGrids++;
     } else if (o instanceof Decal) {
       counts.decals++;
+    } else if (o instanceof Terrain) {
+      counts.terrains++;
     } else if (o instanceof Mesh) {
       counts.meshes++;
       if (o instanceof InstancedMesh) counts.instancedMeshes++;
