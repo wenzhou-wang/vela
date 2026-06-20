@@ -19,6 +19,7 @@ export default defineConfig({
         viewer: resolve(__dirname, 'examples/gltf-viewer/index.html'),
         sunsetRidge: resolve(__dirname, 'examples/sunset-ridge/index.html'),
         neonForge: resolve(__dirname, 'examples/neon-forge/index.html'),
+        agentLab: resolve(__dirname, 'examples/agent-lab/index.html'),
       },
     },
   },

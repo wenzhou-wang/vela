@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vela · agent lab</title>
+    <style>
+      :root { color-scheme: dark; --green: #82ffc8; --ink: #07100f; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #030907; }
+      body { color: #e7fff5; font: 12px/1.45 ui-monospace, "SFMono-Regular", Consolas, monospace; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      #intro { position: fixed; top: 16px; left: 16px; width: 330px; padding: 15px 17px;
+        border: 1px solid #82ffc82b; border-radius: 13px; background: #07100fd9; backdrop-filter: blur(13px); }
+      h1 { margin: 0 0 5px; font: 600 18px/1.2 ui-sans-serif, system-ui, sans-serif; }
+      p { margin: 0; color: #9fc5b6; }
+      #console { position: fixed; top: 16px; right: 16px; bottom: 16px; width: min(430px, 42vw);
+        display: grid; grid-template-rows: auto auto 1fr; overflow: hidden; border: 1px solid #82ffc833;
+        border-radius: 13px; background: #04100deb; box-shadow: 0 0 45px #20ff9d0c; backdrop-filter: blur(15px); }
+      .toolbar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid #82ffc81f; }
+      button { border: 1px solid #82ffc852; border-radius: 7px; padding: 7px 9px; color: var(--green);
+        background: #82ffc80b; font: inherit; cursor: pointer; }
+      button:hover { background: #82ffc81c; }
+      #status { padding: 8px 13px; color: #8cb6a6; border-bottom: 1px solid #82ffc81f; }
+      #readout { margin: 0; padding: 13px; overflow: auto; white-space: pre-wrap; color: #b8efda; }
+      .tag { margin-top: 10px; color: var(--green); font-size: 11px; }
+      #unsupported { display: none; position: fixed; inset: 0; place-items: center; text-align: center; }
+      @media (max-width: 760px) { #console { top: auto; left: 12px; right: 12px; bottom: 12px; width: auto; height: 45vh; } #intro { left: 12px; top: 12px; } }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <section id="intro">
+      <h1>Agent Lab</h1>
+      <p>The scene explains itself as structured JSON. Use the controls to perform typed graph edits and inspect the exact diff—without reaching into renderer internals.</p>
+      <div class="tag">DESCRIBE · REPORT · DIAGNOSE · EDIT · DIFF</div>
+    </section>
+    <aside id="console">
+      <div class="toolbar">
+        <button id="mutate">Apply agent edit</button>
+        <button id="diagnose">Diagnose</button>
+        <button id="view">Change view</button>
+      </div>
+      <div id="status">Live engine telemetry</div>
+      <pre id="readout"></pre>
+    </aside>
+    <div id="unsupported"><div><h2>WebGPU is required</h2><p>Open this demo in a WebGPU-capable browser.</p></div></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
