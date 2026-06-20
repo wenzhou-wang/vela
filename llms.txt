@@ -523,6 +523,10 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - bloomIntensity: number
 - toneMapping: ToneMapping — Output transform for the post pipeline: `'aces'` filmic (default), `'agx'` (AgX operator — gentler highlight desaturation), or `'none'` for sRGB-only output (flat/stylized looks).
 - colorLUT: ColorLUT | null — Optional 3-D color-grading LUT applied as the final post pass (after tonemap, in display space).
+- colorLift: Color — Display-space analytic grading applied before the optional 3-D LUT.
+- colorGamma: Color
+- colorGain: Color
+- saturation: number
 - passes: ShaderPass[] — Custom fullscreen post effects, run in order in HDR linear space before tonemap (requires `postProcessing`).
 - oit: boolean — Order-independent transparency (weighted-blended).
 - ssao: boolean — Screen-space ambient occlusion.

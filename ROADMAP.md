@@ -584,14 +584,17 @@ shot. All slot into the existing HDR post chain before/after tonemap.
       foreground guard, before motion blur/TAA/custom passes/tonemap. Requires
       post-processing + sampleCount 1 and is covered by `diagnose()`; shader interface and
       production build verified offline.
-- 🚧 **Color grading & display transforms** — ✅ `renderer.toneMapping` selects the output
+- ✅ **Color grading & display transforms** — ✅ `renderer.toneMapping` selects the output
       transform: `'aces'` filmic, `'agx'` (AgX operator — minimal log-sigmoid approximation,
       gentler highlight desaturation; bloom-paired entries `fs_tonemapAgx[Bloom]`), or
       `'none'` linear. ✅ **3-D LUT** (`renderer.colorLUT = ColorLUT.parseCube(text)`): a
       `.cube` LUT uploaded as an `rgba16float` 3-D texture and applied as the final post
       pass (after tonemap/FXAA, in display space — hardware-trilinear, blend by `strength`);
-      the no-LUT path stays byte-identical. ⬜ Lift/gamma/gain + saturation as cheap analytic
-      ops. Keeps the "linear output" flag contract so material shaders stay tonemap-agnostic.
+      the no-LUT path stays byte-identical. ✅ **Analytic grading**: structured linear
+      `Color` controls (`colorLift`, `colorGamma`, `colorGain`) plus `saturation` run in
+      display space after tonemap and before FXAA/the optional LUT; exact defaults bypass
+      the math to preserve prior output. Keeps the "linear output" flag contract so
+      material shaders stay tonemap-agnostic. The reflected post block is 96 bytes.
 - ⬜ **Lens & exposure** — **auto-exposure** (a compute histogram of the HDR target →
       adapted EV, smoothed over time; deterministic mode pins it), plus vignette,
       chromatic aberration, and an optional lens-flare/bloom-streak — all small

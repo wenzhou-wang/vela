@@ -24,6 +24,7 @@ import { LineBasicMaterial } from '../materials/LineBasicMaterial';
 import { ShaderMaterial, computeUniformLayout, packUniforms } from '../materials/ShaderMaterial';
 import type { UniformLayout } from '../materials/ShaderMaterial';
 import { Texture } from '../textures/Texture';
+import { Color } from '../math/Color';
 import { ShaderPass } from './ShaderPass';
 import { Vector3 } from '../math/Vector3';
 import { Matrix3 } from '../math/Matrix3';
@@ -395,6 +396,11 @@ export class WebGPURenderer {
    * `ColorLUT.parseCube(text)`.
    */
   colorLUT: ColorLUT | null = null;
+  /** Display-space analytic grading applied before the optional 3-D LUT. */
+  colorLift = new Color(0, 0, 0);
+  colorGamma = new Color(1, 1, 1);
+  colorGain = new Color(1, 1, 1);
+  saturation = 1;
   /**
    * Custom fullscreen post effects, run in order in HDR linear space before
    * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
@@ -1324,6 +1330,10 @@ export class WebGPURenderer {
         ssaoStrength: this.ssaoStrength,
         toneMapping: this.toneMapping,
         colorLUT: this.colorLUT,
+        lift: [this.colorLift.r, this.colorLift.g, this.colorLift.b],
+        gamma: [this.colorGamma.r, this.colorGamma.g, this.colorGamma.b],
+        gain: [this.colorGain.r, this.colorGain.g, this.colorGain.b],
+        saturation: this.saturation,
       }, postInput);
     }
     // Save this frame's unjittered view-projection for next frame's TAA

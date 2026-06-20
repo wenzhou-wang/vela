@@ -43,6 +43,7 @@ export interface PostOptions {
   toneMapping: ToneMapping;
   /** Optional 3-D color-grading LUT applied after tonemap (display space). */
   colorLUT?: ColorLUT | null;
+  lift: [number, number, number]; gamma: [number, number, number]; gain: [number, number, number]; saturation: number;
 }
 
 /**
@@ -169,7 +170,7 @@ export class PostProcessing {
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.nearestSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest', mipmapFilter: 'nearest' });
     // 32 bytes: data + ssao parameter blocks.
-    this.paramsBuffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.paramsBuffer = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     const dummy = device.createTexture({
       size: [1, 1], format: HDR_FORMAT,
@@ -946,11 +947,14 @@ export class PostProcessing {
     input: GPUTextureView = this.hdrView,
   ): void {
     // data = (1/width, 1/height, bloomThreshold, bloomIntensity); ssao.x = strength.
-    const params = new Float32Array(8);
+    const params = new Float32Array(24);
     params.set([
       1 / this.width, 1 / this.height, opts.bloomThreshold, opts.bloomIntensity,
       opts.ssao ? opts.ssaoStrength : 0, 0, 0, 0,
     ]);
+    params.set(opts.lift, 8); params.set(opts.gamma, 12); params.set(opts.gain, 16);
+    params[20] = opts.saturation;
+    params[21] = (opts.lift.some(v => v !== 0) || opts.gamma.some(v => v !== 1) || opts.gain.some(v => v !== 1) || opts.saturation !== 1) ? 1 : 0;
     this.device.queue.writeBuffer(this.paramsBuffer, 0, params);
 
     let bloomView = this.dummyView;

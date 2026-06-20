@@ -16,6 +16,10 @@ export const POST_SHADER = /* wgsl */ `
 struct Params {
   data : vec4<f32>,  // (1/width, 1/height, bloomThreshold, bloomIntensity)
   ssao : vec4<f32>,  // (ssaoStrength, unused, unused, unused)
+  lift : vec4<f32>,
+  gamma : vec4<f32>,
+  gain : vec4<f32>,
+  grade : vec4<f32>, // x=saturation, y=enabled
 };
 @group(0) @binding(2) var<uniform> params   : Params;
 @group(0) @binding(3) var bloomTex : texture_2d<f32>;
@@ -81,12 +85,17 @@ fn linearToSRGB(c : vec3<f32>) -> vec3<f32> {
 fn luma(c : vec3<f32>) -> f32 {
   return dot(c, vec3<f32>(0.299, 0.587, 0.114));
 }
+fn grade(c : vec3<f32>) -> vec3<f32> {
+  if (params.grade.y < 0.5) { return c; }
+  var v = pow(max((c + params.lift.rgb) * params.gain.rgb, vec3<f32>(0.0)), vec3<f32>(1.0) / max(params.gamma.rgb, vec3<f32>(1e-4)));
+  return mix(vec3<f32>(luma(v)), v, params.grade.x);
+}
 
 @fragment
 fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
   let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(linearToSRGB(acesFilmic(hdr)), 1.0);
+  return vec4<f32>(grade(linearToSRGB(acesFilmic(hdr))), 1.0);
 }
 
 @fragment
@@ -94,14 +103,14 @@ fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
   let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
   let hdr   = textureSample(src, samp, in.uv).rgb * ao;
   let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
-  return vec4<f32>(linearToSRGB(acesFilmic(hdr + bloom)), 1.0);
+  return vec4<f32>(grade(linearToSRGB(acesFilmic(hdr + bloom))), 1.0);
 }
 
 @fragment
 fn fs_tonemapAgx(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
   let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(linearToSRGB(agxTonemap(hdr)), 1.0);
+  return vec4<f32>(grade(linearToSRGB(agxTonemap(hdr))), 1.0);
 }
 
 @fragment
@@ -109,7 +118,7 @@ fn fs_tonemapAgxBloom(in : VSOut) -> @location(0) vec4<f32> {
   let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
   let hdr   = textureSample(src, samp, in.uv).rgb * ao;
   let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
-  return vec4<f32>(linearToSRGB(agxTonemap(hdr + bloom)), 1.0);
+  return vec4<f32>(grade(linearToSRGB(agxTonemap(hdr + bloom))), 1.0);
 }
 
 // No-tonemap output: exposure already applied upstream; just sRGB-encode (with
@@ -119,7 +128,7 @@ fn fs_tonemapAgxBloom(in : VSOut) -> @location(0) vec4<f32> {
 fn fs_linear(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
   let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(linearToSRGB(hdr), 1.0);
+  return vec4<f32>(grade(linearToSRGB(hdr)), 1.0);
 }
 
 @fragment
