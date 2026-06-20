@@ -229,6 +229,17 @@ A local reflection capture. Add it to a Scene; the renderer refreshes it automat
 - refreshInterval: number
 - needsUpdate: boolean — Set true after moving a static probe to request another capture.
 
+### class IrradianceProbeGrid extends Object3D
+A world-axis-aligned regular grid of baked diffuse-irradiance probes represented as SH-L2 coefficients. `position` is its minimum corner; rotation/scale are ignored.
+- new IrradianceProbeGrid(options: IrradianceProbeGridOptions)
+- isIrradianceProbeGrid: true
+- dimensions: [number, number, number]
+- spacing: Vector3
+- coefficients: Float32Array<ArrayBuffer> | null — Nine RGB SH coefficients per probe, x-fastest; null until baked or restored.
+- version: number
+- probeCount: number
+- setCoefficients(coefficients: Float32Array<ArrayBuffer>): IrradianceProbeGrid
+
 ### class Skeleton
 A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
 - new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
@@ -544,6 +555,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - diagnose(scene: Scene, camera: Camera): Diagnostic[] — Explain why a scene "renders but looks wrong" — especially black screens.
 - readPixels(target?: RenderTarget | undefined): Promise<PixelData> — Read back rendered pixels as RGBA8 (rows top-to-bottom).
 - screenshot(target?: RenderTarget | undefined): Promise<Blob> — Capture a PNG of the next canvas frame (or of a RenderTarget).
+- bakeIrradianceProbes(grid: IrradianceProbeGrid, scene: Scene, options?: IrradianceBakeOptions): Promise<Float32Array<ArrayBuffer>> — Capture and GPU-project every point in an irradiance grid to SH-L2.
 - exposure: number
 - pickAt(cssX: number, cssY: number, scene: Scene, camera: Camera): Promise<Mesh | null> — Render an offscreen id-buffer pass and read back the pixel at (cssX, cssY) to identify which mesh lies under the cursor.
 
@@ -625,7 +637,7 @@ Exports a scene-graph subtree to glTF 2.0 (binary `.glb`). Covers the round-trip
 - parseGLTF(root: Object3D, animations?: AnimationClip[]): Promise<Record<string, unknown>> — Export to a standalone `.gltf` JSON object with the binary embedded as a base64 data-URI buffer (re-loadable directly by `GLTFLoader`).
 
 ### class SceneSerializer
-vela's native scene format: a compact, lossless-enough JSON round-trip for the scene graph — `Object3D`/`Mesh`/`LineSegments`/lights, their transforms, `BufferGeometry` attributes, and `StandardMaterial`/`LineBasicMaterial`. Geometries and materials are de-duplicated into shared tables. (Textures, skinning, morphs, and animation are not serialized.)
+vela's native scene format: a compact, lossless-enough JSON round-trip for the scene graph — `Object3D`/`Mesh`/`LineSegments`/lights/irradiance grids, their transforms, `BufferGeometry` attributes, and `StandardMaterial`/`LineBasicMaterial`. Geometries and materials are de-duplicated into shared tables. (Textures, skinning, morphs, and animation are not serialized.)
 
 ### class AnimationClip
 A named set of keyframe tracks with a shared duration.
@@ -1052,6 +1064,14 @@ export interface ReflectionProbeOptions {
 export type ReflectionProbeRefresh = 'static' | 'every-n-frames';
 ```
 
+### IrradianceProbeGridOptions
+```ts
+export interface IrradianceProbeGridOptions {
+  dimensions?: [number, number, number];
+  spacing?: Vector3;
+}
+```
+
 ### TypedArray
 ```ts
 export type TypedArray =
@@ -1229,6 +1249,15 @@ export interface PixelData {
 }
 ```
 
+### IrradianceBakeOptions
+```ts
+export interface IrradianceBakeOptions {
+  resolution?: number;
+  near?: number;
+  far?: number;
+}
+```
+
 ### ToneMapping
 Output transform applied at the end of the post chain.
 ```ts
@@ -1274,6 +1303,7 @@ export interface SceneDescription {
     sprites: number;
     texts: number;
     reflectionProbes: number;
+    irradianceProbeGrids: number;
     lights: Record<string, number>;
   };
   bounds: { center: [number, number, number]; size: [number, number, number]; radius: number } | null;

@@ -15,6 +15,7 @@ import { LOD } from '../core/LOD';
 import { TextMesh } from '../core/TextMesh';
 import { RenderTarget } from '../core/RenderTarget';
 import { ReflectionProbe } from '../core/ReflectionProbe';
+import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
@@ -45,6 +46,7 @@ import { HIZ_COPY_SHADER, HIZ_DOWN_SHADER } from './shaders/hiz.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
 import { REFLECTION_PROBE_SHADER } from './shaders/reflectionProbe.wgsl';
+import { IRRADIANCE_PROBE_SHADER } from './shaders/irradianceProbe.wgsl';
 import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
 import { diagnoseScene, type Diagnostic } from './diagnose';
@@ -227,6 +229,13 @@ export interface PixelData {
   height: number;
 }
 
+export interface IrradianceBakeOptions {
+  /** Cube-face resolution used before SH projection. Default 64. */
+  resolution?: number;
+  near?: number;
+  far?: number;
+}
+
 interface ParticleResources {
   capacity: number;
   stateBuffer: GPUBuffer;   // Particle[] pool (zeroed = all dead)
@@ -304,6 +313,12 @@ export class WebGPURenderer {
   private reflectionProbePipeline: GPUComputePipeline | null = null;
   private reflectionProbeLayout: GPUBindGroupLayout | null = null;
   private capturingReflectionProbe = false;
+  private irradianceGridBuffer!: GPUBuffer;
+  private irradianceGridParams!: GPUBuffer;
+  private irradianceGridCapacity = 0;
+  private irradianceGridKey = '';
+  private irradianceProbePipeline: GPUComputePipeline | null = null;
+  private irradianceProbeLayout: GPUBindGroupLayout | null = null;
 
   // Post-processing (opt-in): render to an HDR target, then tonemap (+ FXAA).
   /** Route rendering through the HDR post pipeline (tonemap moves to a final pass). */
@@ -648,6 +663,8 @@ export class WebGPURenderer {
     this.skyGenPipeline = null; this.skyGenParamsBuffer = null; this.skyGenBindGroup = null;
     this.skyGenView = null; this.skyGenSampler = null;
     this.reflectionProbePipeline = null; this.reflectionProbeLayout = null;
+    this.irradianceProbePipeline = null; this.irradianceProbeLayout = null;
+    this.irradianceGridCapacity = 0; this.irradianceGridKey = '';
     this.particleSimPipeline = null; this.particleSimLayout = null;
     this.idPipeline = null; this.idLayout = null; this.idUniformBuffer = null;
     this.idBindGroup = null; this.idBufferCapacity = 0;
@@ -675,6 +692,7 @@ export class WebGPURenderer {
     this.ibl.computeBRDFLUT(brdfEncoder);
     this.device.queue.submit([brdfEncoder.finish()]);
     this.createReflectionProbeResources();
+    this.createIrradianceGridResources();
     this.createFrameResources();
   }
 
@@ -771,6 +789,8 @@ export class WebGPURenderer {
         { binding: 15, resource: this.reflectionProbeView },
         { binding: 16, resource: this.reflectionProbeSampler },
         { binding: 17, resource: { buffer: this.reflectionProbeBuffer } },
+        { binding: 18, resource: { buffer: this.irradianceGridBuffer } },
+        { binding: 19, resource: { buffer: this.irradianceGridParams } },
       ],
     });
   }
@@ -793,6 +813,18 @@ export class WebGPURenderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.device.queue.writeBuffer(this.reflectionProbeBuffer, 0, this.reflectionProbeData);
+  }
+
+  private createIrradianceGridResources(): void {
+    this.irradianceGridCapacity = 144;
+    this.irradianceGridBuffer = this.device.createBuffer({
+      label: 'irradiance-grid-sh', size: this.irradianceGridCapacity,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.irradianceGridParams = this.device.createBuffer({
+      label: 'irradiance-grid-params', size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
   }
 
   /** Allocate directional shadow map + spot atlas (1×1 dummies when shadows disabled). */
@@ -976,6 +1008,7 @@ export class WebGPURenderer {
     this.collect(scene);
     this.prepareShadow();
     this.prepareReflectionProbeBindings(scene);
+    this.prepareIrradianceGrid(scene);
     this.uploadFrame(scene, camera);
     this.prepareSprites();
 
@@ -1434,6 +1467,78 @@ export class WebGPURenderer {
   }
 
   /**
+   * Capture and GPU-project every point in an irradiance grid to SH-L2.
+   * The resulting CPU-side coefficients are immediately serializable and are
+   * uploaded lazily on the next render.
+   */
+  async bakeIrradianceProbes(
+    grid: IrradianceProbeGrid,
+    scene: Scene,
+    options: IrradianceBakeOptions = {},
+  ): Promise<Float32Array<ArrayBuffer>> {
+    if (this.disposed || this.deviceLost) {
+      throw new Error('bakeIrradianceProbes: renderer device is unavailable.');
+    }
+    scene.updateMatrixWorld();
+    grid.updateWorldMatrix(true, false);
+    const probe = new ReflectionProbe({
+      resolution: options.resolution ?? 64,
+      near: options.near ?? 0.1,
+      far: options.far ?? 1000,
+    });
+    const coefficients = new Float32Array(grid.probeCount * 9 * 4);
+    const output = this.device.createBuffer({
+      label: 'irradiance-probe-output', size: 9 * 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    });
+    const readback = this.device.createBuffer({
+      label: 'irradiance-probe-readback', size: 9 * 16,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    this.ensureIrradianceProbePipeline();
+    const [nx, ny, nz] = grid.dimensions;
+    const origin = grid.getWorldPosition(new Vector3());
+    let index = 0;
+    for (let z = 0; z < nz; z++) {
+      for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++, index++) {
+          probe.position.set(
+            origin.x + x * grid.spacing.x,
+            origin.y + y * grid.spacing.y,
+            origin.z + z * grid.spacing.z,
+          );
+          probe.updateMatrixWorld();
+          this.captureReflectionProbe(probe, scene, 0, false, false);
+          const resources = this.reflectionProbeResources.get(probe)!;
+          const bindGroup = this.device.createBindGroup({
+            layout: this.irradianceProbeLayout!,
+            entries: [
+              { binding: 0, resource: resources.equirectView },
+              { binding: 1, resource: this.reflectionProbeSampler },
+              { binding: 2, resource: { buffer: output } },
+            ],
+          });
+          const encoder = this.device.createCommandEncoder({ label: 'irradiance-probe-project' });
+          const pass = encoder.beginComputePass();
+          pass.setPipeline(this.irradianceProbePipeline!);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(1);
+          pass.end();
+          encoder.copyBufferToBuffer(output, 0, readback, 0, 9 * 16);
+          this.device.queue.submit([encoder.finish()]);
+          await readback.mapAsync(GPUMapMode.READ);
+          coefficients.set(new Float32Array(readback.getMappedRange()).slice(), index * 9 * 4);
+          readback.unmap();
+        }
+      }
+    }
+    output.destroy();
+    readback.destroy();
+    grid.setCoefficients(coefficients);
+    return coefficients;
+  }
+
+  /**
    * Lazily allocate a RenderTarget's GPU resources (color + depth + MSAA) and
    * register its sampleable view with the TextureManager so `rt.texture` works
    * in any material.
@@ -1496,7 +1601,13 @@ export class WebGPURenderer {
     }
   }
 
-  private captureReflectionProbe(probe: ReflectionProbe, scene: Scene, slot: number): void {
+  private captureReflectionProbe(
+    probe: ReflectionProbe,
+    scene: Scene,
+    slot: number,
+    copyToProbeArray = true,
+    prefilter = true,
+  ): void {
     const savedFrame = this.frameNumber;
     const savedLastRenderTime = this.lastRenderTime;
     const position = probe.getWorldPosition(new Vector3());
@@ -1546,13 +1657,15 @@ export class WebGPURenderer {
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(32, 16);
     pass.end();
-    resources.ibl.convolve(encoder, resources.equirectView);
-    for (let mip = 0; mip < IBL_MIP_LEVELS; mip++) {
-      encoder.copyTextureToTexture(
-        { texture: resources.ibl.prefiltered, mipLevel: mip },
-        { texture: this.reflectionProbeTexture, mipLevel: mip, origin: { x: 0, y: 0, z: slot } },
-        { width: Math.max(1, 256 >> mip), height: Math.max(1, 128 >> mip), depthOrArrayLayers: 1 },
-      );
+    if (prefilter) resources.ibl.convolve(encoder, resources.equirectView);
+    if (copyToProbeArray && prefilter) {
+      for (let mip = 0; mip < IBL_MIP_LEVELS; mip++) {
+        encoder.copyTextureToTexture(
+          { texture: resources.ibl.prefiltered, mipLevel: mip },
+          { texture: this.reflectionProbeTexture, mipLevel: mip, origin: { x: 0, y: 0, z: slot } },
+          { width: Math.max(1, 256 >> mip), height: Math.max(1, 128 >> mip), depthOrArrayLayers: 1 },
+        );
+      }
     }
     this.device.queue.submit([encoder.finish()]);
     resources.lastCaptureFrame = savedFrame;
@@ -1581,6 +1694,23 @@ export class WebGPURenderer {
     });
   }
 
+  private ensureIrradianceProbePipeline(): void {
+    if (this.irradianceProbePipeline) return;
+    this.irradianceProbeLayout = this.device.createBindGroupLayout({
+      label: 'irradiance-probe-project',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      ],
+    });
+    this.irradianceProbePipeline = this.device.createComputePipeline({
+      label: 'irradiance-probe-project',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.irradianceProbeLayout] }),
+      compute: { module: this.device.createShaderModule({ code: IRRADIANCE_PROBE_SHADER }), entryPoint: 'cs_main' },
+    });
+  }
+
   private prepareReflectionProbeBindings(scene: Scene): void {
     const data = this.reflectionProbeData;
     data.fill(0);
@@ -1597,6 +1727,40 @@ export class WebGPURenderer {
     });
     data[20] = count;
     this.device.queue.writeBuffer(this.reflectionProbeBuffer, 0, data);
+  }
+
+  private prepareIrradianceGrid(scene: Scene): void {
+    const grids: IrradianceProbeGrid[] = [];
+    scene.traverseVisible((object) => {
+      if (grids.length === 0 && object instanceof IrradianceProbeGrid && object.coefficients) grids.push(object);
+    });
+    const grid = grids[0];
+    const params = new Float32Array(12);
+    if (!grid || !grid.coefficients) {
+      this.device.queue.writeBuffer(this.irradianceGridParams, 0, params);
+      return;
+    }
+    const required = grid.coefficients.byteLength;
+    const key = `${grid.id}:${grid.version}`;
+    if (required > this.irradianceGridCapacity) {
+      this.irradianceGridCapacity = Math.max(required, this.irradianceGridCapacity * 2);
+      this.irradianceGridBuffer.destroy();
+      this.irradianceGridBuffer = this.device.createBuffer({
+        label: 'irradiance-grid-sh', size: this.irradianceGridCapacity,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      this.irradianceGridKey = '';
+      this.buildFrameBindGroup();
+    }
+    if (key !== this.irradianceGridKey) {
+      this.device.queue.writeBuffer(this.irradianceGridBuffer, 0, grid.coefficients);
+      this.irradianceGridKey = key;
+    }
+    const p = grid.getWorldPosition(this._meshPos);
+    params[0] = p.x; params[1] = p.y; params[2] = p.z; params[3] = 1;
+    params[4] = grid.spacing.x; params[5] = grid.spacing.y; params[6] = grid.spacing.z;
+    params[8] = grid.dimensions[0]; params[9] = grid.dimensions[1]; params[10] = grid.dimensions[2];
+    this.device.queue.writeBuffer(this.irradianceGridParams, 0, params);
   }
 
   /**

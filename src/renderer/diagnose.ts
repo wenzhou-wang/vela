@@ -11,6 +11,7 @@ import { Frustum } from '../math/Frustum';
 import { Sphere } from '../math/Sphere';
 import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
+import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
 
 /** One finding from `renderer.diagnose()`: machine-matchable and human-fixable. */
 export interface Diagnostic {
@@ -51,7 +52,16 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
   // ---- Gather scene contents + transform sanity --------------------------
   const meshes: Mesh[] = [];
   let litIntensity = 0;
+  let hasIrradianceGrid = false;
   scene.traverseVisible((o: Object3D) => {
+    if (o instanceof IrradianceProbeGrid) {
+      if (o.coefficients) hasIrradianceGrid = true;
+      else out.push({
+        severity: 'warning', code: 'unbaked-irradiance-grid',
+        message: `Irradiance grid ${label(o)} has no baked coefficients.`,
+        fix: 'Call await renderer.bakeIrradianceProbes(grid, scene), then render again.',
+      });
+    }
     if (o instanceof Mesh) meshes.push(o);
     if (o instanceof Light) {
       const lum = o.color.r + o.color.g + o.color.b;
@@ -109,7 +119,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
   const ambient = scene.ambientIntensity *
     (scene.ambientColor.r + scene.ambientColor.g + scene.ambientColor.b);
   const hasEnvLight = !!scene.environment || !!scene.sky;
-  if (meshes.length > 0 && litIntensity === 0 && ambient === 0 && !hasEnvLight) {
+  if (meshes.length > 0 && litIntensity === 0 && ambient === 0 && !hasEnvLight && !hasIrradianceGrid) {
     out.push({
       severity: 'error', code: 'no-lights',
       message: 'No lights, no ambient, and no environment/sky — PBR surfaces will render black (only emissive shows).',

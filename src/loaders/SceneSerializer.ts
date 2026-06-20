@@ -11,12 +11,14 @@ import { AmbientLight } from '../lights/AmbientLight';
 import { DirectionalLight } from '../lights/DirectionalLight';
 import { PointLight } from '../lights/PointLight';
 import { Color } from '../math/Color';
+import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
+import { Vector3 } from '../math/Vector3';
 
 type Json = Record<string, unknown>;
 
 /**
  * vela's native scene format: a compact, lossless-enough JSON round-trip for the
- * scene graph — `Object3D`/`Mesh`/`LineSegments`/lights, their transforms,
+ * scene graph — `Object3D`/`Mesh`/`LineSegments`/lights/irradiance grids, their transforms,
  * `BufferGeometry` attributes, and `StandardMaterial`/`LineBasicMaterial`.
  * Geometries and materials are de-duplicated into shared tables. (Textures,
  * skinning, morphs, and animation are not serialized.)
@@ -47,7 +49,11 @@ export class SceneSerializer {
       out.scale = [s.x, s.y, s.z];
       out.visible = object.visible;
 
-      if (object instanceof Mesh) {
+      if (object instanceof IrradianceProbeGrid) {
+        out.dimensions = object.dimensions;
+        out.spacing = [object.spacing.x, object.spacing.y, object.spacing.z];
+        if (object.coefficients) out.coefficients = Array.from(object.coefficients);
+      } else if (object instanceof Mesh) {
         out.geometry = serializeGeometry(object.geometry);
         const mat = Array.isArray(object.material) ? object.material[0] : object.material;
         out.material = serializeMaterial(mat);
@@ -214,6 +220,15 @@ function createObject(
   materials: Map<string, Material>,
 ): Object3D {
   switch (data.type) {
+    case 'IrradianceProbeGrid': {
+      const spacing = (data.spacing as [number, number, number]) ?? [2, 2, 2];
+      const grid = new IrradianceProbeGrid({
+        dimensions: data.dimensions as [number, number, number],
+        spacing: new Vector3(spacing[0], spacing[1], spacing[2]),
+      });
+      if (data.coefficients) grid.setCoefficients(new Float32Array(data.coefficients as number[]));
+      return grid;
+    }
     case 'Mesh':
     case 'SkinnedMesh':
     case 'InstancedMesh': {

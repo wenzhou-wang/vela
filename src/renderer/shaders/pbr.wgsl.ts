@@ -77,6 +77,13 @@ struct ReflectionProbes {
 @group(0) @binding(15) var reflectionMaps : texture_2d_array<f32>;
 @group(0) @binding(16) var reflectionSampler : sampler;
 @group(0) @binding(17) var<uniform> reflectionProbes : ReflectionProbes;
+struct IrradianceGrid {
+  origin : vec4<f32>,  // xyz = minimum corner, w = enabled
+  spacing : vec4<f32>,
+  dims : vec4<f32>,
+};
+@group(0) @binding(18) var<storage, read> irradianceCoefficients : array<vec4<f32>>;
+@group(0) @binding(19) var<uniform> irradianceGrid : IrradianceGrid;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -538,10 +545,57 @@ fn localReflection(worldPos : vec3<f32>, R : vec3<f32>, lod : f32) -> vec4<f32> 
   return vec4<f32>((a * wa + b * wb) / (wa + wb), 1.0 - smoothstep(0.8, 1.0, first));
 }
 
+fn shBasis(i : u32, d : vec3<f32>) -> f32 {
+  if (i == 0u) { return 0.282095; }
+  if (i == 1u) { return 0.488603 * d.y; }
+  if (i == 2u) { return 0.488603 * d.z; }
+  if (i == 3u) { return 0.488603 * d.x; }
+  if (i == 4u) { return 1.092548 * d.x * d.y; }
+  if (i == 5u) { return 1.092548 * d.y * d.z; }
+  if (i == 6u) { return 0.315392 * (3.0 * d.z * d.z - 1.0); }
+  if (i == 7u) { return 1.092548 * d.x * d.z; }
+  return 0.546274 * (d.x * d.x - d.y * d.y);
+}
+
+fn probeIrradiance(index : u32, N : vec3<f32>) -> vec3<f32> {
+  var value = vec3<f32>(0.0);
+  for (var i = 0u; i < 9u; i = i + 1u) {
+    value = value + irradianceCoefficients[index * 9u + i].rgb * shBasis(i, N);
+  }
+  return max(value, vec3<f32>(0.0));
+}
+
+fn sampleIrradianceGrid(worldPos : vec3<f32>, N : vec3<f32>) -> vec4<f32> {
+  if (irradianceGrid.origin.w < 0.5) { return vec4<f32>(0.0); }
+  let dims = vec3<u32>(irradianceGrid.dims.xyz);
+  let coord = (worldPos - irradianceGrid.origin.xyz) / irradianceGrid.spacing.xyz;
+  let maxCoord = vec3<f32>(dims - vec3<u32>(1u));
+  if (any(coord < vec3<f32>(0.0)) || any(coord > maxCoord)) { return vec4<f32>(0.0); }
+  let c0 = vec3<u32>(floor(coord));
+  let c1 = min(c0 + vec3<u32>(1u), dims - vec3<u32>(1u));
+  let f = fract(coord);
+  let nx = dims.x;
+  let ny = dims.y;
+  let i000 = c0.x + nx * (c0.y + ny * c0.z);
+  let i100 = c1.x + nx * (c0.y + ny * c0.z);
+  let i010 = c0.x + nx * (c1.y + ny * c0.z);
+  let i110 = c1.x + nx * (c1.y + ny * c0.z);
+  let i001 = c0.x + nx * (c0.y + ny * c1.z);
+  let i101 = c1.x + nx * (c0.y + ny * c1.z);
+  let i011 = c0.x + nx * (c1.y + ny * c1.z);
+  let i111 = c1.x + nx * (c1.y + ny * c1.z);
+  let z0 = mix(mix(probeIrradiance(i000, N), probeIrradiance(i100, N), f.x),
+               mix(probeIrradiance(i010, N), probeIrradiance(i110, N), f.x), f.y);
+  let z1 = mix(mix(probeIrradiance(i001, N), probeIrradiance(i101, N), f.x),
+               mix(probeIrradiance(i011, N), probeIrradiance(i111, N), f.x), f.y);
+  return vec4<f32>(mix(z0, z1, f.z), 1.0);
+}
+
 fn indirectLight(worldPos : vec3<f32>, N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
                  f0 : vec3<f32>, diffuseColor : vec3<f32>, ao : f32) -> vec3<f32> {
   let R = reflect(-V, N);
   let probe = localReflection(worldPos, R, roughness * 5.0);
+  let grid = sampleIrradianceGrid(worldPos, N);
   if (frame.envParams.x > 0.5) {
     let maxMip = frame.envParams.z;
     var prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
@@ -558,12 +612,14 @@ fn indirectLight(worldPos : vec3<f32>, N : vec3<f32>, V : vec3<f32>, NoV : f32, 
       diffuseIBL = sampleEnv(N, maxMip);
       ab = envBRDFApprox(roughness, NoV);
     }
+    diffuseIBL = mix(diffuseIBL, grid.rgb, grid.a);
     let specularIBL = prefiltered * (f0 * ab.x + ab.y);
     return (diffuseIBL * diffuseColor + specularIBL) * ao * frame.envParams.y;
   }
   let ab = textureSampleLevel(brdfLUT, brdfSampler, clamp(vec2<f32>(NoV, roughness), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rg;
   let localSpecular = probe.rgb * (f0 * ab.x + ab.y) * probe.a;
-  return (frame.ambient.rgb * diffuseColor + localSpecular) * ao;
+  let diffuseIrradiance = mix(frame.ambient.rgb, grid.rgb, grid.a);
+  return (diffuseIrradiance * diffuseColor + localSpecular) * ao;
 }
 
 `;

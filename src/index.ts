@@ -31,6 +31,8 @@ export type { TextMeshOptions } from './core/TextMesh';
 export { RenderTarget } from './core/RenderTarget';
 export { ReflectionProbe } from './core/ReflectionProbe';
 export type { ReflectionProbeOptions, ReflectionProbeRefresh } from './core/ReflectionProbe';
+export { IrradianceProbeGrid } from './core/IrradianceProbeGrid';
+export type { IrradianceProbeGridOptions } from './core/IrradianceProbeGrid';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';
@@ -79,7 +81,7 @@ export { SpotLight } from './lights/SpotLight';
 
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';
-export type { RendererOptions, PixelData } from './renderer/WebGPURenderer';
+export type { RendererOptions, PixelData, IrradianceBakeOptions } from './renderer/WebGPURenderer';
 export type { ToneMapping } from './renderer/PostProcessing';
 export { diagnoseScene } from './renderer/diagnose';
 export type { Diagnostic, DiagnoseState } from './renderer/diagnose';

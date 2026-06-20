@@ -537,10 +537,14 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
       select and distance-blend their nearest two inside each probe radius, falling back to
       the global environment outside. `refresh: 'static'` captures once (`needsUpdate` bakes
       again); `'every-n-frames'` uses `refreshInterval`. `describeScene()` reports probe count.
-- ⬜ **Diffuse GI via irradiance probes** — a grid of SH-L2 probes (captured + projected
-      on the GPU), trilinearly sampled in `shadeSurface()` to replace flat ambient with
-      bounced light. Bake offline (deterministic mode makes this reproducible) and
-      serialize the coefficients through `SceneSerializer`.
+- ✅ **Diffuse GI via irradiance probes** — `IrradianceProbeGrid` defines a world-axis-
+      aligned regular grid; `await renderer.bakeIrradianceProbes(grid, scene)` captures six
+      faces per point and projects them on the GPU into nine cosine-convolved RGB SH-L2
+      coefficients. StandardMaterial and ShaderMaterial trilinearly sample the first baked
+      visible grid, replacing global diffuse ambient/IBL inside its bounds while leaving
+      specular reflections unchanged. Coefficients read back to CPU for deterministic
+      offline baking and round-trip through `SceneSerializer`; `diagnose()` identifies an
+      unbaked grid and `describeScene()` reports grid count.
 - ⬜ **Cascaded shadow maps (CSM)** — the directional shadow auto-fits one frustum to the
       whole scene, which starves large worlds of resolution. Split the view frustum into
       3–4 logarithmic cascades, each with its own light matrix into atlas tiles (the spot/

@@ -147,6 +147,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit
   patterns.
+- **Diffuse GI probes** — all material variants parse with SH-L2 grid bindings, the
+  projection compute shader parses, and baked coefficients survive scene serialization.
 - **Post-processing** — the fullscreen tonemap/FXAA/copy shaders parse with the expected
   bindings, and the line shader's frame struct matches the 256-byte layout.
 - **WGSL** — all four vertex variants (static / skinned / instanced / morph) parsed with
