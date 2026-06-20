@@ -216,6 +216,19 @@ An offscreen render destination: `renderer.render(scene, camera, rt)` draws into
 - height: number
 - texture: Texture — Sample this in any material (`map`, sprite texture, ...).
 
+### class ReflectionProbe extends Object3D
+A local reflection capture. Add it to a Scene; the renderer refreshes it automatically. The first four visible probes participate in nearest-two blending.
+- new ReflectionProbe(options: ReflectionProbeOptions)
+- isReflectionProbe: true
+- resolution: number
+- camera: PerspectiveCamera
+- targets: readonly RenderTarget[]
+- radius: number
+- intensity: number
+- refresh: ReflectionProbeRefresh
+- refreshInterval: number
+- needsUpdate: boolean — Set true after moving a static probe to request another capture.
+
 ### class Skeleton
 A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
 - new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
@@ -1021,6 +1034,24 @@ export interface TextMeshOptions {
 }
 ```
 
+### ReflectionProbeOptions
+```ts
+export interface ReflectionProbeOptions {
+  resolution?: number;
+  near?: number;
+  far?: number;
+  radius?: number;
+  intensity?: number;
+  refresh?: ReflectionProbeRefresh;
+  refreshInterval?: number;
+}
+```
+
+### ReflectionProbeRefresh
+```ts
+export type ReflectionProbeRefresh = 'static' | 'every-n-frames';
+```
+
 ### TypedArray
 ```ts
 export type TypedArray =
@@ -1242,6 +1273,7 @@ export interface SceneDescription {
     particleSystems: number;
     sprites: number;
     texts: number;
+    reflectionProbes: number;
     lights: Record<string, number>;
   };
   bounds: { center: [number, number, number]; size: [number, number, number]; radius: number } | null;

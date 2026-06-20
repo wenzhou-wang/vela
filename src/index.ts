@@ -29,6 +29,8 @@ export { LOD } from './core/LOD';
 export { TextMesh } from './core/TextMesh';
 export type { TextMeshOptions } from './core/TextMesh';
 export { RenderTarget } from './core/RenderTarget';
+export { ReflectionProbe } from './core/ReflectionProbe';
+export type { ReflectionProbeOptions, ReflectionProbeRefresh } from './core/ReflectionProbe';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';

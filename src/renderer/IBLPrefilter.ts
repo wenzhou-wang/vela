@@ -82,7 +82,7 @@ export class IBLPrefilter {
     this.prefiltered = device.createTexture({
       size: [IBL_SPEC_W, IBL_SPEC_H], format: 'rgba16float',
       mipLevelCount: IBL_MIP_LEVELS,
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     this.prefilteredView = this.prefiltered.createView();
 

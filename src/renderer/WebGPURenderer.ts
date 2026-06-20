@@ -14,6 +14,7 @@ import { Sprite } from '../core/Sprite';
 import { LOD } from '../core/LOD';
 import { TextMesh } from '../core/TextMesh';
 import { RenderTarget } from '../core/RenderTarget';
+import { ReflectionProbe } from '../core/ReflectionProbe';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
@@ -43,6 +44,7 @@ import { CULL_SHADER } from './shaders/cull.wgsl';
 import { HIZ_COPY_SHADER, HIZ_DOWN_SHADER } from './shaders/hiz.wgsl';
 import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
+import { REFLECTION_PROBE_SHADER } from './shaders/reflectionProbe.wgsl';
 import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
 import { diagnoseScene, type Diagnostic } from './diagnose';
@@ -90,6 +92,11 @@ const POINT_FACE_DIRS = [
   new Vector3(0, 0, 1), new Vector3(0, 0, -1),
 ];
 const POINT_FACE_UPS = [UNIT_Y, UNIT_Y, UNIT_Z, UNIT_Z, UNIT_Y, UNIT_Y];
+const PROBE_FACE_UPS = [
+  new Vector3(0, -1, 0), new Vector3(0, -1, 0),
+  new Vector3(0, 0, 1), new Vector3(0, 0, -1),
+  new Vector3(0, -1, 0), new Vector3(0, -1, 0),
+];
 
 // TAA: 8-sample Halton(2,3) sub-pixel jitter pattern.
 const TAA_SAMPLES = 8;
@@ -97,6 +104,7 @@ const TAA_SAMPLES = 8;
 // Procedural sky: equirect texture size (workgroup 8x8 must divide both).
 const SKY_TEX_WIDTH = 256;
 const SKY_TEX_HEIGHT = 128;
+const MAX_REFLECTION_PROBES = 4;
 
 // Sprite instance stride: posPad + sizeOffset + color + uvRect (4 × vec4).
 const SPRITE_STRIDE_F = 16;
@@ -171,6 +179,14 @@ interface RenderTargetResources {
   renderView: GPUTextureView;            // attachment / resolve target view
   msaaView: GPUTextureView | null;       // MSAA color when sampleCount > 1
   depthView: GPUTextureView;
+}
+
+interface ReflectionProbeResources {
+  equirect: GPUTexture;
+  equirectView: GPUTextureView;
+  ibl: IBLPrefilter;
+  lastCaptureFrame: number;
+  slot: number;
 }
 
 /** An actionable performance suggestion (same shape as a Diagnostic). */
@@ -279,6 +295,15 @@ export class WebGPURenderer {
   private ibl!: IBLPrefilter;
   private iblActive = false; // true once convolve() has run for the current env
   private iblEnvKey = '';   // tracks which env was last convolved
+  private reflectionProbeResources = new WeakMap<ReflectionProbe, ReflectionProbeResources>();
+  private reflectionProbeTexture!: GPUTexture;
+  private reflectionProbeView!: GPUTextureView;
+  private reflectionProbeSampler!: GPUSampler;
+  private reflectionProbeBuffer!: GPUBuffer;
+  private reflectionProbeData = new Float32Array(24); // 4 positions/radii + 4 intensities + count
+  private reflectionProbePipeline: GPUComputePipeline | null = null;
+  private reflectionProbeLayout: GPUBindGroupLayout | null = null;
+  private capturingReflectionProbe = false;
 
   // Post-processing (opt-in): render to an HDR target, then tonemap (+ FXAA).
   /** Route rendering through the HDR post pipeline (tonemap moves to a final pass). */
@@ -600,6 +625,7 @@ export class WebGPURenderer {
     this.lineResources = new WeakMap();
     this.particleResources = new WeakMap();
     this.renderTargets = new WeakMap();
+    this.reflectionProbeResources = new WeakMap();
     this.meshSlots = new WeakMap();
     this.shellSlots = new WeakMap();
     this.nextMeshSlot = 0;
@@ -621,6 +647,7 @@ export class WebGPURenderer {
     this.skyBindGroup = null; this.skyBindGroupKey = '';
     this.skyGenPipeline = null; this.skyGenParamsBuffer = null; this.skyGenBindGroup = null;
     this.skyGenView = null; this.skyGenSampler = null;
+    this.reflectionProbePipeline = null; this.reflectionProbeLayout = null;
     this.particleSimPipeline = null; this.particleSimLayout = null;
     this.idPipeline = null; this.idLayout = null; this.idUniformBuffer = null;
     this.idBindGroup = null; this.idBufferCapacity = 0;
@@ -647,6 +674,7 @@ export class WebGPURenderer {
     const brdfEncoder = this.device.createCommandEncoder();
     this.ibl.computeBRDFLUT(brdfEncoder);
     this.device.queue.submit([brdfEncoder.finish()]);
+    this.createReflectionProbeResources();
     this.createFrameResources();
   }
 
@@ -729,7 +757,7 @@ export class WebGPURenderer {
         // bindings 6-9: IBL irradiance + BRDF LUT (defaults when IBL not active)
         { binding: 6, resource: this.iblActive ? this.ibl.irradianceView : this.textures.defaultWhiteView },
         { binding: 7, resource: iblSampler },
-        { binding: 8, resource: this.iblActive ? this.ibl.brdfLUTView : this.textures.defaultWhiteView },
+        { binding: 8, resource: this.ibl.brdfLUTView },
         { binding: 9, resource: iblSampler },
         // bindings 10-12: spot-light shadow atlas (dummy when not allocated)
         { binding: 10, resource: { buffer: this.spotShadowTilesBuffer! } },
@@ -739,8 +767,32 @@ export class WebGPURenderer {
         { binding: 13, resource: this.post.sceneCaptureView },
         // binding 14: clustered light lists (dummy until clustered lighting runs)
         { binding: 14, resource: { buffer: this.clusterLightsBuffer ?? this.clusterDummyBuffer! } },
+        // bindings 15-17: local reflection-probe array, sampler, and positions.
+        { binding: 15, resource: this.reflectionProbeView },
+        { binding: 16, resource: this.reflectionProbeSampler },
+        { binding: 17, resource: { buffer: this.reflectionProbeBuffer } },
       ],
     });
+  }
+
+  private createReflectionProbeResources(): void {
+    this.reflectionProbeTexture = this.device.createTexture({
+      label: 'reflection-probes',
+      size: { width: 256, height: 128, depthOrArrayLayers: MAX_REFLECTION_PROBES },
+      mipLevelCount: IBL_MIP_LEVELS,
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.reflectionProbeView = this.reflectionProbeTexture.createView({ dimension: '2d-array' });
+    this.reflectionProbeSampler = this.device.createSampler({
+      magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
+      addressModeU: 'repeat', addressModeV: 'clamp-to-edge',
+    });
+    this.reflectionProbeBuffer = this.device.createBuffer({
+      size: 96,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(this.reflectionProbeBuffer, 0, this.reflectionProbeData);
   }
 
   /** Allocate directional shadow map + spot atlas (1×1 dummies when shadows disabled). */
@@ -860,6 +912,12 @@ export class WebGPURenderer {
     if (this.disposed || this.deviceLost) return;
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
+    if (!this.capturingReflectionProbe && !target) {
+      this.refreshReflectionProbes(scene);
+      // Probe renders update shared per-render state; the main render rebuilds it below.
+      scene.updateMatrixWorld();
+      camera.updateMatrixWorld();
+    }
     this.frameNumber++;
     // Frame timing: wall clock normally; renderer.time when deterministic.
     let dt: number;
@@ -917,6 +975,7 @@ export class WebGPURenderer {
 
     this.collect(scene);
     this.prepareShadow();
+    this.prepareReflectionProbeBindings(scene);
     this.uploadFrame(scene, camera);
     this.prepareSprites();
 
@@ -1421,6 +1480,123 @@ export class WebGPURenderer {
       this.renderTargets.set(rt, res);
     }
     return res;
+  }
+
+  private refreshReflectionProbes(scene: Scene): void {
+    const probes: ReflectionProbe[] = [];
+    scene.traverseVisible((object) => {
+      if (object instanceof ReflectionProbe && probes.length < MAX_REFLECTION_PROBES) probes.push(object);
+    });
+    for (let slot = 0; slot < probes.length; slot++) {
+      const probe = probes[slot];
+      const resources = this.reflectionProbeResources.get(probe);
+      const due = !resources || resources.slot !== slot || probe.needsUpdate ||
+        (probe.refresh === 'every-n-frames' && this.frameNumber - resources.lastCaptureFrame >= probe.refreshInterval);
+      if (due) this.captureReflectionProbe(probe, scene, slot);
+    }
+  }
+
+  private captureReflectionProbe(probe: ReflectionProbe, scene: Scene, slot: number): void {
+    const savedFrame = this.frameNumber;
+    const savedLastRenderTime = this.lastRenderTime;
+    const position = probe.getWorldPosition(new Vector3());
+    this.capturingReflectionProbe = true;
+    try {
+      for (let face = 0; face < 6; face++) {
+        const camera = probe.camera;
+        camera.position.copy(position);
+        camera.up.copy(PROBE_FACE_UPS[face]);
+        camera.lookAt(position.clone().add(POINT_FACE_DIRS[face]));
+        camera.updateMatrixWorld();
+        this.render(scene, camera, probe.targets[face]);
+      }
+    } finally {
+      this.capturingReflectionProbe = false;
+      this.frameNumber = savedFrame;
+      this.lastRenderTime = savedLastRenderTime;
+    }
+
+    let resources = this.reflectionProbeResources.get(probe);
+    if (!resources) {
+      const equirect = this.device.createTexture({
+        label: 'reflection-probe-equirect', size: [256, 128], format: 'rgba16float',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      resources = {
+        equirect,
+        equirectView: equirect.createView(),
+        ibl: new IBLPrefilter(this.device),
+        lastCaptureFrame: -1,
+        slot,
+      };
+      this.reflectionProbeResources.set(probe, resources);
+    }
+    resources.slot = slot;
+    this.ensureReflectionProbePipeline();
+    const entries: GPUBindGroupEntry[] = probe.targets.map((target, binding) => ({
+      binding,
+      resource: this.textures.get(target.texture).view,
+    }));
+    entries.push({ binding: 6, resource: this.reflectionProbeSampler });
+    entries.push({ binding: 7, resource: resources.equirectView });
+    const bindGroup = this.device.createBindGroup({ layout: this.reflectionProbeLayout!, entries });
+    const encoder = this.device.createCommandEncoder({ label: 'reflection-probe-capture' });
+    const pass = encoder.beginComputePass({ label: 'cube-to-equirect' });
+    pass.setPipeline(this.reflectionProbePipeline!);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(32, 16);
+    pass.end();
+    resources.ibl.convolve(encoder, resources.equirectView);
+    for (let mip = 0; mip < IBL_MIP_LEVELS; mip++) {
+      encoder.copyTextureToTexture(
+        { texture: resources.ibl.prefiltered, mipLevel: mip },
+        { texture: this.reflectionProbeTexture, mipLevel: mip, origin: { x: 0, y: 0, z: slot } },
+        { width: Math.max(1, 256 >> mip), height: Math.max(1, 128 >> mip), depthOrArrayLayers: 1 },
+      );
+    }
+    this.device.queue.submit([encoder.finish()]);
+    resources.lastCaptureFrame = savedFrame;
+    probe.needsUpdate = false;
+  }
+
+  private ensureReflectionProbePipeline(): void {
+    if (this.reflectionProbePipeline) return;
+    const entries: GPUBindGroupLayoutEntry[] = [0, 1, 2, 3, 4, 5].map((binding) => ({
+      binding,
+      visibility: GPUShaderStage.COMPUTE,
+      texture: { sampleType: 'float', viewDimension: '2d' },
+    }));
+    entries.push(
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' } },
+    );
+    this.reflectionProbeLayout = this.device.createBindGroupLayout({
+      label: 'reflection-probe-convert',
+      entries,
+    });
+    this.reflectionProbePipeline = this.device.createComputePipeline({
+      label: 'reflection-probe-convert',
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.reflectionProbeLayout] }),
+      compute: { module: this.device.createShaderModule({ code: REFLECTION_PROBE_SHADER }), entryPoint: 'cs_main' },
+    });
+  }
+
+  private prepareReflectionProbeBindings(scene: Scene): void {
+    const data = this.reflectionProbeData;
+    data.fill(0);
+    let count = 0;
+    scene.traverseVisible((object) => {
+      if (!(object instanceof ReflectionProbe) || count >= MAX_REFLECTION_PROBES) return;
+      const resources = this.reflectionProbeResources.get(object);
+      if (!resources) return;
+      const p = object.getWorldPosition(this._meshPos);
+      const base = resources.slot * 4;
+      data[base] = p.x; data[base + 1] = p.y; data[base + 2] = p.z; data[base + 3] = object.radius;
+      data[16 + resources.slot] = object.intensity;
+      count++;
+    });
+    data[20] = count;
+    this.device.queue.writeBuffer(this.reflectionProbeBuffer, 0, data);
   }
 
   /**

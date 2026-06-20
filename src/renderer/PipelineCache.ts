@@ -84,6 +84,10 @@ export class PipelineCache {
         { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         // Clustered forward+ light lists (14).
         { binding: 14, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        // Local reflection probes: prefiltered equirect array + spatial parameters.
+        { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+        { binding: 16, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 17, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
 

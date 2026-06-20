@@ -7,6 +7,7 @@ import { SkinnedMesh } from './SkinnedMesh';
 import { ParticleSystem } from './ParticleSystem';
 import { Sprite } from './Sprite';
 import { TextMesh } from './TextMesh';
+import { ReflectionProbe } from './ReflectionProbe';
 import { Light } from '../lights/Light';
 import type { Material } from '../materials/Material';
 import { Frustum } from '../math/Frustum';
@@ -22,6 +23,7 @@ export interface SceneDescription {
     particleSystems: number;
     sprites: number;
     texts: number;
+    reflectionProbes: number;
     lights: Record<string, number>;
   };
   /** World-space bounds of all meshes (null when empty). */
@@ -61,7 +63,7 @@ export function describeScene(scene: Scene, camera?: Camera): SceneDescription {
 
   const counts = {
     nodes: 0, meshes: 0, instancedMeshes: 0, skinnedMeshes: 0,
-    particleSystems: 0, sprites: 0, texts: 0,
+    particleSystems: 0, sprites: 0, texts: 0, reflectionProbes: 0,
     lights: {} as Record<string, number>,
   };
   const named: SceneDescription['named'] = [];
@@ -82,6 +84,8 @@ export function describeScene(scene: Scene, camera?: Camera): SceneDescription {
       counts.sprites++;
     } else if (o instanceof TextMesh) {
       counts.texts++;
+    } else if (o instanceof ReflectionProbe) {
+      counts.reflectionProbes++;
     } else if (o instanceof Mesh) {
       counts.meshes++;
       if (o instanceof InstancedMesh) counts.instancedMeshes++;

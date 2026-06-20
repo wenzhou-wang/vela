@@ -530,11 +530,13 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
       prerequisites are covered by `diagnose()`/performance suggestions. Offline-verified
       (WGSL parse, six bindings, 224-byte params); TAA consumes the SSR result to stabilize
       ray-march shimmer.
-- ⬜ **Reflection probes** — `ReflectionProbe` captures the scene into a cubemap via six
-      RenderTarget passes (reusing the RTT pipeline), runs it through `IBLPrefilter` for
-      mip-prefiltered specular, and blends the nearest probes per-cluster so local rooms
-      reflect their own walls instead of the global env. Static (baked once) and
-      `every-N-frames` refresh modes.
+- ✅ **Reflection probes** — `ReflectionProbe` captures the scene through six RenderTarget
+      passes (+X/−X/+Y/−Y/+Z/−Z), converts them to an HDR equirectangular map, and reuses
+      `IBLPrefilter` for six-level GGX specular prefiltering. The first four visible probes
+      occupy one texture array (staying within baseline sampled-texture limits); fragments
+      select and distance-blend their nearest two inside each probe radius, falling back to
+      the global environment outside. `refresh: 'static'` captures once (`needsUpdate` bakes
+      again); `'every-n-frames'` uses `refreshInterval`. `describeScene()` reports probe count.
 - ⬜ **Diffuse GI via irradiance probes** — a grid of SH-L2 probes (captured + projected
       on the GPU), trilinearly sampled in `shadeSurface()` to replace flat ambient with
       bounced light. Bake offline (deterministic mode makes this reproducible) and

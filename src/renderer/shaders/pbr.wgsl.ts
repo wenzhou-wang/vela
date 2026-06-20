@@ -69,6 +69,14 @@ export const HEADER = FRAME_DEFS + /* wgsl */ `
 @group(0) @binding(12) var spotAtlasCmp : sampler_comparison;
 @group(0) @binding(13) var sceneCapture : texture_2d<f32>; // opaque HDR snapshot for screen-space refraction
 @group(0) @binding(14) var<storage, read> clusterLights : array<u32>; // per-cluster light counts + indices
+struct ReflectionProbes {
+  positionRadius : array<vec4<f32>, 4>,
+  intensity : vec4<f32>,
+  info : vec4<f32>, // x = count
+};
+@group(0) @binding(15) var reflectionMaps : texture_2d_array<f32>;
+@group(0) @binding(16) var reflectionSampler : sampler;
+@group(0) @binding(17) var<uniform> reflectionProbes : ReflectionProbes;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -500,12 +508,44 @@ fn applyFog(color : vec3<f32>, worldPos : vec3<f32>) -> vec3<f32> {
 }
 
 // Indirect light: image-based when an environment is bound, flat ambient otherwise.
-fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
+fn probeIntensity(index : u32) -> f32 {
+  return reflectionProbes.intensity[index];
+}
+
+fn localReflection(worldPos : vec3<f32>, R : vec3<f32>, lod : f32) -> vec4<f32> {
+  let count = u32(reflectionProbes.info.x);
+  var first = 1e30;
+  var second = 1e30;
+  var firstIndex = 0u;
+  var secondIndex = 0u;
+  for (var i = 0u; i < count; i = i + 1u) {
+    let p = reflectionProbes.positionRadius[i];
+    let d = distance(worldPos, p.xyz) / max(p.w, 1e-4);
+    if (d < first) {
+      second = first; secondIndex = firstIndex;
+      first = d; firstIndex = i;
+    } else if (d < second) {
+      second = d; secondIndex = i;
+    }
+  }
+  if (count == 0u || first >= 1.0) { return vec4<f32>(0.0); }
+  let uv = dirToEquirectUv(R);
+  let a = textureSampleLevel(reflectionMaps, reflectionSampler, uv, i32(firstIndex), lod).rgb * probeIntensity(firstIndex);
+  if (count == 1u || second >= 1.0) { return vec4<f32>(a, 1.0 - smoothstep(0.8, 1.0, first)); }
+  let b = textureSampleLevel(reflectionMaps, reflectionSampler, uv, i32(secondIndex), lod).rgb * probeIntensity(secondIndex);
+  let wa = 1.0 / max(first, 1e-3);
+  let wb = 1.0 / max(second, 1e-3);
+  return vec4<f32>((a * wa + b * wb) / (wa + wb), 1.0 - smoothstep(0.8, 1.0, first));
+}
+
+fn indirectLight(worldPos : vec3<f32>, N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
                  f0 : vec3<f32>, diffuseColor : vec3<f32>, ao : f32) -> vec3<f32> {
+  let R = reflect(-V, N);
+  let probe = localReflection(worldPos, R, roughness * 5.0);
   if (frame.envParams.x > 0.5) {
     let maxMip = frame.envParams.z;
-    let R = reflect(-V, N);
-    let prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
+    var prefiltered = sampleEnv(R, roughness * maxMip); // specular (raw mip or IBL prefiltered)
+    prefiltered = mix(prefiltered, probe.rgb, probe.a);
     let useIBL = (u32(frame.envParams.w) & 2u) != 0u;
     var diffuseIBL : vec3<f32>;
     var ab          : vec2<f32>;
@@ -521,7 +561,9 @@ fn indirectLight(N : vec3<f32>, V : vec3<f32>, NoV : f32, roughness : f32,
     let specularIBL = prefiltered * (f0 * ab.x + ab.y);
     return (diffuseIBL * diffuseColor + specularIBL) * ao * frame.envParams.y;
   }
-  return frame.ambient.rgb * diffuseColor * ao;
+  let ab = textureSampleLevel(brdfLUT, brdfSampler, clamp(vec2<f32>(NoV, roughness), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rg;
+  let localSpecular = probe.rgb * (f0 * ab.x + ab.y) * probe.a;
+  return (frame.ambient.rgb * diffuseColor + localSpecular) * ao;
 }
 
 `;
@@ -629,7 +671,7 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
   let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;
   let ao = mix(1.0, aoSample, material.params.w);
 
-  color = color + indirectLight(N, V, NoV, roughness, f0, diffuseColor, ao);
+  color = color + indirectLight(in.worldPos, N, V, NoV, roughness, f0, diffuseColor, ao);
 
   let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;

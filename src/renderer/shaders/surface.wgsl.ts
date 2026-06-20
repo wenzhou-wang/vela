@@ -63,6 +63,7 @@ struct LightSample {
 // Indirect (ambient / image-based) inputs for an optional
 // fn ambient(s : Surface, ind : IndirectSample) -> vec3<f32>.
 struct IndirectSample {
+  worldPos : vec3<f32>,
   N : vec3<f32>,
   V : vec3<f32>,
   NoV : f32,
@@ -91,7 +92,7 @@ fn defaultIndirect(s : Surface, ind : IndirectSample) -> vec3<f32> {
   let metalness = clamp(s.metalness, 0.0, 1.0);
   let f0 = mix(vec3<f32>(0.04), s.baseColor, metalness);
   let diffuseColor = s.baseColor * (1.0 - metalness);
-  return indirectLight(ind.N, ind.V, ind.NoV, roughness, f0, diffuseColor, clamp(s.occlusion, 0.0, 1.0));
+  return indirectLight(ind.worldPos, ind.N, ind.V, ind.NoV, roughness, f0, diffuseColor, clamp(s.occlusion, 0.0, 1.0));
 }
 `;
 
@@ -131,6 +132,7 @@ fn smShade(in : VSOut, frontFacing : bool) -> ShadedSurface {
   }
 
   var ind : IndirectSample;
+  ind.worldPos = in.worldPos;
   ind.N = N;
   ind.V = V;
   ind.NoV = NoV;
