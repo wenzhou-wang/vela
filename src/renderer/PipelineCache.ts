@@ -91,6 +91,7 @@ export class PipelineCache {
         // Diffuse GI: SH-L2 coefficients and regular-grid transform.
         { binding: 18, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
         { binding: 19, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 20, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
 

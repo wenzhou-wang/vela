@@ -12,6 +12,7 @@ import { Sphere } from '../math/Sphere';
 import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
 import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
+import { PerspectiveCamera } from '../core/PerspectiveCamera';
 
 /** One finding from `renderer.diagnose()`: machine-matchable and human-fixable. */
 export interface Diagnostic {
@@ -33,6 +34,7 @@ export interface DiagnoseState {
   ssr: boolean;
   taa: boolean;
   shadows: boolean;
+  shadowCascades?: number;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -294,6 +296,14 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
       severity: 'warning', code: 'skybox-no-environment',
       message: 'scene.skybox is true but neither scene.environment nor scene.sky is set — there is nothing to draw.',
       fix: 'Set scene.environment (an equirect texture) or scene.sky ({ sunDirection }).',
+    });
+  }
+  const shadowCascades = state.shadowCascades ?? 1;
+  if (state.shadows && shadowCascades > 1 && !(camera instanceof PerspectiveCamera)) {
+    out.push({
+      severity: 'warning', code: 'csm-needs-perspective-camera',
+      message: `renderer.shadowCascades is ${shadowCascades}, but cascades require a PerspectiveCamera; one shadow map is used.`,
+      fix: 'Use a PerspectiveCamera or set renderer.shadowCascades = 1.',
     });
   }
   if (scene.fog && scene.fog.density === undefined) {

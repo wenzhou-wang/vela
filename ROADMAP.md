@@ -545,11 +545,14 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
       specular reflections unchanged. Coefficients read back to CPU for deterministic
       offline baking and round-trip through `SceneSerializer`; `diagnose()` identifies an
       unbaked grid and `describeScene()` reports grid count.
-- ⬜ **Cascaded shadow maps (CSM)** — the directional shadow auto-fits one frustum to the
-      whole scene, which starves large worlds of resolution. Split the view frustum into
-      3–4 logarithmic cascades, each with its own light matrix into atlas tiles (the spot/
-      point atlas already proves the tiling), selected per-fragment by view depth with a
-      blend band across the seam.
+- ✅ **Cascaded shadow maps (CSM)** — `renderer.shadowCascades` (1–4, default 1)
+      applies a practical logarithmic/uniform split (`shadowCascadeLambda`) to perspective
+      camera frusta. Each cascade gets a fitted light matrix and a tile in a 2×2 directional
+      depth atlas; fragments select by view depth and cross-fade over
+      `shadowCascadeBlend` of the split range. One cascade preserves the original full-map
+      path, non-perspective cameras fall back with a `diagnose()` warning, and
+      `renderer.report().shadowDraws` includes every cascade re-draw. Offline-verified:
+      uniform/log split invariants, 288-byte cascade block, and all material variants parse.
 - ⬜ **Volumetric fog & light shafts** — a froxel (frozen-frustum voxel) compute pass that
       ray-marches the existing fog + per-light scattering into a 3-D `rgba16float` volume,
       then composites it in `applyFog()`. Reuses clustered light lists for the in-scatter

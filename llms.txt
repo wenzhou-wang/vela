@@ -512,6 +512,9 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - shadows: boolean — Enable directional shadow mapping for the first `castShadow` light.
 - shadowMapSize: number — Shadow map resolution (square).
 - shadowNormalBias: number — World-space normal offset applied before the depth comparison (reduces acne).
+- shadowCascades: number — Number of directional shadow cascades.
+- shadowCascadeLambda: number — Blend between logarithmic (1) and uniform (0) cascade split placement.
+- shadowCascadeBlend: number — Fraction of each cascade depth range used to blend into the next cascade.
 - postProcessing: boolean — Route rendering through the HDR post pipeline (tonemap moves to a final pass).
 - fxaa: boolean — Apply FXAA in the post pipeline (only when `postProcessing` is on).
 - bloom: boolean — Apply bloom in the post pipeline (only when `postProcessing` is on).
@@ -924,6 +927,9 @@ A ray with an origin and a normalized direction.
 ### function gradientTexture(stops: GradientStop[], width?: number): DataTexture
 Build a 1-D gradient as a `width × 1` linear `DataTexture` (clamp-wrapped, linearly filtered) — the generic primitive behind toon ramps, gradient maps, and color LUTs. Stops take `ColorInput` (a `Color` or linear `[r, g, b]`), so there is no hidden color space. Plug it into a `ShaderMaterial`/`ShaderPass` texture uniform and sample it at `(t, 0.5)`:
 
+### function computeCascadeSplits(near: number, far: number, count: number, lambda?: number, out?: Float32Array<ArrayBuffer>): Float32Array<ArrayBufferLike>
+Practical CSM split scheme: lambda=0 uniform, lambda=1 logarithmic.
+
 ### function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState): Diagnostic[]
 Triage why a scene "renders but looks wrong" — especially the classic black screen. Pure scene-graph math: runs without a GPU. Returns an empty array when nothing looks suspicious.
 
@@ -1286,6 +1292,7 @@ export interface DiagnoseState {
   ssr: boolean;
   taa: boolean;
   shadows: boolean;
+  shadowCascades?: number;
   canvasWidth: number;
   canvasHeight: number;
 }

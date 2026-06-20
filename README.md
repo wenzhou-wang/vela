@@ -143,6 +143,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   uploads directly, and Basis routes through a transcoder hook.
 - **Shadow maps** — the depth/PBR shaders parse with the shadow bindings, and the
   light-frustum fit maps the scene AABB into clip `[-1,1]²×[0,1]`.
+- **Cascaded shadows** — practical uniform/log split invariants, the 288-byte four-matrix
+  uniform block, atlas selection, and all PBR/ShaderMaterial variants parse offline.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit

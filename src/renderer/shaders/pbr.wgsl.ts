@@ -84,6 +84,12 @@ struct IrradianceGrid {
 };
 @group(0) @binding(18) var<storage, read> irradianceCoefficients : array<vec4<f32>>;
 @group(0) @binding(19) var<uniform> irradianceGrid : IrradianceGrid;
+struct DirectionalCascades {
+  viewProj : array<mat4x4<f32>, 4>,
+  splits : vec4<f32>,
+  params : vec4<f32>, // x = count, y = blend fraction
+};
+@group(0) @binding(20) var<uniform> directionalCascades : DirectionalCascades;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -347,26 +353,48 @@ fn envBRDFApprox(roughness : f32, NoV : f32) -> vec2<f32> {
   return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
 }
 
-// 3x3 PCF against the directional shadow atlas. Returns 1 (fully lit) when
-// shadows are disabled or the point falls outside the light frustum.
-fn sampleShadow(worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
-  if (frame.shadowParams.x < 0.5) { return 1.0; }
+fn sampleShadowCascade(cascade : u32, worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
   let bias = frame.shadowParams.z;
-  let lp = frame.lightViewProj * vec4<f32>(worldPos + N * bias, 1.0);
+  let lp = directionalCascades.viewProj[cascade] * vec4<f32>(worldPos + N * bias, 1.0);
   let ndc = lp.xyz / lp.w;
   if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
     return 1.0;
   }
-  let uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+  var uv = vec2<f32>(ndc.x * 0.5 + 0.5, ndc.y * -0.5 + 0.5);
+  let count = u32(directionalCascades.params.x);
+  let scale = select(1.0, 0.5, count > 1u);
+  let tileOffset = vec2<f32>(f32(cascade % 2u), f32(cascade / 2u)) * scale;
+  uv = tileOffset + uv * scale;
   let texel = 1.0 / frame.shadowParams.y;
+  let tileMin = tileOffset + vec2<f32>(texel * 1.5);
+  let tileMax = tileOffset + vec2<f32>(scale - texel * 1.5);
   var sum = 0.0;
   for (var dy = -1; dy <= 1; dy = dy + 1) {
     for (var dx = -1; dx <= 1; dx = dx + 1) {
       let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
-      sum = sum + textureSampleCompareLevel(shadowMap, shadowSampler, uv + offset, ndc.z);
+      sum = sum + textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv + offset, tileMin, tileMax), ndc.z);
     }
   }
   return sum / 9.0;
+}
+
+// 3x3 PCF against the directional atlas, blending across cascade seams.
+fn sampleShadow(worldPos : vec3<f32>, N : vec3<f32>) -> f32 {
+  if (frame.shadowParams.x < 0.5) { return 1.0; }
+  let count = u32(directionalCascades.params.x);
+  let viewDepth = -(frame.view * vec4<f32>(worldPos, 1.0)).z;
+  var cascade = 0u;
+  while (cascade + 1u < count && viewDepth > directionalCascades.splits[cascade]) {
+    cascade = cascade + 1u;
+  }
+  let current = sampleShadowCascade(cascade, worldPos, N);
+  if (cascade + 1u >= count) { return current; }
+  var start = 0.0;
+  if (cascade > 0u) { start = directionalCascades.splits[cascade - 1u]; }
+  let width = (directionalCascades.splits[cascade] - start) * directionalCascades.params.y;
+  let blend = smoothstep(directionalCascades.splits[cascade] - width, directionalCascades.splits[cascade], viewDepth);
+  if (blend <= 0.0) { return current; }
+  return mix(current, sampleShadowCascade(cascade + 1u, worldPos, N), blend);
 }
 
 // 3x3 PCF against the spot-shadow atlas for one tile.

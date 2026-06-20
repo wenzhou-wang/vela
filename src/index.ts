@@ -81,6 +81,7 @@ export { SpotLight } from './lights/SpotLight';
 
 // renderer
 export { WebGPURenderer } from './renderer/WebGPURenderer';
+export { computeCascadeSplits } from './renderer/WebGPURenderer';
 export type { RendererOptions, PixelData, IrradianceBakeOptions } from './renderer/WebGPURenderer';
 export type { ToneMapping } from './renderer/PostProcessing';
 export { diagnoseScene } from './renderer/diagnose';

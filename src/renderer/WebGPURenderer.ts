@@ -16,6 +16,7 @@ import { TextMesh } from '../core/TextMesh';
 import { RenderTarget } from '../core/RenderTarget';
 import { ReflectionProbe } from '../core/ReflectionProbe';
 import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
+import { PerspectiveCamera } from '../core/PerspectiveCamera';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
@@ -126,6 +127,27 @@ function halton(index: number, base: number): number {
     i = Math.floor(i / base);
   }
   return r;
+}
+
+/** Practical CSM split scheme: lambda=0 uniform, lambda=1 logarithmic. */
+export function computeCascadeSplits(
+  near: number,
+  far: number,
+  count: number,
+  lambda = 0.6,
+  out = new Float32Array(4),
+): Float32Array {
+  const n = Math.min(4, Math.max(1, Math.floor(count)));
+  const clampedNear = Math.max(near, 0.001);
+  const blend = Math.min(1, Math.max(0, lambda));
+  for (let i = 0; i < n; i++) {
+    const p = (i + 1) / n;
+    const logarithmic = clampedNear * Math.pow(far / clampedNear, p);
+    const uniform = clampedNear + (far - clampedNear) * p;
+    out[i] = logarithmic * blend + uniform * (1 - blend);
+  }
+  for (let i = n; i < 4; i++) out[i] = far;
+  return out;
 }
 
 interface SkinnedResources {
@@ -288,11 +310,22 @@ export class WebGPURenderer {
   shadowMapSize = 2048;
   /** World-space normal offset applied before the depth comparison (reduces acne). */
   shadowNormalBias = 0.02;
+  /** Number of directional shadow cascades. Values above 1 require a perspective camera. */
+  shadowCascades = 1;
+  /** Blend between logarithmic (1) and uniform (0) cascade split placement. */
+  shadowCascadeLambda = 0.6;
+  /** Fraction of each cascade depth range used to blend into the next cascade. */
+  shadowCascadeBlend = 0.1;
   private shadowTexture!: GPUTexture;
   private shadowView!: GPUTextureView;
   private shadowSampler!: GPUSampler;
-  private shadowLightBuffer!: GPUBuffer;
-  private shadowLightBindGroup!: GPUBindGroup;
+  private cascadeBuffer!: GPUBuffer;
+  private cascadeLightBuffers: GPUBuffer[] = [];
+  private cascadeLightBindGroups: GPUBindGroup[] = [];
+  private cascadeViewProjs = [new Matrix4(), new Matrix4(), new Matrix4(), new Matrix4()];
+  private cascadeCount = 1;
+  private cascadeSplits = new Float32Array(4);
+  private cascadeCorners = Array.from({ length: 8 }, () => new Vector3());
   private shadowMapAllocated = 0;
   // Environment (IBL): resolved each frame from scene.environment.
   private envView!: GPUTextureView;
@@ -672,7 +705,9 @@ export class WebGPURenderer {
     this.idTexW = 0; this.idTexH = 0;
     this.shadowMapAllocated = 0; this.spotAtlasAllocated = 0;
     this.shadowSampler = null as unknown as GPUSampler;
-    this.shadowLightBuffer = null as unknown as GPUBuffer;
+    this.cascadeBuffer = null as unknown as GPUBuffer;
+    this.cascadeLightBuffers = [];
+    this.cascadeLightBindGroups = [];
     this.spotAtlasSampler = null;
     this.spotShadowTilesBuffer = null;
     this.spotLightBuffers = [];
@@ -791,6 +826,7 @@ export class WebGPURenderer {
         { binding: 17, resource: { buffer: this.reflectionProbeBuffer } },
         { binding: 18, resource: { buffer: this.irradianceGridBuffer } },
         { binding: 19, resource: { buffer: this.irradianceGridParams } },
+        { binding: 20, resource: { buffer: this.cascadeBuffer } },
       ],
     });
   }
@@ -845,14 +881,20 @@ export class WebGPURenderer {
     if (!this.shadowSampler) {
       this.shadowSampler = this.device.createSampler({ compare: 'less', magFilter: 'linear', minFilter: 'linear' });
     }
-    if (!this.shadowLightBuffer) {
-      this.shadowLightBuffer = this.device.createBuffer({
-        size: 64, // lightViewProj mat4
+    if (this.cascadeLightBuffers.length === 0) {
+      for (let i = 0; i < 4; i++) {
+        const buffer = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.cascadeLightBuffers.push(buffer);
+        this.cascadeLightBindGroups.push(this.device.createBindGroup({
+          layout: this.pipelines.shadowLightLayout,
+          entries: [{ binding: 0, resource: { buffer } }],
+        }));
+      }
+    }
+    if (!this.cascadeBuffer) {
+      this.cascadeBuffer = this.device.createBuffer({
+        size: 288, // 4 mat4s + split vec4 + params vec4
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this.shadowLightBindGroup = this.device.createBindGroup({
-        layout: this.pipelines.shadowLightLayout,
-        entries: [{ binding: 0, resource: { buffer: this.shadowLightBuffer } }],
       });
     }
 
@@ -1006,7 +1048,7 @@ export class WebGPURenderer {
     });
 
     this.collect(scene);
-    this.prepareShadow();
+    this.prepareShadow(camera);
     this.prepareReflectionProbeBindings(scene);
     this.prepareIrradianceGrid(scene);
     this.uploadFrame(scene, camera);
@@ -1303,7 +1345,7 @@ export class WebGPURenderer {
     let particleCapacity = 0;
     for (const sys of this.particleSystems) particleCapacity += sys.options.capacity ?? 1000;
 
-    const shadowTiles = this.spotShadowCasters.length + (this.shadowCasterIndex >= 0 ? 1 : 0);
+    const shadowTiles = this.spotShadowCasters.length + (this.shadowCasterIndex >= 0 ? this.cascadeCount : 0);
     const drawCalls = this.opaque.length + this.transparent.length +
       this.particleSystems.length + this.spriteBatches.size;
     return {
@@ -1415,6 +1457,7 @@ export class WebGPURenderer {
       ssr: this.ssr,
       taa: this.taa,
       shadows: this.shadows,
+      shadowCascades: this.shadowCascades,
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
     });
@@ -1768,7 +1811,7 @@ export class WebGPURenderer {
    * frustum to the opaque scene bounds, producing `_lightViewProj`. Sets
    * `shadowCasterIndex` (the light's index in the packed light array) or -1.
    */
-  private prepareShadow(): void {
+  private prepareShadow(camera: Camera): void {
     this.shadowCasterIndex = -1;
     this.spotShadowCasters.length = 0;
     if (!this.shadows) return;
@@ -1846,8 +1889,15 @@ export class WebGPURenderer {
         const far = -lminZ;
         this._lightProj.makeOrthographic(lminX, lmaxX, lmaxY, lminY, near, far);
         this._lightViewProj.multiplyMatrices(this._lightProj, this._lightView);
-
-        this.device.queue.writeBuffer(this.shadowLightBuffer, 0, new Float32Array(this._lightViewProj.elements));
+        const requestedCascades = Math.min(4, Math.max(1, Math.floor(this.shadowCascades)));
+        if (requestedCascades > 1 && camera instanceof PerspectiveCamera) {
+          this.prepareDirectionalCascades(camera, requestedCascades, minX, minY, minZ, maxX, maxY, maxZ);
+        } else {
+          this.cascadeCount = 1;
+          this.cascadeViewProjs[0].copy(this._lightViewProj);
+          this.cascadeSplits.fill(camera instanceof PerspectiveCamera ? camera.far : 1e30);
+          this.uploadCascadeData();
+        }
         this.shadowCasterIndex = packedIndex;
       }
     }
@@ -1867,6 +1917,79 @@ export class WebGPURenderer {
         tileData[base + 19] = 1 / SPOT_ATLAS_SIZE;                       // texel step
       }
       this.device.queue.writeBuffer(this.spotShadowTilesBuffer, 0, tileData);
+    }
+  }
+
+  private prepareDirectionalCascades(
+    camera: PerspectiveCamera,
+    count: number,
+    sceneMinX: number, sceneMinY: number, sceneMinZ: number,
+    sceneMaxX: number, sceneMaxY: number, sceneMaxZ: number,
+  ): void {
+    this.cascadeCount = count;
+    const near = Math.max(camera.near, 0.001);
+    const far = camera.far;
+    computeCascadeSplits(near, far, count, this.shadowCascadeLambda, this.cascadeSplits);
+    let previous = near;
+    const tanHalfFov = Math.tan(camera.fov * Math.PI / 360);
+    for (let cascade = 0; cascade < count; cascade++) {
+      const split = this.cascadeSplits[cascade];
+
+      for (let plane = 0; plane < 2; plane++) {
+        const depth = plane === 0 ? previous : split;
+        const halfH = tanHalfFov * depth;
+        const halfW = halfH * camera.aspect;
+        for (let corner = 0; corner < 4; corner++) {
+          this.cascadeCorners[plane * 4 + corner]
+            .set(corner & 1 ? halfW : -halfW, corner & 2 ? halfH : -halfH, -depth)
+            .applyMatrix4(camera.matrixWorld);
+        }
+      }
+      this._sceneCenter.set(0, 0, 0);
+      for (const corner of this.cascadeCorners) this._sceneCenter.add(corner);
+      this._sceneCenter.multiplyScalar(1 / 8);
+      let radius = 0;
+      for (const corner of this.cascadeCorners) radius = Math.max(radius, corner.distanceTo(this._sceneCenter));
+      radius = Math.ceil(radius * 16) / 16;
+
+      const eye = this._lightPos.set(
+        this._sceneCenter.x - this._lightDir.x * radius * 2,
+        this._sceneCenter.y - this._lightDir.y * radius * 2,
+        this._sceneCenter.z - this._lightDir.z * radius * 2,
+      );
+      const up = Math.abs(this._lightDir.y) > 0.99 ? UNIT_Z : UNIT_Y;
+      this._lightView.identity().lookAt(eye, this._sceneCenter, up).setPosition(eye).invert();
+
+      let lminZ = Infinity, lmaxZ = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        this._corner.set(
+          k & 1 ? sceneMaxX : sceneMinX,
+          k & 2 ? sceneMaxY : sceneMinY,
+          k & 4 ? sceneMaxZ : sceneMinZ,
+        ).applyMatrix4(this._lightView);
+        lminZ = Math.min(lminZ, this._corner.z);
+        lmaxZ = Math.max(lmaxZ, this._corner.z);
+      }
+      this._lightProj.makeOrthographic(-radius, radius, radius, -radius, -lmaxZ, -lminZ);
+      this.cascadeViewProjs[cascade].multiplyMatrices(this._lightProj, this._lightView);
+      previous = split;
+    }
+    for (let i = count; i < 4; i++) {
+      this.cascadeViewProjs[i].copy(this.cascadeViewProjs[count - 1]);
+    }
+    this._lightViewProj.copy(this.cascadeViewProjs[0]);
+    this.uploadCascadeData();
+  }
+
+  private uploadCascadeData(): void {
+    const data = new Float32Array(72);
+    for (let i = 0; i < 4; i++) data.set(this.cascadeViewProjs[i].elements, i * 16);
+    data.set(this.cascadeSplits, 64);
+    data[68] = this.cascadeCount;
+    data[69] = Math.min(0.5, Math.max(0, this.shadowCascadeBlend));
+    this.device.queue.writeBuffer(this.cascadeBuffer, 0, data);
+    for (let i = 0; i < this.cascadeCount; i++) {
+      this.device.queue.writeBuffer(this.cascadeLightBuffers[i], 0, new Float32Array(this.cascadeViewProjs[i].elements));
     }
   }
 
@@ -2027,31 +2150,38 @@ export class WebGPURenderer {
   }
 
   private renderShadowPass(encoder: GPUCommandEncoder): void {
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [],
-      depthStencilAttachment: {
-        view: this.shadowView,
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
-    });
-    pass.setPipeline(this.pipelines.shadowPipeline);
-    pass.setBindGroup(0, this.shadowLightBindGroup);
-    for (const mesh of this.opaque) {
-      if (mesh instanceof InstancedMesh) continue; // instanced casters unsupported in v1
-      const geometry = this.geometries.get(mesh.geometry);
-      const slot = this.getMeshSlot(mesh);
-      pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
-      pass.setVertexBuffer(0, geometry.position);
-      if (geometry.index) {
-        pass.setIndexBuffer(geometry.index, geometry.indexFormat);
-        pass.drawIndexed(geometry.drawCount);
-      } else {
-        pass.draw(geometry.drawCount);
+    const tileSize = this.cascadeCount > 1 ? this.shadowMapSize / 2 : this.shadowMapSize;
+    for (let cascade = 0; cascade < this.cascadeCount; cascade++) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: this.shadowView,
+          depthClearValue: 1.0,
+          depthLoadOp: cascade === 0 ? 'clear' : 'load',
+          depthStoreOp: 'store',
+        },
+      });
+      if (this.cascadeCount > 1) {
+        pass.setViewport((cascade % 2) * tileSize, Math.floor(cascade / 2) * tileSize, tileSize, tileSize, 0, 1);
+        pass.setScissorRect((cascade % 2) * tileSize, Math.floor(cascade / 2) * tileSize, tileSize, tileSize);
       }
+      pass.setPipeline(this.pipelines.shadowPipeline);
+      pass.setBindGroup(0, this.cascadeLightBindGroups[cascade]);
+      for (const mesh of this.opaque) {
+        if (mesh instanceof InstancedMesh) continue; // instanced casters unsupported in v1
+        const geometry = this.geometries.get(mesh.geometry);
+        const slot = this.getMeshSlot(mesh);
+        pass.setBindGroup(1, this.modelPoolBindGroup!, [slot * 256]);
+        pass.setVertexBuffer(0, geometry.position);
+        if (geometry.index) {
+          pass.setIndexBuffer(geometry.index, geometry.indexFormat);
+          pass.drawIndexed(geometry.drawCount);
+        } else {
+          pass.draw(geometry.drawCount);
+        }
+      }
+      pass.end();
     }
-    pass.end();
   }
 
   private renderSpotShadowPasses(encoder: GPUCommandEncoder): void {
