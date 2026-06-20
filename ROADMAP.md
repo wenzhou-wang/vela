@@ -553,10 +553,15 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
       path, non-perspective cameras fall back with a `diagnose()` warning, and
       `renderer.report().shadowDraws` includes every cascade re-draw. Offline-verified:
       uniform/log split invariants, 288-byte cascade block, and all material variants parse.
-- ⬜ **Volumetric fog & light shafts** — a froxel (frozen-frustum voxel) compute pass that
-      ray-marches the existing fog + per-light scattering into a 3-D `rgba16float` volume,
-      then composites it in `applyFog()`. Reuses clustered light lists for the in-scatter
-      loop; god-rays come free from shadow-map occlusion along the march.
+- ✅ **Volumetric fog & light shafts** — `renderer.volumetricFog` ray-marches the existing
+      linear/exp²/height fog through a 16×9×24 `rgba16float` froxel volume before the scene
+      pass. Each froxel reuses its logarithmic clustered light list (or all lights when
+      clustering is off); punctual attenuation and spot cones contribute in-scattering,
+      while the directional CSM atlas occludes the march to form light shafts. The volume
+      stores accumulated scattering + transmittance and `applyFog()` samples it by screen
+      position/linear depth. Disabled, the prior analytic path is unchanged. `diagnose()`
+      identifies a missing `scene.fog`; all PBR/ShaderMaterial variants and the compute
+      shader parse offline.
 
 ## v0.12 — Cinematic camera & color ⬜
 

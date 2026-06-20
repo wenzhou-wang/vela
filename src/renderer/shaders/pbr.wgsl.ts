@@ -90,6 +90,8 @@ struct DirectionalCascades {
   params : vec4<f32>, // x = count, y = blend fraction
 };
 @group(0) @binding(20) var<uniform> directionalCascades : DirectionalCascades;
+@group(0) @binding(21) var volumetricFog : texture_3d<f32>;
+@group(0) @binding(22) var volumetricFogSampler : sampler;
 
 struct VSOut {
   @builtin(position) clipPosition : vec4<f32>,
@@ -527,6 +529,14 @@ fn evaluateLight(i : u32, worldPos : vec3<f32>, N : vec3<f32>) -> LightContrib {
 fn applyFog(color : vec3<f32>, worldPos : vec3<f32>) -> vec3<f32> {
   let mode = u32(frame.fogColor.w);
   if (mode == 0u) { return color; }
+  if (frame.fogParams.w > 0.5) {
+    let clip = frame.proj * frame.view * vec4<f32>(worldPos, 1.0);
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    let viewDepth = -(frame.view * vec4<f32>(worldPos, 1.0)).z;
+    let z = clamp((viewDepth - frame.clusterParams.y) / max(frame.clusterParams.z - frame.clusterParams.y, 1e-4), 0.0, 1.0);
+    let fog = textureSampleLevel(volumetricFog, volumetricFogSampler, vec3<f32>(uv, z), 0.0);
+    return color * fog.a + fog.rgb;
+  }
   let dist = distance(worldPos, frame.cameraPos.xyz);
   var amount : f32;
   if (mode == 1u) {

@@ -48,6 +48,7 @@ import { CLUSTER_SHADER } from './shaders/clusters.wgsl';
 import { SKYGEN_SHADER } from './shaders/skygen.wgsl';
 import { REFLECTION_PROBE_SHADER } from './shaders/reflectionProbe.wgsl';
 import { IRRADIANCE_PROBE_SHADER } from './shaders/irradianceProbe.wgsl';
+import { VOLUMETRIC_FOG_SHADER } from './shaders/volumetricFog.wgsl';
 import { PARTICLE_SIM_SHADER } from './shaders/particles.wgsl';
 import { buildSurfaceShader } from './shaders/surface.wgsl';
 import { diagnoseScene, type Diagnostic } from './diagnose';
@@ -239,7 +240,7 @@ export interface RenderReport {
   shadowDraws: number;
   /** Estimated GPU texture memory in bytes. */
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean };
   /** Actionable performance suggestions for the last frame (may be empty). */
   suggestions: PerfSuggestion[];
 }
@@ -326,6 +327,17 @@ export class WebGPURenderer {
   private cascadeCount = 1;
   private cascadeSplits = new Float32Array(4);
   private cascadeCorners = Array.from({ length: 8 }, () => new Vector3());
+  /** Integrate scene fog and clustered lights into a low-resolution 3-D froxel volume. */
+  volumetricFog = false;
+  private volumetricFogTexture!: GPUTexture;
+  private volumetricFogView!: GPUTextureView;
+  private volumetricFogSampler!: GPUSampler;
+  private volumetricFogPipeline: GPUComputePipeline | null = null;
+  private volumetricFogLayout: GPUBindGroupLayout | null = null;
+  private volumetricFogBindGroup: GPUBindGroup | null = null;
+  private volumetricFogClusterBuffer: GPUBuffer | null = null;
+  private volumetricFogInvVP!: GPUBuffer;
+  private _inverseViewProjection = new Matrix4();
   private shadowMapAllocated = 0;
   // Environment (IBL): resolved each frame from scene.environment.
   private envView!: GPUTextureView;
@@ -698,6 +710,8 @@ export class WebGPURenderer {
     this.reflectionProbePipeline = null; this.reflectionProbeLayout = null;
     this.irradianceProbePipeline = null; this.irradianceProbeLayout = null;
     this.irradianceGridCapacity = 0; this.irradianceGridKey = '';
+    this.volumetricFogPipeline = null; this.volumetricFogLayout = null;
+    this.volumetricFogBindGroup = null; this.volumetricFogClusterBuffer = null;
     this.particleSimPipeline = null; this.particleSimLayout = null;
     this.idPipeline = null; this.idLayout = null; this.idUniformBuffer = null;
     this.idBindGroup = null; this.idBufferCapacity = 0;
@@ -728,6 +742,7 @@ export class WebGPURenderer {
     this.device.queue.submit([brdfEncoder.finish()]);
     this.createReflectionProbeResources();
     this.createIrradianceGridResources();
+    this.createVolumetricFogResources();
     this.createFrameResources();
   }
 
@@ -827,6 +842,8 @@ export class WebGPURenderer {
         { binding: 18, resource: { buffer: this.irradianceGridBuffer } },
         { binding: 19, resource: { buffer: this.irradianceGridParams } },
         { binding: 20, resource: { buffer: this.cascadeBuffer } },
+        { binding: 21, resource: this.volumetricFogView },
+        { binding: 22, resource: this.volumetricFogSampler },
       ],
     });
   }
@@ -863,6 +880,23 @@ export class WebGPURenderer {
     });
   }
 
+  private createVolumetricFogResources(): void {
+    this.volumetricFogTexture = this.device.createTexture({
+      label: 'volumetric-fog',
+      size: { width: CLUSTER_X, height: CLUSTER_Y, depthOrArrayLayers: CLUSTER_Z },
+      dimension: '3d', format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this.volumetricFogView = this.volumetricFogTexture.createView({ dimension: '3d' });
+    this.volumetricFogSampler = this.device.createSampler({
+      magFilter: 'linear', minFilter: 'linear',
+      addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge',
+    });
+    this.volumetricFogInvVP = this.device.createBuffer({
+      size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
   /** Allocate directional shadow map + spot atlas (1×1 dummies when shadows disabled). */
   private createShadowResources(): void {
     const size = this.shadows ? this.shadowMapSize : 1;
@@ -875,6 +909,7 @@ export class WebGPURenderer {
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
       this.shadowView = this.shadowTexture.createView();
+      this.volumetricFogBindGroup = null;
       this.shadowMapAllocated = size;
       if (this.frameBuffer) this.buildFrameBindGroup(); // shadowView changed → rebind
     }
@@ -1075,6 +1110,7 @@ export class WebGPURenderer {
     this.prepareGpuCull(encoder);
     // Clustered forward+: bin lights into the cluster grid.
     this.prepareClusters(encoder, camera);
+    this.prepareVolumetricFog(encoder, scene, camera);
     // GPU particles: emit + integrate the pools.
     this.prepareParticles(encoder, dt);
 
@@ -1368,6 +1404,7 @@ export class WebGPURenderer {
         ssr: this.ssr && this.postProcessing && this.sampleCount === 1,
         msaa: this.sampleCount,
         shadows: this.shadows,
+        volumetricFog: this.volumetricFog,
       },
       suggestions: this.perfSuggestions(drawCalls),
     };
@@ -1458,6 +1495,7 @@ export class WebGPURenderer {
       taa: this.taa,
       shadows: this.shadows,
       shadowCascades: this.shadowCascades,
+      volumetricFog: this.volumetricFog,
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
     });
@@ -2278,6 +2316,54 @@ export class WebGPURenderer {
     pass.end();
   }
 
+  private prepareVolumetricFog(encoder: GPUCommandEncoder, scene: Scene, camera: Camera): void {
+    if (!this.volumetricFog || !scene.fog) return;
+    if (!this.volumetricFogPipeline) {
+      this.volumetricFogLayout = this.device.createBindGroupLayout({
+        label: 'volumetric-fog',
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+          { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'depth' } },
+          { binding: 5, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'comparison' } },
+          { binding: 6, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '3d' } },
+          { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        ],
+      });
+      this.volumetricFogPipeline = this.device.createComputePipeline({
+        label: 'volumetric-fog',
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.volumetricFogLayout] }),
+        compute: { module: this.device.createShaderModule({ code: VOLUMETRIC_FOG_SHADER }), entryPoint: 'cs_main' },
+      });
+    }
+    const clusterBuffer = this.clusterLightsBuffer ?? this.clusterDummyBuffer!;
+    if (!this.volumetricFogBindGroup || this.volumetricFogClusterBuffer !== clusterBuffer) {
+      this.volumetricFogBindGroup = this.device.createBindGroup({
+        layout: this.volumetricFogLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: this.frameBuffer } },
+          { binding: 1, resource: { buffer: this.lightBuffer } },
+          { binding: 2, resource: { buffer: clusterBuffer } },
+          { binding: 3, resource: { buffer: this.cascadeBuffer } },
+          { binding: 4, resource: this.shadowView },
+          { binding: 5, resource: this.shadowSampler },
+          { binding: 6, resource: this.volumetricFogView },
+          { binding: 7, resource: { buffer: this.volumetricFogInvVP } },
+        ],
+      });
+      this.volumetricFogClusterBuffer = clusterBuffer;
+    }
+    this._inverseViewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).invert();
+    this.device.queue.writeBuffer(this.volumetricFogInvVP, 0, new Float32Array(this._inverseViewProjection.elements));
+    const pass = encoder.beginComputePass({ label: 'volumetric-fog' });
+    pass.setPipeline(this.volumetricFogPipeline);
+    pass.setBindGroup(0, this.volumetricFogBindGroup);
+    pass.dispatchWorkgroups(Math.ceil(CLUSTER_X / 4), Math.ceil(CLUSTER_Y / 3), Math.ceil(CLUSTER_Z / 4));
+    pass.end();
+  }
+
   // Scratch buffers for per-frame particle uploads (no hot-loop allocation).
   private _particleSimData = new Float32Array(20);
   private _particleSimU32 = new Uint32Array(this._particleSimData.buffer);
@@ -2977,8 +3063,10 @@ export class WebGPURenderer {
       f[76] = exp2 ? fog.density! : (fog.near ?? 1);
       f[77] = exp2 ? 0 : (fog.far ?? 100);
       f[78] = fog.heightFalloff ?? 0;
+      f[79] = this.volumetricFog ? 1 : 0;
     } else {
       f[75] = 0; // mode = none
+      f[79] = 0;
     }
 
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);

@@ -515,6 +515,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - shadowCascades: number — Number of directional shadow cascades.
 - shadowCascadeLambda: number — Blend between logarithmic (1) and uniform (0) cascade split placement.
 - shadowCascadeBlend: number — Fraction of each cascade depth range used to blend into the next cascade.
+- volumetricFog: boolean — Integrate scene fog and clustered lights into a low-resolution 3-D froxel volume.
 - postProcessing: boolean — Route rendering through the HDR post pipeline (tonemap moves to a final pass).
 - fxaa: boolean — Apply FXAA in the post pipeline (only when `postProcessing` is on).
 - bloom: boolean — Apply bloom in the post pipeline (only when `postProcessing` is on).
@@ -1293,6 +1294,7 @@ export interface DiagnoseState {
   taa: boolean;
   shadows: boolean;
   shadowCascades?: number;
+  volumetricFog?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -1336,7 +1338,7 @@ export interface RenderReport {
   sprites: { batches: number; instances: number };
   shadowDraws: number;
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean };
   suggestions: PerfSuggestion[];
 }
 ```

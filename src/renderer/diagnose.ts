@@ -35,6 +35,7 @@ export interface DiagnoseState {
   taa: boolean;
   shadows: boolean;
   shadowCascades?: number;
+  volumetricFog?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -304,6 +305,13 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
       severity: 'warning', code: 'csm-needs-perspective-camera',
       message: `renderer.shadowCascades is ${shadowCascades}, but cascades require a PerspectiveCamera; one shadow map is used.`,
       fix: 'Use a PerspectiveCamera or set renderer.shadowCascades = 1.',
+    });
+  }
+  if (state.volumetricFog && !scene.fog) {
+    out.push({
+      severity: 'warning', code: 'volumetric-fog-needs-fog',
+      message: 'renderer.volumetricFog is enabled but scene.fog is null — the froxel pass is inactive.',
+      fix: 'Set scene.fog or disable renderer.volumetricFog.',
     });
   }
   if (scene.fog && scene.fog.density === undefined) {
