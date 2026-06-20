@@ -37,6 +37,8 @@ export { Decal } from './core/Decal';
 export type { DecalOptions } from './core/Decal';
 export { Terrain } from './core/Terrain';
 export type { TerrainOptions, TerrainDescription } from './core/Terrain';
+export { AgentGraphEditor } from './core/AgentGraphEditor';
+export type { AgentGraphSnapshot, AgentGraphEdit, AgentGraphChange, AnimationGraphData } from './core/AgentGraphEditor';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export type { Meshlet } from './core/BufferGeometry';

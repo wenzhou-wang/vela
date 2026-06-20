@@ -59,25 +59,53 @@ interface ResolvedState {
  */
 export class AnimationStateMachine {
   readonly mixer = new AnimationMixer();
-  readonly parameters: Record<string, number>;
-  current: string;
+  readonly parameters: Record<string, number> = {};
+  current = '';
 
   private states = new Map<string, ResolvedState>();
-  private transitions: TransitionDef[];
+  private transitions: TransitionDef[] = [];
   private actions = new Map<AnimationClip, AnimationAction>();
   // Active crossfade: blending `from` → `current` over `dur` seconds.
   private from: string | null = null;
   private dur = 0;
   private elapsed = 0;
+  private initial = '';
 
   constructor(def: StateMachineDef) {
+    this.setDefinition(def);
+  }
+
+  /** Replace the editable graph while preserving cached clip actions. */
+  setDefinition(def: StateMachineDef): this {
+    if (def.states.length === 0) throw new Error('AnimationStateMachine: definition needs at least one state.');
+    this.states.clear();
     for (const s of def.states) {
+      if (this.states.has(s.name)) throw new Error(`AnimationStateMachine: duplicate state "${s.name}".`);
       const samples = s.blend ? [...s.blend.samples].sort((a, b) => a.position - b.position) : [];
       this.states.set(s.name, { def: s, samples });
     }
-    this.transitions = def.transitions;
-    this.parameters = { ...(def.parameters ?? {}) };
-    this.current = def.initial ?? def.states[0].name;
+    this.transitions = [...def.transitions];
+    for (const key of Object.keys(this.parameters)) delete this.parameters[key];
+    Object.assign(this.parameters, def.parameters ?? {});
+    this.initial = def.initial ?? def.states[0].name;
+    this.current = this.initial;
+    if (!this.states.has(this.current)) throw new Error(`AnimationStateMachine: initial state "${this.current}" does not exist.`);
+    this.from = null;
+    for (const action of this.actions.values()) action.weight = 0;
+    return this;
+  }
+
+  /** Current editable graph (clip objects retained; arrays defensively copied). */
+  getDefinition(): StateMachineDef {
+    return {
+      states: [...this.states.values()].map(({ def }) => ({
+        ...def,
+        blend: def.blend ? { parameter: def.blend.parameter, samples: [...def.blend.samples] } : undefined,
+      })),
+      transitions: this.transitions.map((transition) => ({ ...transition, when: [...transition.when] })),
+      initial: this.initial,
+      parameters: { ...this.parameters },
+    };
   }
 
   setParameter(name: string, value: number): this {

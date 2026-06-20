@@ -708,9 +708,15 @@ visible, not committed.
       GPU-sized list; `report().gpuSubmission` exposes that cost. `diagnose()` checks the
       culling prerequisite. Offline-verified partition bounds, command sizing, typecheck,
       and build.
-- ⬜ **Node/clip-graph editor surface for agents** — not a visual editor (explicitly out
-      of scope), but a structured, `describe()`-style read/write API over post chains and
-      animation graphs so an agent can edit the pipeline as data and diff the result.
+- ✅ **Node/clip-graph editor surface for agents** — `AgentGraphEditor` snapshots post
+      chains (stable IDs, order, enabled/input state, WGSL effect, JSON-safe uniform
+      summaries) and named animation machines (clip-name graph + runtime state). Typed edits
+      add/remove/move/update post passes, set parameters/play states, or atomically replace
+      animation definitions through a registered clip-name table. Every `apply()` returns
+      path-level before/after diffs; invalid IDs, duplicate/unknown clips, duplicate states,
+      and missing initial states fail with actionable errors. `AnimationStateMachine`
+      exposes defensive `getDefinition()` and validated `setDefinition()` while retaining
+      cached actions. Offline-verified snapshot/edit/diff and failure behavior.
 
 ---
 

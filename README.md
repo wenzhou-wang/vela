@@ -165,6 +165,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   compositor array-layer routing, and XR-compatible adapter/session prerequisites.
 - **GPU scene submission** — meshlet partition coverage/bounds and fixed indirect-command
   ranges are verified offline; reports expose indirect and meshlet command counts.
+- **Agent graph editing** — post/animation snapshots, typed multi-edits, clip-name graph
+  replacement, path-level diffs, and invalid-ID behavior are verified without a GPU.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit

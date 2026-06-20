@@ -257,6 +257,13 @@ A tiled heightfield whose tiles independently select ordinary `LOD` mesh levels.
 - options: Readonly<TerrainOptions>
 - describe(): TerrainDescription
 
+### class AgentGraphEditor
+Structured read/write/diff surface over post and animation graphs for agents.
+- new AgentGraphEditor(renderer: WebGPURenderer, machines: Record<string, AnimationStateMachine>, clips: AnimationClip[])
+- registerClip(clip: AnimationClip): AgentGraphEditor
+- describe(): AgentGraphSnapshot
+- apply(edits: AgentGraphEdit | AgentGraphEdit[]): AgentGraphChange[]
+
 ### class Skeleton
 A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
 - new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
@@ -746,6 +753,8 @@ A declarative animation state machine over an `AnimationMixer`. States are singl
 - mixer: AnimationMixer
 - parameters: Record<string, number>
 - current: string
+- setDefinition(def: StateMachineDef): AnimationStateMachine — Replace the editable graph while preserving cached clip actions.
+- getDefinition(): StateMachineDef — Current editable graph (clip objects retained; arrays defensively copied).
 - setParameter(name: string, value: number): AnimationStateMachine
 - play(name: string, duration?: number): AnimationStateMachine — Immediately switch to `name` with an optional crossfade (no condition check).
 - update(dt: number): void — Evaluate transitions, accumulate state weights into the mixer, and advance it.
@@ -1164,6 +1173,41 @@ export interface TerrainDescription {
   tiles: [number, number];
   levels: number;
   trianglesByLevel: number[];
+}
+```
+
+### AgentGraphSnapshot
+```ts
+export interface AgentGraphSnapshot {
+  post: Array<{ id: string; name: string; enabled: boolean; inputs: ShaderPassInput[]; effect: string; uniforms: Record<string, unknown> }>;
+  animations: Record<string, { graph: AnimationGraphData; runtime: ReturnType<AnimationStateMachine['describe']> }>;
+}
+```
+
+### AgentGraphEdit
+```ts
+export type AgentGraphEdit =
+  | { type: 'post.add'; pass: ShaderPassOptions; index?: number }
+  | { type: 'post.remove'; id: string }
+  | { type: 'post.move'; id: string; index: number }
+  | { type: 'post.update'; id: string; patch: { name?: string; enabled?: boolean; inputs?: ShaderPassInput[]; effect?: string; uniforms?: Record<string, UniformValue> } }
+  | { type: 'animation.parameter'; machine: string; name: string; value: number }
+  | { type: 'animation.play'; machine: string; state: string; duration?: number }
+  | { type: 'animation.replace'; machine: string; graph: AnimationGraphData };
+```
+
+### AgentGraphChange
+```ts
+export interface AgentGraphChange { path: string; before?: unknown; after?: unknown }
+```
+
+### AnimationGraphData
+```ts
+export interface AnimationGraphData {
+  states: Array<{ name: string; clip?: string; blend?: { parameter: string; samples: Array<{ clip: string; position: number }> } }>;
+  transitions: TransitionDef[];
+  initial?: string;
+  parameters?: Record<string, number>;
 }
 ```
 
