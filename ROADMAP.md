@@ -568,11 +568,16 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
 Camera-domain effects and final-image control — the layer between a correct render and a
 shot. All slot into the existing HDR post chain before/after tonemap.
 
-- ⬜ **Motion vectors → motion blur** — emit a per-pixel velocity target (current vs.
-      previous clip position, including skinned/instanced transforms) in the scene pass;
-      this also upgrades TAA from camera-only reprojection to true per-object reprojection,
-      killing the current ghosting on moving meshes. A tile-max + reconstruction post pass
-      gives per-object motion blur.
+- ✅ **Motion vectors → motion blur** — when TAA, motion blur, or scene-input passes are
+      active, the scene MRT includes an `rg16float` current→previous UV velocity target.
+      The 208-byte model slot retains the previous model matrix; instanced matrices,
+      skeleton bone matrices, and morph weights each retain a previous-frame GPU buffer,
+      while the 384-byte frame block carries the previous camera view-projection. TAA now
+      reprojects history with this per-object velocity. `renderer.motionBlur` runs a 3×3
+      velocity-neighborhood max followed by a nine-tap HDR reconstruction blur
+      (`motionBlurStrength`), before TAA/custom passes/tonemap. Requires post-processing +
+      sampleCount 1, covered by `diagnose()`. Offline-verified across static/skinned/
+      instanced/morph PBR and ShaderMaterial variants plus TAA/blur shaders.
 - ⬜ **Depth of field** — a circle-of-confusion pass from depth + physical
       aperture/focus-distance, near/far blurred with a bokeh kernel (reuse the half-res
       Gaussian targets from bloom for the cheap path).

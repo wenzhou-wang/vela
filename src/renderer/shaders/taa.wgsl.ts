@@ -5,8 +5,7 @@
  * the projection matrix.  This shader:
  *   1. Undoes the jitter offset when sampling the current frame.
  *   2. Reconstructs the world-space position from depth and reprojects it through
- *      the previous frame's view-projection (camera-motion reprojection; no
- *      per-object motion vectors).
+ *      the previous frame using the scene velocity target (camera + object motion).
  *   3. Neighborhood-clamps the history sample to limit ghosting.
  *   4. Blends: mix(clamped_history, current, blend).
  *
@@ -25,6 +24,7 @@ struct TAAParams {
 @group(0) @binding(2) var history  : texture_2d<f32>;   // previous accumulated TAA output
 @group(0) @binding(3) var depthTex : texture_depth_2d;  // scene depth (non-MSAA)
 @group(0) @binding(4) var smp      : sampler;
+@group(0) @binding(5) var velocity : texture_2d<f32>;
 
 struct VSOut {
   @builtin(position) clip : vec4<f32>,
@@ -76,8 +76,8 @@ fn neighborhoodClamp(uv : vec2<f32>, h : vec3<f32>) -> vec3<f32> {
   let world  = worldH.xyz / worldH.w;
 
   let prevClip = p.prevViewProj * vec4(world, 1.0);
-  let prevNDC  = prevClip.xy / prevClip.w;
-  let prevUV   = vec2((prevNDC.x + 1.0) * 0.5, (1.0 - prevNDC.y) * 0.5);
+  let motion = textureLoad(velocity, vec2<i32>(in.clip.xy), 0).xy;
+  let prevUV = uv - motion;
 
   // Off-screen last frame: no usable history.
   if (any(prevUV < vec2(0.0)) || any(prevUV > vec2(1.0)) || prevClip.w <= 0.0) {

@@ -160,6 +160,7 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 struct SceneOut {
   @location(0) color : vec4<f32>,
   @location(1) normalDepth : vec4<f32>,
+  @location(2) velocity : vec2<f32>,
 };
 
 @fragment
@@ -177,6 +178,10 @@ fn fs_scene(in : VSOut, @builtin(front_facing) frontFacing : bool) -> SceneOut {
   var out : SceneOut;
   out.color = vec4<f32>(color, s.color.a);
   out.normalDepth = vec4<f32>(s.normal, linearDepth);
+  let previousNDC = in.previousClip.xy / max(in.previousClip.w, 1e-6);
+  let currentUV = in.clipPosition.xy / vec2<f32>(frame.clusterDims.x * f32(CLUSTER_X), frame.clusterDims.y * f32(CLUSTER_Y));
+  let previousUV = previousNDC * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  out.velocity = currentUV - previousUV;
   return out;
 }
 

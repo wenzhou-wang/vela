@@ -37,6 +37,7 @@ struct Frame {
   clusterDims : vec4<f32>,     // xy = cluster tile size in pixels, z = elapsed seconds, w = unused
   fogColor : vec4<f32>,        // rgb = fog color (linear), w = mode (0 none, 1 linear, 2 exp2)
   fogParams : vec4<f32>,       // x = near (linear) or density (exp2), y = far, z = height falloff
+  prevViewProj : mat4x4<f32>,
 };
 
 struct Light {
@@ -101,6 +102,7 @@ struct VSOut {
   @location(3) worldTangent : vec3<f32>,
   @location(4) tangentSign : f32,
   @location(5) color : vec4<f32>,
+  @location(6) @interpolate(linear) previousClip : vec4<f32>,
 };
 
 struct VSIn {
@@ -152,6 +154,7 @@ struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
   params : vec4<f32>,  // x = shell thickness
+  prevModel : mat4x4<f32>,
 };
 @group(1) @binding(0) var<uniform> model : Model;
 
@@ -162,6 +165,7 @@ fn vs_main(in : VSIn) -> VSOut {
   out.worldNormal = normalize((model.normalMat * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
   out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+  out.previousClip = frame.prevViewProj * model.prevModel * vec4<f32>(in.position, 1.0);
 
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
@@ -175,6 +179,7 @@ fn vs_main(in : VSIn) -> VSOut {
 // indexed by instance_index. Normals assume uniform per-instance scale.
 export const VERTEX_INSTANCED = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> instances : array<mat4x4<f32>>;
+@group(1) @binding(1) var<storage, read> previousInstances : array<mat4x4<f32>>;
 
 @vertex
 fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
@@ -183,6 +188,7 @@ fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
   let worldPos4 = model * vec4<f32>(in.position, 1.0);
   out.worldPos = worldPos4.xyz;
   out.clipPosition = frame.proj * frame.view * worldPos4;
+  out.previousClip = frame.prevViewProj * previousInstances[ii] * vec4<f32>(in.position, 1.0);
 
   out.worldNormal = normalize((model * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldTangent = normalize((model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
@@ -197,6 +203,7 @@ fn vs_main(in : VSIn, @builtin(instance_index) ii : u32) -> VSOut {
 // (per the glTF skinning spec — joint matrices are already world-space).
 export const VERTEX_SKINNED = /* wgsl */ `
 @group(3) @binding(0) var<storage, read> bones : array<mat4x4<f32>>;
+@group(3) @binding(1) var<storage, read> previousBones : array<mat4x4<f32>>;
 
 // Bound for the shell extrusion distance (params.x); model matrices come from
 // the skin (joint matrices are already world-space, per the glTF spec).
@@ -204,6 +211,7 @@ struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
   params : vec4<f32>,  // x = shell thickness
+  prevModel : mat4x4<f32>,
 };
 @group(1) @binding(0) var<uniform> model : Model;
 
@@ -227,9 +235,15 @@ fn vs_main(in : VSInSkinned) -> VSOut {
     in.weights.w * bones[in.joints.w];
 
   let worldPos4 = skin * vec4<f32>(in.position, 1.0);
+  let previousSkin =
+    in.weights.x * previousBones[in.joints.x] +
+    in.weights.y * previousBones[in.joints.y] +
+    in.weights.z * previousBones[in.joints.z] +
+    in.weights.w * previousBones[in.joints.w];
   out.worldNormal = normalize((skin * vec4<f32>(in.normal, 0.0)).xyz);
   out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
   out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+  out.previousClip = frame.prevViewProj * previousSkin * vec4<f32>(in.position, 1.0);
 
   out.worldTangent = normalize((skin * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
@@ -247,6 +261,7 @@ struct Model {
   model : mat4x4<f32>,
   normalMat : mat4x4<f32>,
   params : vec4<f32>,  // x = shell thickness
+  prevModel : mat4x4<f32>,
 };
 @group(1) @binding(0) var<uniform> model : Model;
 
@@ -260,17 +275,20 @@ struct MorphInfo {
 @group(3) @binding(1) var<storage, read> morphPos : array<f32>;
 @group(3) @binding(2) var<storage, read> morphNrm : array<f32>;
 @group(3) @binding(3) var<storage, read> morphWeights : array<f32>;
+@group(3) @binding(4) var<storage, read> previousMorphWeights : array<f32>;
 
 @vertex
 fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   var out : VSOut;
   var position = in.position;
+  var previousPosition = in.position;
   var normal = in.normal;
 
   for (var t = 0u; t < morphInfo.count; t = t + 1u) {
     let w = morphWeights[t];
     let o = (t * morphInfo.vertexCount + vid) * 3u;
     position = position + w * vec3<f32>(morphPos[o], morphPos[o + 1u], morphPos[o + 2u]);
+    previousPosition = previousPosition + previousMorphWeights[t] * vec3<f32>(morphPos[o], morphPos[o + 1u], morphPos[o + 2u]);
     if (morphInfo.hasNormals != 0u) {
       normal = normal + w * vec3<f32>(morphNrm[o], morphNrm[o + 1u], morphNrm[o + 2u]);
     }
@@ -280,6 +298,7 @@ fn vs_main(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   out.worldNormal = normalize((model.normalMat * vec4<f32>(normal, 0.0)).xyz);
   out.worldPos = worldPos4.xyz + out.worldNormal * model.params.x;
   out.clipPosition = frame.proj * frame.view * vec4<f32>(out.worldPos, 1.0);
+  out.previousClip = frame.prevViewProj * model.prevModel * vec4<f32>(previousPosition, 1.0);
 
   out.worldTangent = normalize((model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
   out.tangentSign = in.tangent.w;
@@ -822,6 +841,7 @@ fn fs_main(in : VSOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 struct SceneOut {
   @location(0) color : vec4<f32>,
   @location(1) normalDepth : vec4<f32>,
+  @location(2) velocity : vec2<f32>,
 };
 
 @fragment
@@ -839,6 +859,10 @@ fn fs_scene(in : VSOut, @builtin(front_facing) frontFacing : bool) -> SceneOut {
   var out : SceneOut;
   out.color = vec4<f32>(color, s.color.a);
   out.normalDepth = vec4<f32>(s.normal, linearDepth);
+  let previousNDC = in.previousClip.xy / max(in.previousClip.w, 1e-6);
+  let currentUV = in.clipPosition.xy / vec2<f32>(frame.clusterDims.x * f32(CLUSTER_X), frame.clusterDims.y * f32(CLUSTER_Y));
+  let previousUV = previousNDC * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  out.velocity = currentUV - previousUV;
   return out;
 }
 

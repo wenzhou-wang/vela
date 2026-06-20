@@ -127,6 +127,7 @@ export class PipelineCache {
       label: 'bones',
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -135,6 +136,7 @@ export class PipelineCache {
       label: 'instances',
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -146,6 +148,7 @@ export class PipelineCache {
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -243,7 +246,7 @@ export class PipelineCache {
       label: key,
       layout: this.lineLayout,
       vertex: { module: this.lineModule, entryPoint: 'vs_main', buffers: LINE_VERTEX_BUFFER_LAYOUT },
-      fragment: { module: this.lineModule, entryPoint: 'fs_main', targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }] : [target] },
+      fragment: { module: this.lineModule, entryPoint: 'fs_main', targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }, { format: 'rg16float', writeMask: 0 }] : [target] },
       primitive: { topology: 'line-list' },
       depthStencil: {
         format: DEPTH_FORMAT,
@@ -434,7 +437,7 @@ export class PipelineCache {
         fragment: {
           module,
           entryPoint: sceneInputs ? 'fs_scene' : 'fs_main',
-          targets: sceneInputs ? [target, { format: 'rgba16float' }] : [target],
+          targets: sceneInputs ? [target, { format: 'rgba16float' }, { format: 'rg16float' }] : [target],
         },
         primitive: { topology: 'triangle-list', cullMode: cull as GPUCullMode, frontFace: 'ccw' },
         depthStencil: {
@@ -463,7 +466,7 @@ export class PipelineCache {
       label: key,
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.skyLayout] }),
       vertex: { module: this.skyModule, entryPoint: 'vs_sky' },
-      fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: sceneInputs ? [{ format }, { format: 'rgba16float', writeMask: 0 }] : [{ format }] },
+      fragment: { module: this.skyModule, entryPoint: 'fs_sky', targets: sceneInputs ? [{ format }, { format: 'rgba16float', writeMask: 0 }, { format: 'rg16float', writeMask: 0 }] : [{ format }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
       multisample: { count: this.sampleCount },
@@ -496,7 +499,7 @@ export class PipelineCache {
       label: key,
       layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.particleLayout] }),
       vertex: { module: this.particleModule, entryPoint: 'vs_main' },
-      fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: sceneInputs ? [{ format, blend }, { format: 'rgba16float', writeMask: 0 }] : [{ format, blend }] },
+      fragment: { module: this.particleModule, entryPoint: 'fs_main', targets: sceneInputs ? [{ format, blend }, { format: 'rgba16float', writeMask: 0 }, { format: 'rg16float', writeMask: 0 }] : [{ format, blend }] },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less' },
       multisample: { count: this.sampleCount },
@@ -530,7 +533,7 @@ export class PipelineCache {
       fragment: {
         module: this.spriteModule,
         entryPoint: 'fs_main',
-        targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }] : [target],
+        targets: sceneInputs ? [target, { format: 'rgba16float', writeMask: 0 }, { format: 'rg16float', writeMask: 0 }] : [target],
       },
       primitive: { topology: 'triangle-list' },
       depthStencil: {
@@ -600,7 +603,7 @@ export class PipelineCache {
       fragment: {
         module,
         entryPoint: sceneInputs ? 'fs_scene' : 'fs_main',
-        targets: sceneInputs ? [target, { format: 'rgba16float' }] : [target],
+        targets: sceneInputs ? [target, { format: 'rgba16float' }, { format: 'rg16float' }] : [target],
       },
       primitive: {
         topology: 'triangle-list',

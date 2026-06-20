@@ -535,6 +535,8 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - ssrThickness: number — View-space hit tolerance in world units.
 - taa: boolean — Temporal anti-aliasing: a sub-pixel Halton jitter is baked into the projection matrix and a resolve pass blends the reprojected history (camera-motion only).
 - taaBlend: number — TAA blend factor: weight of the current frame (lower = smoother, more ghosting).
+- motionBlur: boolean — Per-object reconstruction motion blur.
+- motionBlurStrength: number
 - deterministic: boolean — Deterministic rendering: identical scenes produce identical pixels.
 - time: number — Scene time in seconds; only advances when you set it (`deterministic = true`).
 - renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
@@ -1295,6 +1297,7 @@ export interface DiagnoseState {
   shadows: boolean;
   shadowCascades?: number;
   volumetricFog?: boolean;
+  motionBlur?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -1338,7 +1341,7 @@ export interface RenderReport {
   sprites: { batches: number; instances: number };
   shadowDraws: number;
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean; motionBlur: boolean };
   suggestions: PerfSuggestion[];
 }
 ```

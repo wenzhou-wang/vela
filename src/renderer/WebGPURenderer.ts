@@ -59,8 +59,8 @@ type DrawEncoder = GPURenderPassEncoder | GPURenderBundleEncoder;
 const MAX_LIGHTS = 256;
 const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
-const FRAME_SIZE = 320; // bytes (view/proj/lightViewProj mat4s + cameraPos..fogParams vec4s)
-const MODEL_SIZE = 144; // model mat4 (64) + normalMat mat4 (64) + params vec4 (16)
+const FRAME_SIZE = 384; // prior frame layout + previous view-projection mat4
+const MODEL_SIZE = 208; // model + normalMat + params + previous model
 const MATERIAL_SIZE = 144;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
 
@@ -153,15 +153,21 @@ export function computeCascadeSplits(
 
 interface SkinnedResources {
   boneBuffer: GPUBuffer;
+  previousBoneBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   jointCount: number;
+  previous: Float32Array<ArrayBuffer>;
+  uploadedFrame: number;
 }
 
 interface InstancedResources {
   buffer: GPUBuffer;
+  previousBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   count: number;
   version: number;
+  previous: Float32Array<ArrayBuffer>;
+  uploadedFrame: number;
 }
 
 interface MaterialResources {
@@ -175,6 +181,9 @@ interface MorphResources {
   weightBuffer: GPUBuffer;
   bindGroup: GPUBindGroup;
   count: number;
+  previousWeightBuffer: GPUBuffer;
+  previous: Float32Array<ArrayBuffer>;
+  uploadedFrame: number;
 }
 
 interface ShaderMaterialResources {
@@ -240,7 +249,7 @@ export interface RenderReport {
   shadowDraws: number;
   /** Estimated GPU texture memory in bytes. */
   textureMemoryBytes: number;
-  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean };
+  flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean; motionBlur: boolean };
   /** Actionable performance suggestions for the last frame (may be empty). */
   suggestions: PerfSuggestion[];
 }
@@ -422,6 +431,9 @@ export class WebGPURenderer {
   taa = false;
   /** TAA blend factor: weight of the current frame (lower = smoother, more ghosting). */
   taaBlend = 0.1;
+  /** Per-object reconstruction motion blur. Requires postProcessing and sampleCount 1. */
+  motionBlur = false;
+  motionBlurStrength = 1;
   /**
    * Deterministic rendering: identical scenes produce identical pixels.
    * Time stops following the wall clock — drive it via `renderer.time`
@@ -532,6 +544,7 @@ export class WebGPURenderer {
   private meshSlots = new WeakMap<Mesh, number>();
   private shellSlots = new WeakMap<Mesh, number>();
   private nextMeshSlot = 0;
+  private previousModels = new WeakMap<Mesh, { current: Matrix4; previous: Matrix4; frame: number }>();
 
   // Lifecycle.
   private disposed = false;
@@ -565,6 +578,7 @@ export class WebGPURenderer {
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
   private frameNumber = 0;
+  private temporalFrame = 0;
   private readonly clockStart = performance.now();
   // Per-render state: output dimensions + whether the post chain runs.
   private _renderWidth = 1;
@@ -689,6 +703,7 @@ export class WebGPURenderer {
     this.meshSlots = new WeakMap();
     this.shellSlots = new WeakMap();
     this.nextMeshSlot = 0;
+    this.previousModels = new WeakMap();
     this.spriteBatches.clear();
     this.fontAtlases.clear();
 
@@ -1021,6 +1036,7 @@ export class WebGPURenderer {
     if (this.disposed || this.deviceLost) return;
     scene.updateMatrixWorld();
     camera.updateMatrixWorld();
+    if (!target && !this.capturingReflectionProbe) this.temporalFrame++;
     if (!this.capturingReflectionProbe && !target) {
       this.refreshReflectionProbes(scene);
       // Probe renders update shared per-render state; the main render rebuilds it below.
@@ -1052,7 +1068,7 @@ export class WebGPURenderer {
     const usePost = this.postProcessing && !rt;
     this._usePost = usePost;
     const useSSR = this.ssr && usePost && this.sampleCount === 1 && !!this.depthSampleView;
-    this._sceneInputs = usePost && (useSSR || this.passes.some((p) => p.enabled && p.inputs.length > 0));
+    this._sceneInputs = usePost && (useSSR || this.taa || this.motionBlur || this.passes.some((p) => p.enabled && p.inputs.length > 0));
     this._renderWidth = target ? target.width : this.canvas.width;
     this._renderHeight = target ? target.height : this.canvas.height;
     // The scene pass renders into the HDR target when post-processing is on,
@@ -1138,7 +1154,7 @@ export class WebGPURenderer {
 
     const pass = encoder.beginRenderPass({
       colorAttachments: this._sceneInputs
-        ? [colorAttachment, this.post.sceneNormalDepthAttachment()]
+        ? [colorAttachment, this.post.sceneNormalDepthAttachment(), this.post.sceneVelocityAttachment()]
         : [colorAttachment],
       depthStencilAttachment: {
         view: rt ? rt.depthView : this.depthTexture.createView(),
@@ -1251,6 +1267,10 @@ export class WebGPURenderer {
           this.ssrIntensity,
           this.hizMipCount,
         );
+      }
+      const useMotionBlur = this.motionBlur && this.sampleCount === 1;
+      if (useMotionBlur) {
+        postInput = this.post.runMotionBlur(encoder, postInput, this.motionBlurStrength);
       }
       // TAA resolve runs after SSR so its history stabilizes ray-march shimmer.
       if (useTAA) {
@@ -1405,6 +1425,7 @@ export class WebGPURenderer {
         msaa: this.sampleCount,
         shadows: this.shadows,
         volumetricFog: this.volumetricFog,
+        motionBlur: this.motionBlur && this.postProcessing && this.sampleCount === 1,
       },
       suggestions: this.perfSuggestions(drawCalls),
     };
@@ -1496,6 +1517,7 @@ export class WebGPURenderer {
       shadows: this.shadows,
       shadowCascades: this.shadowCascades,
       volumetricFog: this.volumetricFog,
+      motionBlur: this.motionBlur,
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
     });
@@ -3069,6 +3091,9 @@ export class WebGPURenderer {
       f[79] = 0;
     }
 
+    // Previous frame's unjittered view-projection (80..95).
+    f.set(this.frameNumber <= 1 ? this._viewProjection.elements : this._prevViewProj, 80);
+
     this.device.queue.writeBuffer(this.frameBuffer, 0, this.frameData);
     if (lightCount > 0) {
       this.device.queue.writeBuffer(this.lightBuffer, 0, this.lightData, 0, lightCount * (LIGHT_STRIDE / 4));
@@ -3323,17 +3348,27 @@ export class WebGPURenderer {
         size: Math.max(mesh.count, 1) * 64,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      const previousBuffer = this.device.createBuffer({
+        size: Math.max(mesh.count, 1) * 64,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
       const bindGroup = this.device.createBindGroup({
         layout: this.pipelines.instanceLayout,
-        entries: [{ binding: 0, resource: { buffer } }],
+        entries: [
+          { binding: 0, resource: { buffer } },
+          { binding: 1, resource: { buffer: previousBuffer } },
+        ],
       });
-      res = { buffer, bindGroup, count: mesh.count, version: -1 };
+      res = { buffer, previousBuffer, bindGroup, count: mesh.count, version: -1, previous: mesh.instanceMatrix.slice(), uploadedFrame: -1 };
       this.instancedResources.set(mesh, res);
     }
-    if (res.version !== mesh.version) {
-      this.device.queue.writeBuffer(res.buffer, 0, mesh.instanceMatrix);
+    if (res.uploadedFrame !== this.temporalFrame) {
+      this.device.queue.writeBuffer(res.previousBuffer, 0, res.previous);
+      res.previous.set(mesh.instanceMatrix);
       res.version = mesh.version;
+      res.uploadedFrame = this.temporalFrame;
     }
+    this.device.queue.writeBuffer(res.buffer, 0, mesh.instanceMatrix);
     return res;
   }
 
@@ -3345,15 +3380,28 @@ export class WebGPURenderer {
         size: Math.max(skeleton.jointCount, 1) * 64,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      const previousBoneBuffer = this.device.createBuffer({
+        size: Math.max(skeleton.jointCount, 1) * 64,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      skeleton.update();
       const bindGroup = this.device.createBindGroup({
         layout: this.pipelines.bonesLayout,
-        entries: [{ binding: 0, resource: { buffer: boneBuffer } }],
+        entries: [
+          { binding: 0, resource: { buffer: boneBuffer } },
+          { binding: 1, resource: { buffer: previousBoneBuffer } },
+        ],
       });
-      res = { boneBuffer, bindGroup, jointCount: skeleton.jointCount };
+      res = { boneBuffer, previousBoneBuffer, bindGroup, jointCount: skeleton.jointCount, previous: skeleton.boneMatrices.slice(), uploadedFrame: -1 };
       this.skinnedResources.set(mesh, res);
     }
     // Joints are already updated by scene.updateMatrixWorld(); refresh bones.
     skeleton.update();
+    if (res.uploadedFrame !== this.temporalFrame) {
+      this.device.queue.writeBuffer(res.previousBoneBuffer, 0, res.previous);
+      res.previous.set(skeleton.boneMatrices);
+      res.uploadedFrame = this.temporalFrame;
+    }
     this.device.queue.writeBuffer(res.boneBuffer, 0, skeleton.boneMatrices);
     return res;
   }
@@ -3401,6 +3449,9 @@ export class WebGPURenderer {
         size: Math.max(count * 4, 4),
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      const previousWeightBuffer = this.device.createBuffer({
+        size: Math.max(count * 4, 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
 
       const bindGroup = this.device.createBindGroup({
         layout: this.pipelines.morphLayout,
@@ -3409,13 +3460,20 @@ export class WebGPURenderer {
           { binding: 1, resource: { buffer: posBuffer } },
           { binding: 2, resource: { buffer: nrmBuffer } },
           { binding: 3, resource: { buffer: weightBuffer } },
+          { binding: 4, resource: { buffer: previousWeightBuffer } },
         ],
       });
-      res = { infoBuffer, weightBuffer, bindGroup, count };
+      res = { infoBuffer, weightBuffer, previousWeightBuffer, bindGroup, count, previous: new Float32Array(mesh.morphTargetInfluences), uploadedFrame: -1 };
       this.morphResources.set(mesh, res);
     }
 
     // Weights change every frame (animation); deltas/info are static.
+    if (res.uploadedFrame !== this.temporalFrame) {
+      const weights = new Float32Array(mesh.morphTargetInfluences);
+      this.device.queue.writeBuffer(res.previousWeightBuffer, 0, res.previous);
+      res.previous.set(weights);
+      res.uploadedFrame = this.temporalFrame;
+    }
     this.device.queue.writeBuffer(res.weightBuffer, 0, new Float32Array(mesh.morphTargetInfluences));
     return res;
   }
@@ -3476,6 +3534,16 @@ export class WebGPURenderer {
     data[24] = nm[6]; data[25] = nm[7]; data[26] = nm[8]; data[27] = 0;
     data[28] = 0; data[29] = 0; data[30] = 0; data[31] = 1;
     data[32] = thickness; // params.x
+    let history = this.previousModels.get(mesh);
+    if (!history) {
+      history = { current: mesh.matrixWorld.clone(), previous: mesh.matrixWorld.clone(), frame: this.temporalFrame };
+      this.previousModels.set(mesh, history);
+    } else if (history.frame !== this.temporalFrame) {
+      history.previous.copy(history.current);
+      history.current.copy(mesh.matrixWorld);
+      history.frame = this.temporalFrame;
+    }
+    data.set(history.previous.elements, 36);
     this.device.queue.writeBuffer(this.modelPoolBuffer!, slot * 256, data);
   }
 

@@ -1,6 +1,7 @@
 import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
+import { MOTION_BLUR_SHADER } from './shaders/motionBlur.wgsl';
 import { SSR_SHADER } from './shaders/ssr.wgsl';
 import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
@@ -79,6 +80,12 @@ export class PostProcessing {
   private taaBView!: GPUTextureView;
   private taaFlip = false;
   private taaHistoryValid = false;
+  private motionBlurModule: GPUShaderModule;
+  private motionBlurLayout: GPUBindGroupLayout;
+  private motionBlurParams: GPUBuffer;
+  private motionBlurTarget: GPUTexture | null = null;
+  private motionBlurView!: GPUTextureView;
+  private motionBlurPipelineCache: GPURenderPipeline | null = null;
 
   // Screen-space reflection pass.
   private ssrModule: GPUShaderModule;
@@ -119,6 +126,9 @@ export class PostProcessing {
   private normalDepthMSAA: GPUTexture | null = null;
   private normalDepth: GPUTexture | null = null;
   private normalDepthView: GPUTextureView | null = null;
+  private velocityMSAA: GPUTexture | null = null;
+  private velocity: GPUTexture | null = null;
+  private velocityView: GPUTextureView | null = null;
   private passBindLayout: GPUBindGroupLayout;
   private passParamsBuffer: GPUBuffer;
 
@@ -232,10 +242,19 @@ export class PostProcessing {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
     // prevViewProj(64) + invViewProj(64) + info(16) = 144 bytes
     this.taaParamsBuffer = device.createBuffer({ size: 144, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.motionBlurModule = device.createShaderModule({ code: MOTION_BLUR_SHADER, label: 'motion-blur' });
+    this.motionBlurLayout = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ] });
+    this.motionBlurParams = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     // Screen-space reflections: params + HDR scene + packed normal/depth + hi-Z.
     this.ssrModule = device.createShaderModule({ code: SSR_SHADER, label: 'ssr' });
@@ -354,6 +373,9 @@ export class PostProcessing {
     this.taaB = attach(HDR_FORMAT, [w, h]);
     this.taaBView = this.taaB.createView();
     this.taaHistoryValid = false;
+    this.motionBlurTarget?.destroy();
+    this.motionBlurTarget = attach(HDR_FORMAT, [w, h]);
+    this.motionBlurView = this.motionBlurTarget.createView();
 
     // Custom ShaderPass ping-pong (full-res HDR; lazily used).
     this.passA?.destroy();
@@ -367,6 +389,11 @@ export class PostProcessing {
     this.normalDepthMSAA = null;
     this.normalDepth = null;
     this.normalDepthView = null;
+    this.velocityMSAA?.destroy();
+    this.velocity?.destroy();
+    this.velocityMSAA = null;
+    this.velocity = null;
+    this.velocityView = null;
   }
 
   /** The HDR scene target (so the OIT pass can depth-test/composite against it). */
@@ -497,6 +524,28 @@ export class PostProcessing {
     return this.normalDepthView ?? this.dummyNormalDepthView;
   }
 
+  sceneVelocityAttachment(): GPURenderPassColorAttachment {
+    if (!this.velocity) {
+      this.velocity = this.device.createTexture({
+        size: [this.width, this.height], format: 'rg16float',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.velocityView = this.velocity.createView();
+      if (this.sampleCount > 1) {
+        this.velocityMSAA = this.device.createTexture({
+          size: [this.width, this.height], format: 'rg16float', sampleCount: this.sampleCount,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+      }
+    }
+    const clearValue = { r: 0, g: 0, b: 0, a: 0 };
+    return this.sampleCount > 1
+      ? { view: this.velocityMSAA!.createView(), resolveTarget: this.velocityView!, loadOp: 'clear', storeOp: 'store', clearValue }
+      : { view: this.velocityView!, loadOp: 'clear', storeOp: 'store', clearValue };
+  }
+
+  get sceneVelocityView(): GPUTextureView { return this.velocityView ?? this.dummyView; }
+
   /**
    * Render the SSAO occlusion pass then blur it.  Call this AFTER the scene
    * render pass (depth must be populated) and BEFORE `run()`.
@@ -599,6 +648,7 @@ export class PostProcessing {
         { binding: 2, resource: historyView },
         { binding: 3, resource: depthView },
         { binding: 4, resource: this.sampler },
+        { binding: 5, resource: this.sceneVelocityView },
       ],
     });
     const pass = encoder.beginRenderPass({
@@ -617,6 +667,23 @@ export class PostProcessing {
   /** Drop the TAA history (e.g. when TAA is toggled off) so re-enabling starts clean. */
   invalidateTAAHistory(): void {
     this.taaHistoryValid = false;
+  }
+
+  runMotionBlur(encoder: GPUCommandEncoder, input: GPUTextureView, strength: number): GPUTextureView {
+    this.device.queue.writeBuffer(this.motionBlurParams, 0, new Float32Array([1 / this.width, 1 / this.height, strength, 0]));
+    this.motionBlurPipelineCache ??= this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.motionBlurLayout] }),
+      vertex: { module: this.motionBlurModule, entryPoint: 'vs_main' },
+      fragment: { module: this.motionBlurModule, entryPoint: 'fs_main', targets: [{ format: HDR_FORMAT }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    const bg = this.device.createBindGroup({ layout: this.motionBlurLayout, entries: [
+      { binding: 0, resource: { buffer: this.motionBlurParams } }, { binding: 1, resource: input },
+      { binding: 2, resource: this.sceneVelocityView }, { binding: 3, resource: this.sampler },
+    ] });
+    const pass = encoder.beginRenderPass({ colorAttachments: [{ view: this.motionBlurView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+    pass.setPipeline(this.motionBlurPipelineCache); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
+    return this.motionBlurView;
   }
 
   /** Ray-march the current HDR frame against its hi-Z depth and composite SSR hits. */
