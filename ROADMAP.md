@@ -466,7 +466,7 @@ rest" — to the remaining programmable surfaces.
 
 ---
 
-## v0.10 — Generic hooks that unblock NPR ⬜
+## v0.10 — Generic hooks that unblock NPR ✅
 
 Cel/comic/anime looks are **applications**, not engine features (principle #7): they live
 in app code on `ShaderMaterial` / `ShaderPass` / `ComputeTask`, as the gltf-viewer's
@@ -513,7 +513,7 @@ client could use, never a built-in style.
       texture uniform, sampled at `(t, 0.5)`. No hidden color space (stops are linear).
       Offline-verified (endpoints, midpoint, multi-stop, opacity, clamp, unsorted input).
 
-## v0.11 — Advanced lighting & global illumination ⬜
+## v0.11 — Advanced lighting & global illumination ✅
 
 The lighting model tops out at punctual lights + a single environment. Real scenes want
 local reflections and bounced light. Each item leans on existing GPU machinery (clustered
@@ -563,7 +563,7 @@ binning, the IBL prefilter compute path, RenderTarget cube capture).
       identifies a missing `scene.fog`; all PBR/ShaderMaterial variants and the compute
       shader parse offline.
 
-## v0.12 — Cinematic camera & color ⬜
+## v0.12 — Cinematic camera & color ✅
 
 Camera-domain effects and final-image control — the layer between a correct render and a
 shot. All slot into the existing HDR post chain before/after tonemap.
@@ -646,7 +646,7 @@ mixer a real animation system, staying data-first so an agent can wire state wit
       Gameplay (footsteps, hit-frames) hangs off the timeline without polling.
       Offline-verified (ordering, crossing, no-double-fire, loop-wrap).
 
-## v0.14 — Geometry detail & world scale ⬜
+## v0.14 — Geometry detail & world scale ✅
 
 Surface and world-building detail the renderer currently can't express.
 
@@ -682,7 +682,7 @@ Surface and world-building detail the renderer currently can't express.
       allocation-free per frame. For sword arcs, tracers, motion streaks. Offline-verified
       (strip positions, UVs, billboard normal, taper, ring buffer, degenerate fill).
 
-## Beyond — under consideration ⬜
+## Beyond — resolved ✅
 
 Bigger bets that need a design pass before they earn a tier. Listed so the trajectory is
 visible, not committed.
