@@ -650,9 +650,14 @@ mixer a real animation system, staying data-first so an agent can wire state wit
 
 Surface and world-building detail the renderer currently can't express.
 
-- ⬜ **Decals** — projector-box decals composited in a deferred-style screen pass (or
-      mesh-clipped for the forward path), reading the depth buffer to wrap onto opaque
-      geometry — bullet holes, blood, signage — without editing the target mesh.
+- ✅ **Decals** — `Decal` is a generic projector box (`size`, `color`, `opacity`, optional
+      `map`) composited into HDR without modifying target meshes. A fullscreen pass
+      reconstructs world position from the jittered scene depth, transforms it into decal
+      local space, rejects pixels outside the box, and projects local XY as texture UV.
+      Multiple visible decals ping-pong cached HDR targets in scene order. Requires
+      `postProcessing` + sampleCount 1; `diagnose()` reports inactive decals and
+      `describeScene()` reports their count. Offline-verified: 160-byte projector block,
+      WGSL parse, strict typecheck, and production build.
 - ⬜ **Parallax occlusion mapping** — a height-map ray-march in the fragment stage as an
       opt-in material flag (one more material-uniform bit), for deep brick/stone without
       the triangle count.

@@ -240,6 +240,15 @@ A world-axis-aligned regular grid of baked diffuse-irradiance probes represented
 - probeCount: number
 - setCoefficients(coefficients: Float32Array<ArrayBuffer>): IrradianceProbeGrid
 
+### class Decal extends Object3D
+A depth-projected box decal. Its local -Z axis is the projection direction.
+- new Decal(options: DecalOptions)
+- isDecal: true
+- size: Vector3
+- color: Color
+- opacity: number
+- map: Texture | null
+
 ### class Skeleton
 A set of joint nodes plus their inverse bind matrices. Each frame `update()` recomputes `boneMatrices[i] = jointWorld[i] * inverseBind[i]` (already in world space), which the skinned vertex shader blends by vertex weights.
 - new Skeleton(joints: Object3D[], boneInverses: Matrix4[])
@@ -1097,6 +1106,16 @@ export interface IrradianceProbeGridOptions {
 }
 ```
 
+### DecalOptions
+```ts
+export interface DecalOptions {
+  size?: Vector3;
+  color?: Color;
+  opacity?: number;
+  map?: Texture | null;
+}
+```
+
 ### TypedArray
 ```ts
 export type TypedArray =
@@ -1333,6 +1352,7 @@ export interface SceneDescription {
     texts: number;
     reflectionProbes: number;
     irradianceProbeGrids: number;
+    decals: number;
     lights: Record<string, number>;
   };
   bounds: { center: [number, number, number]; size: [number, number, number]; radius: number } | null;

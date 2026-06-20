@@ -17,6 +17,7 @@ import { RenderTarget } from '../core/RenderTarget';
 import { ReflectionProbe } from '../core/ReflectionProbe';
 import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
 import { PerspectiveCamera } from '../core/PerspectiveCamera';
+import { Decal } from '../core/Decal';
 import { SDFFontAtlas, SDF_BASE_FONT } from '../textures/SDFFontAtlas';
 import type { Material } from '../materials/Material';
 import { StandardMaterial } from '../materials/StandardMaterial';
@@ -40,7 +41,7 @@ import { LINE_SHADER } from './shaders/line.wgsl';
 import { SHADOW_SHADER } from './shaders/shadow.wgsl';
 import { ID_SHADER } from './shaders/id.wgsl';
 import { SHADOW_DEPTH_FORMAT } from './constants';
-import { PostProcessing, type ToneMapping } from './PostProcessing';
+import { PostProcessing, type ToneMapping, type DecalPassData } from './PostProcessing';
 import type { ColorLUT } from '../textures/ColorLUT';
 import { IBLPrefilter, IBL_MIP_LEVELS } from './IBLPrefilter';
 import { CULL_SHADER } from './shaders/cull.wgsl';
@@ -593,6 +594,9 @@ export class WebGPURenderer {
   private spriteBatches = new Map<string, SpriteBatch>();
   // SDF text: glyphs flow through the sprite batcher, one atlas per font.
   private texts: TextMesh[] = [];
+  private decals: Decal[] = [];
+  private decalPassData: DecalPassData[] = [];
+  private decalMatrix = new Matrix4();
   private fontAtlases = new Map<string, SDFFontAtlas>();
   // Scene color format for this frame's pipelines (HDR under post-processing).
   private sceneTargetFormat: GPUTextureFormat = 'bgra8unorm';
@@ -1268,6 +1272,17 @@ export class WebGPURenderer {
         );
       }
       let postInput = this.post.hdrTargetView;
+      if (this.decals.length > 0 && this.sampleCount === 1 && this.depthSampleView) {
+        this._jitteredProj.fromArray(this.frameData,16);
+        this._invViewProj.multiplyMatrices(this._jitteredProj,camera.matrixWorldInverse).invert();
+        this.decalPassData.length=0;
+        for(const decal of this.decals){
+          const tex=decal.map?this.textures.get(decal.map):{view:this.textures.defaultWhiteView,sampler:this.textures.defaultSampler};
+          this.decalMatrix.copy(decal.matrixWorld).invert();
+          this.decalPassData.push({worldToDecal:new Float32Array(this.decalMatrix.elements),size:[decal.size.x,decal.size.y,decal.size.z],color:[decal.color.r,decal.color.g,decal.color.b,decal.opacity],view:tex.view,sampler:tex.sampler});
+        }
+        postInput=this.post.runDecals(encoder,postInput,this.depthSampleView,new Float32Array(this._invViewProj.elements),this.decalPassData);
+      }
       if (useSSR) {
         this._jitteredProj.fromArray(this.frameData, 16);
         this._invJitteredProj.copy(this._jitteredProj).invert();
@@ -2934,6 +2949,7 @@ export class WebGPURenderer {
     this.particleSystems.length = 0;
     this.sprites.length = 0;
     this.texts.length = 0;
+    this.decals.length = 0;
     this.culledCount = 0;
     this.hasShells = false;
 
@@ -2946,6 +2962,8 @@ export class WebGPURenderer {
         this.sprites.push(object);
       } else if (object instanceof TextMesh) {
         this.texts.push(object);
+      } else if (object instanceof Decal) {
+        this.decals.push(object);
       } else if (object instanceof Mesh) {
         if (this.frustumCulling && object.frustumCulled && this.isCulled(object)) {
           this.culledCount++;

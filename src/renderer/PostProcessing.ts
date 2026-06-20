@@ -4,6 +4,7 @@ import { TAA_SHADER } from './shaders/taa.wgsl';
 import { MOTION_BLUR_SHADER } from './shaders/motionBlur.wgsl';
 import { DOF_SHADER } from './shaders/dof.wgsl';
 import { EXPOSURE_SHADER } from './shaders/exposure.wgsl';
+import { DECAL_SHADER } from './shaders/decal.wgsl';
 import { SSR_SHADER } from './shaders/ssr.wgsl';
 import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
@@ -29,6 +30,7 @@ interface ShaderPassResources {
   bindGroup1: GPUBindGroup | null;  // null when the pass has no group-1 uniforms
   textureSig: string;
 }
+export interface DecalPassData { worldToDecal:Float32Array; size:[number,number,number]; color:[number,number,number,number]; view:GPUTextureView; sampler:GPUSampler }
 
 /** Output transform applied at the end of the post chain. */
 export type ToneMapping = 'aces' | 'agx' | 'none';
@@ -158,6 +160,9 @@ export class PostProcessing {
   private exposureParams: GPUBuffer;
   private exposureHistogramPipeline: GPUComputePipeline;
   private exposureReducePipeline: GPUComputePipeline;
+  private decalLayout:GPUBindGroupLayout;
+  private decalPipeline:GPURenderPipeline;
+  private decalParams:GPUBuffer[]=[];
 
   constructor(
     private device: GPUDevice,
@@ -192,6 +197,13 @@ export class PostProcessing {
     const exposurePL=device.createPipelineLayout({bindGroupLayouts:[this.exposureLayout]});
     this.exposureHistogramPipeline=device.createComputePipeline({layout:exposurePL,compute:{module:exposureModule,entryPoint:'cs_histogram'}});
     this.exposureReducePipeline=device.createComputePipeline({layout:exposurePL,compute:{module:exposureModule,entryPoint:'cs_reduce'}});
+    const decalModule=device.createShaderModule({code:DECAL_SHADER,label:'decals'});
+    this.decalLayout=device.createBindGroupLayout({entries:[
+      {binding:0,visibility:GPUShaderStage.FRAGMENT,buffer:{type:'uniform'}},{binding:1,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'float'}},
+      {binding:2,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'depth'}},{binding:3,visibility:GPUShaderStage.FRAGMENT,texture:{sampleType:'float'}},
+      {binding:4,visibility:GPUShaderStage.FRAGMENT,sampler:{type:'filtering'}},
+    ]});
+    this.decalPipeline=device.createRenderPipeline({layout:device.createPipelineLayout({bindGroupLayouts:[this.decalLayout]}),vertex:{module:decalModule,entryPoint:'vs_main'},fragment:{module:decalModule,entryPoint:'fs_main',targets:[{format:HDR_FORMAT}]},primitive:{topology:'triangle-list'}});
 
     const dummy = device.createTexture({
       size: [1, 1], format: HDR_FORMAT,
@@ -738,6 +750,18 @@ export class PostProcessing {
     const bg=this.device.createBindGroup({layout:this.exposureLayout,entries:[{binding:0,resource:input},{binding:1,resource:{buffer:this.exposureHistogram}},{binding:2,resource:{buffer:this.exposureParams}},{binding:3,resource:{buffer:this.exposureBuffer}}]});
     let pass=encoder.beginComputePass({label:'exposure-histogram'}); pass.setPipeline(this.exposureHistogramPipeline); pass.setBindGroup(0,bg); pass.dispatchWorkgroups(Math.ceil(this.width/8),Math.ceil(this.height/8)); pass.end();
     pass=encoder.beginComputePass({label:'exposure-reduce'}); pass.setPipeline(this.exposureReducePipeline); pass.setBindGroup(0,bg); pass.dispatchWorkgroups(1); pass.end();
+  }
+
+  runDecals(encoder:GPUCommandEncoder,input:GPUTextureView,depth:GPUTextureView,invViewProj:Float32Array,decals:DecalPassData[]):GPUTextureView {
+    let src=input; const targets=[this.passAView,this.passBView]; let ti=0;
+    for(let i=0;i<decals.length;i++){
+      if(!this.decalParams[i])this.decalParams[i]=this.device.createBuffer({size:160,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+      const d=decals[i];const data=new Float32Array(40);data.set(invViewProj,0);data.set(d.worldToDecal,16);data.set(d.size,32);data.set(d.color,36);this.device.queue.writeBuffer(this.decalParams[i],0,data);
+      let dst=targets[ti];if(dst===src){ti^=1;dst=targets[ti];}
+      const bg=this.device.createBindGroup({layout:this.decalLayout,entries:[{binding:0,resource:{buffer:this.decalParams[i]}},{binding:1,resource:src},{binding:2,resource:depth},{binding:3,resource:d.view},{binding:4,resource:d.sampler}]});
+      const pass=encoder.beginRenderPass({colorAttachments:[{view:dst,loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:1}}]});pass.setPipeline(this.decalPipeline);pass.setBindGroup(0,bg);pass.draw(3);pass.end();src=dst;ti^=1;
+    }
+    return src;
   }
 
   /** Ray-march the current HDR frame against its hi-Z depth and composite SSR hits. */

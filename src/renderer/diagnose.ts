@@ -13,6 +13,7 @@ import { Matrix4 } from '../math/Matrix4';
 import { Vector3 } from '../math/Vector3';
 import { IrradianceProbeGrid } from '../core/IrradianceProbeGrid';
 import { PerspectiveCamera } from '../core/PerspectiveCamera';
+import { Decal } from '../core/Decal';
 
 /** One finding from `renderer.diagnose()`: machine-matchable and human-fixable. */
 export interface Diagnostic {
@@ -58,6 +59,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
   const meshes: Mesh[] = [];
   let litIntensity = 0;
   let hasIrradianceGrid = false;
+  let decalCount = 0;
   scene.traverseVisible((o: Object3D) => {
     if (o instanceof IrradianceProbeGrid) {
       if (o.coefficients) hasIrradianceGrid = true;
@@ -67,6 +69,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
         fix: 'Call await renderer.bakeIrradianceProbes(grid, scene), then render again.',
       });
     }
+    if (o instanceof Decal) decalCount++;
     if (o instanceof Mesh) meshes.push(o);
     if (o instanceof Light) {
       const lum = o.color.r + o.color.g + o.color.b;
@@ -304,6 +307,9 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
     });
   }
   const shadowCascades = state.shadowCascades ?? 1;
+  if (decalCount > 0 && (!state.postProcessing || state.sampleCount !== 1)) {
+    out.push({severity:'warning',code:'decals-need-post-depth',message:`${decalCount} decal(s) are inactive because decals require postProcessing and sampleCount 1.`,fix:'Set renderer.postProcessing = true and create it with { sampleCount: 1 }.'});
+  }
   if (state.shadows && shadowCascades > 1 && !(camera instanceof PerspectiveCamera)) {
     out.push({
       severity: 'warning', code: 'csm-needs-perspective-camera',

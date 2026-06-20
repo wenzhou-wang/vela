@@ -33,6 +33,8 @@ export { ReflectionProbe } from './core/ReflectionProbe';
 export type { ReflectionProbeOptions, ReflectionProbeRefresh } from './core/ReflectionProbe';
 export { IrradianceProbeGrid } from './core/IrradianceProbeGrid';
 export type { IrradianceProbeGridOptions } from './core/IrradianceProbeGrid';
+export { Decal } from './core/Decal';
+export type { DecalOptions } from './core/Decal';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';
