@@ -434,6 +434,11 @@ export class WebGPURenderer {
   /** Per-object reconstruction motion blur. Requires postProcessing and sampleCount 1. */
   motionBlur = false;
   motionBlurStrength = 1;
+  /** Depth-aware HDR bokeh blur. Requires postProcessing and sampleCount 1. */
+  depthOfField = false;
+  focusDistance = 10;
+  aperture = 0.05;
+  maxBlur = 12;
   /**
    * Deterministic rendering: identical scenes produce identical pixels.
    * Time stops following the wall clock — drive it via `renderer.time`
@@ -1268,6 +1273,10 @@ export class WebGPURenderer {
           this.hizMipCount,
         );
       }
+      if (this.depthOfField && this.sampleCount === 1 && this.depthSampleView) {
+        const cam = camera as unknown as { near?:number; far?:number };
+        postInput = this.post.runDOF(encoder, postInput, this.depthSampleView, cam.near ?? 0.1, cam.far ?? 2000, this.focusDistance, this.aperture, this.maxBlur);
+      }
       const useMotionBlur = this.motionBlur && this.sampleCount === 1;
       if (useMotionBlur) {
         postInput = this.post.runMotionBlur(encoder, postInput, this.motionBlurStrength);
@@ -1518,6 +1527,7 @@ export class WebGPURenderer {
       shadowCascades: this.shadowCascades,
       volumetricFog: this.volumetricFog,
       motionBlur: this.motionBlur,
+      depthOfField: this.depthOfField,
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
     });

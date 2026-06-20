@@ -37,6 +37,7 @@ export interface DiagnoseState {
   shadowCascades?: number;
   volumetricFog?: boolean;
   motionBlur?: boolean;
+  depthOfField?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -277,6 +278,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
     ['ssr', state.ssr],
     ['taa', state.taa],
     ['motionBlur', state.motionBlur ?? false],
+    ['depthOfField', state.depthOfField ?? false],
   ];
   for (const [flag, enabled] of needsPost) {
     if (enabled && !state.postProcessing) {
@@ -286,7 +288,7 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
         fix: 'Set renderer.postProcessing = true.',
       });
     }
-    if (enabled && (flag === 'ssao' || flag === 'ssr' || flag === 'taa' || flag === 'motionBlur') && state.sampleCount !== 1) {
+    if (enabled && (flag === 'ssao' || flag === 'ssr' || flag === 'taa' || flag === 'motionBlur' || flag === 'depthOfField') && state.sampleCount !== 1) {
       out.push({
         severity: 'warning', code: `${flag}-needs-samplecount-1`,
         message: `renderer.${flag} requires sampleCount 1, but the renderer uses ${state.sampleCount}× MSAA — ${flag} is silently inactive.`,

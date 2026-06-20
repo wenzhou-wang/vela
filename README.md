@@ -149,6 +149,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   variants parse with directional cascade shadow visibility wired into in-scattering.
 - **Motion vectors** — static, skinned, instanced, and morph variants parse with previous-
   frame transforms; TAA velocity reprojection and reconstruction blur shaders parse offline.
+- **Depth of field** — the depth-linearization, circle-of-confusion, and golden-angle HDR
+  bokeh shader parses offline with post/MSAA prerequisite diagnostics.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit

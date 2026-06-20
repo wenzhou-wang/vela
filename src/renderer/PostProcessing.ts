@@ -2,6 +2,7 @@ import { POST_SHADER } from './shaders/post.wgsl';
 import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
 import { MOTION_BLUR_SHADER } from './shaders/motionBlur.wgsl';
+import { DOF_SHADER } from './shaders/dof.wgsl';
 import { SSR_SHADER } from './shaders/ssr.wgsl';
 import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
@@ -86,6 +87,12 @@ export class PostProcessing {
   private motionBlurTarget: GPUTexture | null = null;
   private motionBlurView!: GPUTextureView;
   private motionBlurPipelineCache: GPURenderPipeline | null = null;
+  private dofModule: GPUShaderModule;
+  private dofLayout: GPUBindGroupLayout;
+  private dofParams: GPUBuffer;
+  private dofTarget: GPUTexture | null = null;
+  private dofView!: GPUTextureView;
+  private dofPipelineCache: GPURenderPipeline | null = null;
 
   // Screen-space reflection pass.
   private ssrModule: GPUShaderModule;
@@ -255,6 +262,14 @@ export class PostProcessing {
       { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
     ] });
     this.motionBlurParams = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.dofModule = device.createShaderModule({ code: DOF_SHADER, label: 'depth-of-field' });
+    this.dofLayout = device.createBindGroupLayout({ entries: [
+      { binding:0, visibility:GPUShaderStage.FRAGMENT, buffer:{type:'uniform'} },
+      { binding:1, visibility:GPUShaderStage.FRAGMENT, texture:{sampleType:'float'} },
+      { binding:2, visibility:GPUShaderStage.FRAGMENT, texture:{sampleType:'depth'} },
+      { binding:3, visibility:GPUShaderStage.FRAGMENT, sampler:{type:'filtering'} },
+    ]});
+    this.dofParams = device.createBuffer({ size:32, usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST });
 
     // Screen-space reflections: params + HDR scene + packed normal/depth + hi-Z.
     this.ssrModule = device.createShaderModule({ code: SSR_SHADER, label: 'ssr' });
@@ -376,6 +391,7 @@ export class PostProcessing {
     this.motionBlurTarget?.destroy();
     this.motionBlurTarget = attach(HDR_FORMAT, [w, h]);
     this.motionBlurView = this.motionBlurTarget.createView();
+    this.dofTarget?.destroy(); this.dofTarget=attach(HDR_FORMAT,[w,h]); this.dofView=this.dofTarget.createView();
 
     // Custom ShaderPass ping-pong (full-res HDR; lazily used).
     this.passA?.destroy();
@@ -684,6 +700,13 @@ export class PostProcessing {
     const pass = encoder.beginRenderPass({ colorAttachments: [{ view: this.motionBlurView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     pass.setPipeline(this.motionBlurPipelineCache); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
     return this.motionBlurView;
+  }
+
+  runDOF(encoder:GPUCommandEncoder,input:GPUTextureView,depth:GPUTextureView,near:number,far:number,focus:number,aperture:number,maxBlur:number):GPUTextureView {
+    this.device.queue.writeBuffer(this.dofParams,0,new Float32Array([1/this.width,1/this.height,near,far,focus,aperture,maxBlur,0]));
+    this.dofPipelineCache??=this.device.createRenderPipeline({layout:this.device.createPipelineLayout({bindGroupLayouts:[this.dofLayout]}),vertex:{module:this.dofModule,entryPoint:'vs_main'},fragment:{module:this.dofModule,entryPoint:'fs_main',targets:[{format:HDR_FORMAT}]},primitive:{topology:'triangle-list'}});
+    const bg=this.device.createBindGroup({layout:this.dofLayout,entries:[{binding:0,resource:{buffer:this.dofParams}},{binding:1,resource:input},{binding:2,resource:depth},{binding:3,resource:this.sampler}]});
+    const pass=encoder.beginRenderPass({colorAttachments:[{view:this.dofView,loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:1}}]}); pass.setPipeline(this.dofPipelineCache); pass.setBindGroup(0,bg); pass.draw(3); pass.end(); return this.dofView;
   }
 
   /** Ray-march the current HDR frame against its hi-Z depth and composite SSR hits. */

@@ -578,9 +578,12 @@ shot. All slot into the existing HDR post chain before/after tonemap.
       (`motionBlurStrength`), before TAA/custom passes/tonemap. Requires post-processing +
       sampleCount 1, covered by `diagnose()`. Offline-verified across static/skinned/
       instanced/morph PBR and ShaderMaterial variants plus TAA/blur shaders.
-- ⬜ **Depth of field** — a circle-of-confusion pass from depth + physical
-      aperture/focus-distance, near/far blurred with a bokeh kernel (reuse the half-res
-      Gaussian targets from bloom for the cheap path).
+- ✅ **Depth of field** — `renderer.depthOfField` derives a circle of confusion from the
+      scene depth plus `focusDistance`/`aperture`, bounded by `maxBlur` pixels. A 16-sample
+      golden-angle HDR bokeh reconstruction handles near and far blur with a depth-aware
+      foreground guard, before motion blur/TAA/custom passes/tonemap. Requires
+      post-processing + sampleCount 1 and is covered by `diagnose()`; shader interface and
+      production build verified offline.
 - 🚧 **Color grading & display transforms** — ✅ `renderer.toneMapping` selects the output
       transform: `'aces'` filmic, `'agx'` (AgX operator — minimal log-sigmoid approximation,
       gentler highlight desaturation; bloom-paired entries `fs_tonemapAgx[Bloom]`), or

@@ -537,6 +537,10 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - taaBlend: number — TAA blend factor: weight of the current frame (lower = smoother, more ghosting).
 - motionBlur: boolean — Per-object reconstruction motion blur.
 - motionBlurStrength: number
+- depthOfField: boolean — Depth-aware HDR bokeh blur.
+- focusDistance: number
+- aperture: number
+- maxBlur: number
 - deterministic: boolean — Deterministic rendering: identical scenes produce identical pixels.
 - time: number — Scene time in seconds; only advances when you set it (`deterministic = true`).
 - renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
@@ -1298,6 +1302,7 @@ export interface DiagnoseState {
   shadowCascades?: number;
   volumetricFog?: boolean;
   motionBlur?: boolean;
+  depthOfField?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
