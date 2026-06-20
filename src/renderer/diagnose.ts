@@ -39,6 +39,8 @@ export interface DiagnoseState {
   volumetricFog?: boolean;
   motionBlur?: boolean;
   depthOfField?: boolean;
+  gpuCulling?: boolean;
+  gpuSceneSubmission?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -323,6 +325,9 @@ export function diagnoseScene(scene: Scene, camera: Camera, state: DiagnoseState
       message: 'renderer.volumetricFog is enabled but scene.fog is null — the froxel pass is inactive.',
       fix: 'Set scene.fog or disable renderer.volumetricFog.',
     });
+  }
+  if (state.gpuSceneSubmission && !state.gpuCulling) {
+    out.push({severity:'warning',code:'gpu-submission-needs-culling',message:'renderer.gpuSceneSubmission is enabled but gpuCulling is off — meshlet commands are inactive.',fix:'Set renderer.gpuCulling = true.'});
   }
   if (scene.fog && scene.fog.density === undefined) {
     const near = scene.fog.near ?? 1;

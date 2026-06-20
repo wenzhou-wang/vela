@@ -276,6 +276,8 @@ Holds vertex attributes and an optional index buffer for a mesh.
 - morphAttributes: { position?: BufferAttribute[] | undefined; normal?: BufferAttribute[] | undefined; } — Morph-target deltas.
 - boundingBox: Box3 | null
 - boundingSphere: Sphere | null
+- meshlets: Meshlet[] | null — Optional sequential index ranges for GPU per-meshlet culling.
+- meshletMaxTriangles: number
 - version: number — Incremented when buffers are structurally replaced (forces GPU re-create).
 - setAttribute(name: string, attribute: BufferAttribute): BufferGeometry
 - getAttribute(name: string): BufferAttribute | undefined
@@ -283,6 +285,7 @@ Holds vertex attributes and an optional index buffer for a mesh.
 - getDrawCount(): number — Number of vertices to draw (index count if indexed, else position count).
 - computeBoundingBox(): void
 - computeBoundingSphere(): void
+- computeMeshlets(maxTriangles?: number): Meshlet[] — Partition indexed triangles into bounded sequential ranges (no index reordering).
 - computeVertexNormals(): void — Generate smooth vertex normals from positions (indexed or non-indexed).
 
 ### class BufferAttribute
@@ -579,6 +582,8 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - time: number — Scene time in seconds; only advances when you set it (`deterministic = true`).
 - renderBundles: boolean — Record the opaque draws into a render bundle to amortize encoding cost.
 - gpuCulling: boolean — GPU-driven frustum culling: a compute shader tests bounding spheres against the camera frustum and writes instanceCount 0/1 into an indirect draw buffer.
+- gpuSceneSubmission: boolean — Split indexed meshes into GPU-culled indirect meshlet commands.
+- meshletMaxTriangles: number
 - occlusionCulling: boolean — Hi-Z occlusion culling (opt-in, builds on `gpuCulling`).
 - clusteredLighting: boolean — Clustered forward+ lighting: a compute shader bins light bounding spheres into a 16×9×24 screen-tile/depth-slice grid each frame; fragments shade only the lights in their cluster (up to 32), so hundreds of ranged lights stay cheap.
 - onDeviceLost: ((info: GPUDeviceLostInfo) => void) | undefined — Called when the GPU device is lost unexpectedly; call `restoreContext()` to recover.
@@ -1162,6 +1167,11 @@ export interface TerrainDescription {
 }
 ```
 
+### Meshlet
+```ts
+export interface Meshlet { firstIndex: number; indexCount: number; boundingSphere: Sphere }
+```
+
 ### TypedArray
 ```ts
 export type TypedArray =
@@ -1397,6 +1407,8 @@ export interface DiagnoseState {
   volumetricFog?: boolean;
   motionBlur?: boolean;
   depthOfField?: boolean;
+  gpuCulling?: boolean;
+  gpuSceneSubmission?: boolean;
   canvasWidth: number;
   canvasHeight: number;
 }
@@ -1440,6 +1452,7 @@ export interface RenderReport {
   lights: number;
   particles: { systems: number; poolCapacity: number };
   sprites: { batches: number; instances: number };
+  gpuSubmission: { indirectCommands: number; meshletCommands: number };
   shadowDraws: number;
   textureMemoryBytes: number;
   flags: { postProcessing: boolean; clusteredLighting: boolean; ssr: boolean; msaa: number; shadows: boolean; volumetricFog: boolean; motionBlur: boolean };

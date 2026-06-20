@@ -247,6 +247,7 @@ export interface RenderReport {
   lights: number;
   particles: { systems: number; poolCapacity: number };
   sprites: { batches: number; instances: number };
+  gpuSubmission: { indirectCommands: number; meshletCommands: number };
   /** Extra draws spent re-rendering casters into shadow maps. */
   shadowDraws: number;
   /** Estimated GPU texture memory in bytes. */
@@ -489,6 +490,9 @@ export class WebGPURenderer {
    * meshes always follow the normal CPU path.  Incompatible with `renderBundles`.
    */
   gpuCulling = false;
+  /** Split indexed meshes into GPU-culled indirect meshlet commands. Requires gpuCulling. */
+  gpuSceneSubmission = false;
+  meshletMaxTriangles = 64;
   /**
    * Hi-Z occlusion culling (opt-in, builds on `gpuCulling`). Each frame a
    * max-depth pyramid is built from the scene depth; the next frame's GPU cull
@@ -520,6 +524,8 @@ export class WebGPURenderer {
   private gpuIndirectBuffer: GPUBuffer | null = null;
   private gpuCullBindGroup: GPUBindGroup | null = null;
   private gpuCullCapacity = 0;
+  private gpuDrawRanges = new WeakMap<Mesh, { base: number; count: number; meshlets: boolean }>();
+  private nextGpuDrawSlot = 0;
   // Hi-Z occlusion: max-depth pyramid built each frame, used the next.
   private hizTexture: GPUTexture | null = null;
   private hizMipViews: GPUTextureView[] = []; // per-mip render-attachment views
@@ -744,6 +750,7 @@ export class WebGPURenderer {
     this.gpuCullPipeline = null; this.gpuCullLayout = null; this.gpuCullParamsBuffer = null;
     this.gpuSphereBuffer = null; this.gpuIndirectBuffer = null; this.gpuCullBindGroup = null;
     this.gpuCullCapacity = 0;
+    this.gpuDrawRanges = new WeakMap(); this.nextGpuDrawSlot = 0;
     this.hizTexture = null; this.hizMipViews = []; this.hizSampleView = null;
     this.hizSampler = null; this.hizDummyView = null;
     this.hizCopyPipeline = null; this.hizDownPipeline = null;
@@ -1458,7 +1465,20 @@ export class WebGPURenderer {
     for (const sys of this.particleSystems) particleCapacity += sys.options.capacity ?? 1000;
 
     const shadowTiles = this.spotShadowCasters.length + (this.shadowCasterIndex >= 0 ? this.cascadeCount : 0);
-    const drawCalls = this.opaque.length + this.transparent.length +
+    let indirectCommands = 0, meshletCommands = 0;
+    if (this.gpuCulling) {
+      for (const mesh of this.opaque) {
+        const range = this.gpuDrawRanges.get(mesh);
+        if (range) {
+          indirectCommands += range.count;
+          if (range.meshlets) meshletCommands += range.count;
+        }
+      }
+    }
+    const opaqueDraws = this.gpuCulling
+      ? indirectCommands + this.opaque.filter((mesh) => !this.gpuDrawRanges.has(mesh)).length
+      : this.opaque.length;
+    const drawCalls = opaqueDraws + this.transparent.length +
       this.particleSystems.length + this.spriteBatches.size;
     return {
       frame: this.frameNumber,
@@ -1472,6 +1492,7 @@ export class WebGPURenderer {
       lights: this.lights.length,
       particles: { systems: this.particleSystems.length, poolCapacity: particleCapacity },
       sprites: { batches: this.spriteBatches.size, instances: spriteInstances },
+      gpuSubmission: { indirectCommands, meshletCommands },
       shadowDraws: shadowTiles * this.opaque.length,
       textureMemoryBytes: this.textures?.totalBytes ?? 0,
       flags: {
@@ -1575,6 +1596,8 @@ export class WebGPURenderer {
       volumetricFog: this.volumetricFog,
       motionBlur: this.motionBlur,
       depthOfField: this.depthOfField,
+      gpuCulling: this.gpuCulling,
+      gpuSceneSubmission: this.gpuSceneSubmission,
       canvasWidth: this.canvas.width,
       canvasHeight: this.canvas.height,
     });
@@ -2765,32 +2788,48 @@ export class WebGPURenderer {
   private prepareGpuCull(encoder: GPUCommandEncoder): void {
     if (!this.gpuCulling || this.opaque.length === 0) return;
 
-    // Pre-upload sphere data and draw params for all opaque meshes.
+    // Assign stable contiguous indirect ranges first, then grow once so uploads
+    // below cannot be invalidated by a mid-loop buffer replacement.
     for (const mesh of this.opaque) {
       if (mesh instanceof InstancedMesh) continue;
-      const slot = this.getMeshSlot(mesh); // uploads model matrix, assigns slot
-      this.ensureGpuCullResources(slot + 1);
-
-      // World-space bounding sphere.
-      const geo = mesh.geometry;
-      if (!geo.boundingSphere) geo.computeBoundingSphere();
-      const bs = geo.boundingSphere;
-      const sphere = new Float32Array(4);
-      if (bs && !bs.isEmpty()) {
-        this._worldSphere.copy(bs).applyMatrix4(mesh.matrixWorld);
-        sphere[0] = this._worldSphere.center.x;
-        sphere[1] = this._worldSphere.center.y;
-        sphere[2] = this._worldSphere.center.z;
-        sphere[3] = this._worldSphere.radius;
-      } else {
-        sphere[3] = -1; // no valid sphere → always cull
-      }
-      this.device.queue.writeBuffer(this.gpuSphereBuffer!, slot * 16, sphere);
-
-      // Draw params (instanceCount=1; compute shader may set to 0).
       const gpuGeo = this.geometries.get(mesh.geometry);
-      if (gpuGeo.index) {
-        const cmd = new Uint32Array([gpuGeo.drawCount, 1, 0, 0, 0]);
+      if (!gpuGeo.index) continue;
+      const meshlets = this.gpuSceneSubmission
+        ? (mesh.geometry.meshlets && mesh.geometry.meshletMaxTriangles === this.meshletMaxTriangles
+          ? mesh.geometry.meshlets : mesh.geometry.computeMeshlets(this.meshletMaxTriangles)) : null;
+      let range = this.gpuDrawRanges.get(mesh);
+      const count = meshlets?.length ?? 1;
+      if (!range || range.count !== count || range.meshlets !== !!meshlets) {
+        range = { base: this.nextGpuDrawSlot, count, meshlets: !!meshlets };
+        this.nextGpuDrawSlot += count;
+        this.gpuDrawRanges.set(mesh, range);
+      }
+    }
+    this.ensureGpuCullResources(Math.max(this.nextGpuDrawSlot, 1));
+
+    // Upload one sphere and indirect command per mesh or meshlet.
+    for (const mesh of this.opaque) {
+      if (mesh instanceof InstancedMesh) continue;
+      this.getMeshSlot(mesh); // upload model matrix
+      const gpuGeo = this.geometries.get(mesh.geometry);
+      const range = this.gpuDrawRanges.get(mesh);
+      if (!gpuGeo.index || !range) continue;
+      const meshlets = range.meshlets ? mesh.geometry.meshlets! : null;
+
+      for (let local = 0; local < range.count; local++) {
+        const slot = range.base + local;
+        const bounds = meshlets ? meshlets[local].boundingSphere : mesh.geometry.boundingSphere;
+        if (!bounds && !meshlets) mesh.geometry.computeBoundingSphere();
+
+        const sphere = new Float32Array(4);
+        const bs = bounds ?? mesh.geometry.boundingSphere;
+        if (bs && !bs.isEmpty()) {
+          this._worldSphere.copy(bs).applyMatrix4(mesh.matrixWorld);
+          sphere.set([this._worldSphere.center.x, this._worldSphere.center.y, this._worldSphere.center.z, this._worldSphere.radius]);
+        } else sphere[3] = -1;
+        this.device.queue.writeBuffer(this.gpuSphereBuffer!, slot * 16, sphere);
+        const part = meshlets?.[local];
+        const cmd = new Uint32Array([part?.indexCount ?? gpuGeo.drawCount, 1, part?.firstIndex ?? 0, 0, 0]);
         this.device.queue.writeBuffer(this.gpuIndirectBuffer!, slot * INDIRECT_STRIDE, cmd);
       }
     }
@@ -2812,7 +2851,7 @@ export class WebGPURenderer {
       pf[i * 4 + 3] = pl.constant;
     }
     pf.set(this._prevHizViewProj, 24);  // prevViewProj at byte 96 (float 24)
-    pu[40] = this.nextMeshSlot;          // drawCount at byte 160
+    pu[40] = this.nextGpuDrawSlot;       // drawCount at byte 160
     pu[41] = occlusion ? 1 : 0;          // occlusion flag
     pu[42] = this.hizMipCount;           // hizMips
     pf[44] = this.canvas.width;          // hizSize.x at byte 176
@@ -2838,7 +2877,7 @@ export class WebGPURenderer {
     const pass = encoder.beginComputePass({ label: 'frustum-cull' });
     pass.setPipeline(this.gpuCullPipeline!);
     pass.setBindGroup(0, this.gpuCullBindGroup);
-    pass.dispatchWorkgroups(Math.ceil(this.nextMeshSlot / 64));
+    pass.dispatchWorkgroups(Math.ceil(this.nextGpuDrawSlot / 64));
     pass.end();
   }
 
@@ -3246,8 +3285,14 @@ export class WebGPURenderer {
       // For GPU-driven culling, use an indirect draw so instanceCount can be zeroed by the
       // compute shader.  Only works with a render pass encoder (not render bundles).
       if (this.gpuCulling && !instanced && !oit && pass instanceof GPURenderPassEncoder) {
-        const slot = this.meshSlots.get(mesh) ?? 0;
-        pass.drawIndexedIndirect(this.gpuIndirectBuffer!, slot * INDIRECT_STRIDE);
+        const range = this.gpuDrawRanges.get(mesh);
+        if (range) {
+          for (let i = 0; i < range.count; i++) {
+            pass.drawIndexedIndirect(this.gpuIndirectBuffer!, (range.base + i) * INDIRECT_STRIDE);
+          }
+        } else {
+          pass.drawIndexed(geometry.drawCount, instanceCount);
+        }
       } else {
         pass.drawIndexed(geometry.drawCount, instanceCount);
       }

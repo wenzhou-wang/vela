@@ -39,6 +39,7 @@ export { Terrain } from './core/Terrain';
 export type { TerrainOptions, TerrainDescription } from './core/Terrain';
 export { Skeleton } from './core/Skeleton';
 export { BufferGeometry } from './core/BufferGeometry';
+export type { Meshlet } from './core/BufferGeometry';
 export { BufferAttribute } from './core/BufferAttribute';
 export type { TypedArray } from './core/BufferAttribute';
 

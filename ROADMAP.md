@@ -697,8 +697,17 @@ visible, not committed.
       subimages and vela's feature-complete path is single-camera, so two sequential eye
       submissions are correct and cache-compatible. Capability errors name the required
       `{ xrCompatible: true }` setup. Offline-verified with a two-eye binding/session stub.
-- ⬜ **GPU-driven scene submission** — push culling → indirect draw further toward a fully
-      GPU-built draw list (per-meshlet culling) once WebGPU exposes the needed primitives.
+- ✅ **GPU-driven scene submission** — `BufferGeometry.computeMeshlets(maxTriangles)`
+      partitions indexed triangles into deterministic sequential ranges with local bounding
+      spheres. With `renderer.gpuCulling` + `gpuSceneSubmission`, each mesh receives a
+      stable contiguous indirect-command range; the existing compute culler transforms and
+      tests every meshlet sphere (including prior-frame hi-Z) and writes visibility into
+      each command before fixed `drawIndexedIndirect` submission. Material/model state is
+      bound once per mesh. WebGPU still has no baseline multi-draw-indirect/count command,
+      so the CPU records the stable command range rather than pretending it can execute a
+      GPU-sized list; `report().gpuSubmission` exposes that cost. `diagnose()` checks the
+      culling prerequisite. Offline-verified partition bounds, command sizing, typecheck,
+      and build.
 - ⬜ **Node/clip-graph editor surface for agents** — not a visual editor (explicitly out
       of scope), but a structured, `describe()`-style read/write API over post chains and
       animation graphs so an agent can edit the pipeline as data and diff the result.

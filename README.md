@@ -163,6 +163,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   per-level triangle reduction; tiles compose through the existing LOD renderer path.
 - **WebXR** — an offline two-eye `XRGPUBinding` stub verifies native view matrices,
   compositor array-layer routing, and XR-compatible adapter/session prerequisites.
+- **GPU scene submission** — meshlet partition coverage/bounds and fixed indirect-command
+  ranges are verified offline; reports expose indirect and meshlet command counts.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit

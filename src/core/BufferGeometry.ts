@@ -4,7 +4,10 @@ import { Sphere } from '../math/Sphere';
 import { Vector3 } from '../math/Vector3';
 import { generateUUID } from '../math/MathUtils';
 
+const _meshletPoint = new Vector3();
+
 export type AttributeName = 'position' | 'normal' | 'uv' | 'tangent' | 'color' | string;
+export interface Meshlet { firstIndex: number; indexCount: number; boundingSphere: Sphere }
 
 /** Holds vertex attributes and an optional index buffer for a mesh. */
 export class BufferGeometry {
@@ -24,12 +27,16 @@ export class BufferGeometry {
 
   boundingBox: Box3 | null = null;
   boundingSphere: Sphere | null = null;
+  /** Optional sequential index ranges for GPU per-meshlet culling. */
+  meshlets: Meshlet[] | null = null;
+  meshletMaxTriangles = 0;
 
   /** Incremented when buffers are structurally replaced (forces GPU re-create). */
   version = 0;
 
   setAttribute(name: AttributeName, attribute: BufferAttribute): this {
     this.attributes[name] = attribute;
+    if (name === 'position') this.meshlets = null;
     return this;
   }
 
@@ -43,6 +50,7 @@ export class BufferGeometry {
     } else {
       this.index = new BufferAttribute(index, 1);
     }
+    this.meshlets = null;
     return this;
   }
 
@@ -75,6 +83,39 @@ export class BufferGeometry {
       maxSq = Math.max(maxSq, center.distanceToSquared(v));
     }
     this.boundingSphere = new Sphere(center, Math.sqrt(maxSq));
+  }
+
+  /** Partition indexed triangles into bounded sequential ranges (no index reordering). */
+  computeMeshlets(maxTriangles = 64): Meshlet[] {
+    if (!this.index) throw new Error('BufferGeometry.computeMeshlets: indexed geometry is required.');
+    if (!Number.isInteger(maxTriangles) || maxTriangles < 1) throw new Error('BufferGeometry.computeMeshlets: maxTriangles must be a positive integer.');
+    const positions = this.attributes.position?.array;
+    if (!positions) throw new Error('BufferGeometry.computeMeshlets: position attribute is required.');
+    const indices = this.index.array;
+    if (indices.length % 3 !== 0) throw new Error('BufferGeometry.computeMeshlets: index count must be divisible by 3.');
+    const result: Meshlet[] = [];
+    const chunk = maxTriangles * 3;
+    for (let first = 0; first < indices.length; first += chunk) {
+      const count = Math.min(chunk, indices.length - first);
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (let i = first; i < first + count; i++) {
+        const o = indices[i] * 3, x = positions[o], y = positions[o + 1], z = positions[o + 2];
+        minX = Math.min(minX, x); minY = Math.min(minY, y); minZ = Math.min(minZ, z);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
+      }
+      const center = new Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+      let radiusSq = 0;
+      for (let i = first; i < first + count; i++) {
+        const o = indices[i] * 3;
+        _meshletPoint.set(positions[o], positions[o + 1], positions[o + 2]);
+        radiusSq = Math.max(radiusSq, center.distanceToSquared(_meshletPoint));
+      }
+      result.push({ firstIndex: first, indexCount: count, boundingSphere: new Sphere(center, Math.sqrt(radiusSq)) });
+    }
+    this.meshlets = result;
+    this.meshletMaxTriangles = maxTriangles;
+    return result;
   }
 
   /** Generate smooth vertex normals from positions (indexed or non-indexed). */
