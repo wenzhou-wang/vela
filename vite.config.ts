@@ -15,7 +15,10 @@ export default defineConfig({
     target: 'esnext',
     sourcemap: true,
     rollupOptions: {
-      input: resolve(__dirname, 'examples/gltf-viewer/index.html'),
+      input: {
+        viewer: resolve(__dirname, 'examples/gltf-viewer/index.html'),
+        sunsetRidge: resolve(__dirname, 'examples/sunset-ridge/index.html'),
+      },
     },
   },
   optimizeDeps: {
