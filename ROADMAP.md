@@ -687,8 +687,16 @@ Surface and world-building detail the renderer currently can't express.
 Bigger bets that need a design pass before they earn a tier. Listed so the trajectory is
 visible, not committed.
 
-- ⬜ **WebXR** — a stereo/multiview render path (instanced two-eye draw) and XR input,
-      the largest deviation from the single-camera assumption baked through the renderer.
+- ✅ **WebXR** — experimental `WebXRManager` implements the June 2026
+      `XRGPUBinding` contract: renderer creation opts into an XR-compatible adapter,
+      sessions require the `webgpu` feature, a copy-capable `rgba8unorm` projection layer
+      receives each `XRView` through its compositor-provided array layer, and native 0–1
+      projection/view transforms plus shared near/far state drive the existing scene path.
+      `onFrame` exposes raw XR input/state once per stereo frame. The design pass rejected
+      the speculative instanced-eye path: the current unstable spec exposes per-view
+      subimages and vela's feature-complete path is single-camera, so two sequential eye
+      submissions are correct and cache-compatible. Capability errors name the required
+      `{ xrCompatible: true }` setup. Offline-verified with a two-eye binding/session stub.
 - ⬜ **GPU-driven scene submission** — push culling → indirect draw further toward a fully
       GPU-built draw list (per-meshlet culling) once WebGPU exposes the needed primitives.
 - ⬜ **Node/clip-graph editor surface for agents** — not a visual editor (explicitly out

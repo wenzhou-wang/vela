@@ -530,6 +530,7 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - new WebGPURenderer(options: RendererOptions)
 - canvas: HTMLCanvasElement
 - device: GPUDevice
+- xrCompatible: boolean
 - shadows: boolean — Enable directional shadow mapping for the first `castShadow` light.
 - shadowMapSize: number — Shadow map resolution (square).
 - shadowNormalBias: number — World-space normal offset applied before the depth comparison (reduces acne).
@@ -598,9 +599,17 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - diagnose(scene: Scene, camera: Camera): Diagnostic[] — Explain why a scene "renders but looks wrong" — especially black screens.
 - readPixels(target?: RenderTarget | undefined): Promise<PixelData> — Read back rendered pixels as RGBA8 (rows top-to-bottom).
 - screenshot(target?: RenderTarget | undefined): Promise<Blob> — Capture a PNG of the next canvas frame (or of a RenderTarget).
+- copyRenderTargetToTexture(target: RenderTarget, destination: GPUTexture, arrayLayer?: number, x?: number, y?: number): void — Copy a rendered target into an externally owned rgba8unorm texture layer.
 - bakeIrradianceProbes(grid: IrradianceProbeGrid, scene: Scene, options?: IrradianceBakeOptions): Promise<Float32Array<ArrayBuffer>> — Capture and GPU-project every point in an irradiance grid to SH-L2.
 - exposure: number
 - pickAt(cssX: number, cssY: number, scene: Scene, camera: Camera): Promise<Mesh | null> — Render an offscreen id-buffer pass and read back the pixel at (cssX, cssY) to identify which mesh lies under the cursor.
+
+### class WebXRManager
+Experimental WebXR/WebGPU projection-layer integration (`XRGPUBinding`).
+- new WebXRManager(renderer: WebGPURenderer)
+- session: XRSessionLike | null
+- start(scene: Scene, options?: WebXRStartOptions): Promise<void>
+- end(): Promise<void>
 
 ### class FrameMismatchError extends Error
 Thrown by `expectFrame` on mismatch; carries inspectable artifacts.
@@ -1321,6 +1330,7 @@ export interface RendererOptions {
   pixelRatio?: number;
   sampleCount?: number;
   powerPreference?: GPUPowerPreference;
+  xrCompatible?: boolean;
 }
 ```
 
@@ -1347,6 +1357,18 @@ export interface IrradianceBakeOptions {
 Output transform applied at the end of the post chain.
 ```ts
 export type ToneMapping = 'aces' | 'agx' | 'none';
+```
+
+### WebXRStartOptions
+```ts
+export interface WebXRStartOptions {
+  mode?: 'immersive-vr' | 'immersive-ar';
+  referenceSpace?: 'local' | 'local-floor' | 'bounded-floor' | 'unbounded';
+  optionalFeatures?: string[];
+  near?: number;
+  far?: number;
+  onFrame?: (time: number, frame: unknown) => void;
+}
 ```
 
 ### Diagnostic

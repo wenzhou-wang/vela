@@ -88,6 +88,8 @@ export { WebGPURenderer } from './renderer/WebGPURenderer';
 export { computeCascadeSplits } from './renderer/WebGPURenderer';
 export type { RendererOptions, PixelData, IrradianceBakeOptions } from './renderer/WebGPURenderer';
 export type { ToneMapping } from './renderer/PostProcessing';
+export { WebXRManager } from './renderer/WebXRManager';
+export type { WebXRStartOptions } from './renderer/WebXRManager';
 export { diagnoseScene } from './renderer/diagnose';
 export type { Diagnostic, DiagnoseState } from './renderer/diagnose';
 export { describeScene } from './core/describe';

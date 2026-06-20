@@ -288,6 +288,8 @@ export interface RendererOptions {
   /** Multisample count (1 or 4). Defaults to 4. */
   sampleCount?: number;
   powerPreference?: GPUPowerPreference;
+  /** Request an XR-compatible adapter up front (required by XRGPUBinding). */
+  xrCompatible?: boolean;
 }
 
 /** A WebGPU forward renderer with clustered-free multi-light PBR shading. */
@@ -298,6 +300,8 @@ export class WebGPURenderer {
   private format!: GPUTextureFormat;
   private sampleCount: number;
   private pixelRatio: number;
+  private powerPreference: GPUPowerPreference;
+  readonly xrCompatible: boolean;
 
   private geometries!: GeometryBuffers;
   private textures!: TextureManager;
@@ -651,6 +655,8 @@ export class WebGPURenderer {
     this.canvas = options.canvas;
     this.sampleCount = options.sampleCount ?? 4;
     this.pixelRatio = options.pixelRatio ?? Math.min(window.devicePixelRatio || 1, 2);
+    this.powerPreference = options.powerPreference ?? 'high-performance';
+    this.xrCompatible = options.xrCompatible ?? false;
   }
 
   static isSupported(): boolean {
@@ -670,7 +676,9 @@ export class WebGPURenderer {
 
   /** Request an adapter + device and install the device-lost handler. */
   private async acquireDevice(): Promise<void> {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    const adapterOptions = { powerPreference: this.powerPreference, xrCompatible: this.xrCompatible } as
+      GPURequestAdapterOptions & { xrCompatible: boolean };
+    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
     if (!adapter) throw new Error('No suitable GPUAdapter found.');
     this.device = await adapter.requestDevice();
     this.deviceLost = false;
@@ -1616,6 +1624,19 @@ export class WebGPURenderer {
     if (!ctx) throw new Error('screenshot: OffscreenCanvas 2D context unavailable.');
     ctx.putImageData(new ImageData(data, width, height), 0, 0);
     return canvas.convertToBlob({ type: 'image/png' });
+  }
+
+  /** Copy a rendered target into an externally owned rgba8unorm texture layer. */
+  copyRenderTargetToTexture(target: RenderTarget, destination: GPUTexture, arrayLayer = 0, x = 0, y = 0): void {
+    const source = this.renderTargets.get(target);
+    if (!source) throw new Error('copyRenderTargetToTexture: target has not been rendered yet.');
+    const encoder = this.device.createCommandEncoder({ label: 'render-target-external-copy' });
+    encoder.copyTextureToTexture(
+      { texture: source.color },
+      { texture: destination, origin: { x, y, z: arrayLayer } },
+      { width: target.width, height: target.height, depthOrArrayLayers: 1 },
+    );
+    this.device.queue.submit([encoder.finish()]);
   }
 
   /**
