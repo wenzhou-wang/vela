@@ -595,10 +595,14 @@ shot. All slot into the existing HDR post chain before/after tonemap.
       display space after tonemap and before FXAA/the optional LUT; exact defaults bypass
       the math to preserve prior output. Keeps the "linear output" flag contract so
       material shaders stay tonemap-agnostic. The reflected post block is 96 bytes.
-- ⬜ **Lens & exposure** — **auto-exposure** (a compute histogram of the HDR target →
-      adapted EV, smoothed over time; deterministic mode pins it), plus vignette,
-      chromatic aberration, and an optional lens-flare/bloom-streak — all small
-      `ShaderPass`-shaped effects gated on `postProcessing`.
+- ✅ **Lens & exposure** — `renderer.autoExposure` builds a 64-bin log-luminance GPU
+      histogram of the final HDR input and reduces it to a persistent middle-gray exposure,
+      bounded by `autoExposureMinEV`/`MaxEV` and smoothed by `autoExposureSpeed`;
+      deterministic mode resolves directly to the target exposure. Display-space
+      `vignette` and `chromaticAberration` controls share the final post pass, while
+      `bloomStreak` and `lensFlare` reshape the bloom contribution. All are declarative,
+      gated on `postProcessing`, default-bypassed, and applied before the optional 3-D LUT.
+      Offline-verified: histogram/reduction WGSL, 112-byte post block, and production build.
 
 ## v0.13 — Animation systems ✅
 

@@ -151,8 +151,10 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   frame transforms; TAA velocity reprojection and reconstruction blur shaders parse offline.
 - **Depth of field** — the depth-linearization, circle-of-confusion, and golden-angle HDR
   bokeh shader parses offline with post/MSAA prerequisite diagnostics.
-- **Color grading** — default-bypassed lift/gamma/gain/saturation packing matches the
-  reflected 96-byte post block and remains ordered before the optional 3-D LUT.
+- **Color grading** — default-bypassed lift/gamma/gain/saturation packing remains ordered
+  before the optional 3-D LUT within the reflected post block.
+- **Lens/exposure** — the 64-bin GPU histogram/reduction and final lens shader parse;
+  the extended post parameter block reflects to 112 bytes.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit

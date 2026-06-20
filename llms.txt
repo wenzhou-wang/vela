@@ -527,6 +527,14 @@ A WebGPU forward renderer with clustered-free multi-light PBR shading.
 - colorGamma: Color
 - colorGain: Color
 - saturation: number
+- autoExposure: boolean
+- autoExposureMinEV: number
+- autoExposureMaxEV: number
+- autoExposureSpeed: number
+- vignette: number
+- chromaticAberration: number
+- bloomStreak: number
+- lensFlare: number
 - passes: ShaderPass[] — Custom fullscreen post effects, run in order in HDR linear space before tonemap (requires `postProcessing`).
 - oit: boolean — Order-independent transparency (weighted-blended).
 - ssao: boolean — Screen-space ambient occlusion.

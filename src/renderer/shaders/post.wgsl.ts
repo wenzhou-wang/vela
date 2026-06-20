@@ -20,10 +20,13 @@ struct Params {
   gamma : vec4<f32>,
   gain : vec4<f32>,
   grade : vec4<f32>, // x=saturation, y=enabled
+  lens : vec4<f32>, // vignette, chromatic aberration, bloom streak, flare
 };
 @group(0) @binding(2) var<uniform> params   : Params;
 @group(0) @binding(3) var bloomTex : texture_2d<f32>;
 @group(0) @binding(4) var ssaoTex  : texture_2d<f32>;
+struct Exposure { value : vec4<f32> };
+@group(0) @binding(5) var<uniform> exposure : Exposure;
 
 struct VSOut {
   @builtin(position) clip : vec4<f32>,
@@ -90,35 +93,46 @@ fn grade(c : vec3<f32>) -> vec3<f32> {
   var v = pow(max((c + params.lift.rgb) * params.gain.rgb, vec3<f32>(0.0)), vec3<f32>(1.0) / max(params.gamma.rgb, vec3<f32>(1e-4)));
   return mix(vec3<f32>(luma(v)), v, params.grade.x);
 }
+fn hdrSample(uv:vec2<f32>)->vec3<f32>{
+  let d=uv-vec2<f32>(0.5); let off=d*params.lens.y;
+  return vec3<f32>(textureSample(src,samp,uv+off).r,textureSample(src,samp,uv).g,textureSample(src,samp,uv-off).b)*exposure.value.x;
+}
+fn bloomSample(uv:vec2<f32>)->vec3<f32>{
+  var b=textureSample(bloomTex,samp,uv).rgb;
+  if(params.lens.z>0.0){for(var i=1;i<=3;i=i+1){let o=vec2<f32>(params.data.x*f32(i)*12.0,0.0);b+=0.25*params.lens.z*(textureSample(bloomTex,samp,uv+o).rgb+textureSample(bloomTex,samp,uv-o).rgb);}}
+  if(params.lens.w>0.0){b+=textureSample(bloomTex,samp,vec2<f32>(1.0)-uv).rgb*params.lens.w;}
+  return b;
+}
+fn finish(c:vec3<f32>,uv:vec2<f32>)->vec4<f32>{let d=distance(uv,vec2<f32>(0.5))*1.4142;let v=1.0-params.lens.x*smoothstep(0.35,1.0,d);return vec4<f32>(grade(c)*v,1.0);}
 
 @fragment
 fn fs_tonemap(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
-  let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(grade(linearToSRGB(acesFilmic(hdr))), 1.0);
+  let hdr = hdrSample(in.uv) * ao;
+  return finish(linearToSRGB(acesFilmic(hdr)),in.uv);
 }
 
 @fragment
 fn fs_tonemapBloom(in : VSOut) -> @location(0) vec4<f32> {
   let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
-  let hdr   = textureSample(src, samp, in.uv).rgb * ao;
-  let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
-  return vec4<f32>(grade(linearToSRGB(acesFilmic(hdr + bloom))), 1.0);
+  let hdr   = hdrSample(in.uv) * ao;
+  let bloom = bloomSample(in.uv) * params.data.w;
+  return finish(linearToSRGB(acesFilmic(hdr + bloom)),in.uv);
 }
 
 @fragment
 fn fs_tonemapAgx(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
-  let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(grade(linearToSRGB(agxTonemap(hdr))), 1.0);
+  let hdr = hdrSample(in.uv) * ao;
+  return finish(linearToSRGB(agxTonemap(hdr)),in.uv);
 }
 
 @fragment
 fn fs_tonemapAgxBloom(in : VSOut) -> @location(0) vec4<f32> {
   let ao    = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
-  let hdr   = textureSample(src, samp, in.uv).rgb * ao;
-  let bloom = textureSample(bloomTex, samp, in.uv).rgb * params.data.w;
-  return vec4<f32>(grade(linearToSRGB(agxTonemap(hdr + bloom))), 1.0);
+  let hdr   = hdrSample(in.uv) * ao;
+  let bloom = bloomSample(in.uv) * params.data.w;
+  return finish(linearToSRGB(agxTonemap(hdr + bloom)),in.uv);
 }
 
 // No-tonemap output: exposure already applied upstream; just sRGB-encode (with
@@ -127,8 +141,8 @@ fn fs_tonemapAgxBloom(in : VSOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_linear(in : VSOut) -> @location(0) vec4<f32> {
   let ao  = mix(1.0, textureSample(ssaoTex, samp, in.uv).r, params.ssao.x);
-  let hdr = textureSample(src, samp, in.uv).rgb * ao;
-  return vec4<f32>(grade(linearToSRGB(hdr)), 1.0);
+  let hdr = hdrSample(in.uv) * ao;
+  return finish(linearToSRGB(hdr),in.uv);
 }
 
 @fragment

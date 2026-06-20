@@ -3,6 +3,7 @@ import { SSAO_SHADER } from './shaders/ssao.wgsl';
 import { TAA_SHADER } from './shaders/taa.wgsl';
 import { MOTION_BLUR_SHADER } from './shaders/motionBlur.wgsl';
 import { DOF_SHADER } from './shaders/dof.wgsl';
+import { EXPOSURE_SHADER } from './shaders/exposure.wgsl';
 import { SSR_SHADER } from './shaders/ssr.wgsl';
 import { LUT_SHADER } from './shaders/lut.wgsl';
 import { buildShaderPass } from './shaders/shaderpass.wgsl';
@@ -44,6 +45,7 @@ export interface PostOptions {
   /** Optional 3-D color-grading LUT applied after tonemap (display space). */
   colorLUT?: ColorLUT | null;
   lift: [number, number, number]; gamma: [number, number, number]; gain: [number, number, number]; saturation: number;
+  vignette: number; chromaticAberration: number; bloomStreak: number; lensFlare: number;
 }
 
 /**
@@ -150,6 +152,12 @@ export class PostProcessing {
   private lutSize = 0;
   private lutVersion = -1;
   private passResources = new Map<string, ShaderPassResources>();
+  private exposureLayout: GPUBindGroupLayout;
+  private exposureHistogram: GPUBuffer;
+  private exposureBuffer: GPUBuffer;
+  private exposureParams: GPUBuffer;
+  private exposureHistogramPipeline: GPUComputePipeline;
+  private exposureReducePipeline: GPUComputePipeline;
 
   constructor(
     private device: GPUDevice,
@@ -165,12 +173,25 @@ export class PostProcessing {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
       ],
     });
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.nearestSampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest', mipmapFilter: 'nearest' });
     // 32 bytes: data + ssao parameter blocks.
-    this.paramsBuffer = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.paramsBuffer = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.exposureHistogram=device.createBuffer({size:256,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+    this.exposureBuffer=device.createBuffer({size:16,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+    this.exposureParams=device.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+    device.queue.writeBuffer(this.exposureBuffer,0,new Float32Array([1,0,0,0]));
+    this.exposureLayout=device.createBindGroupLayout({entries:[
+      {binding:0,visibility:GPUShaderStage.COMPUTE,texture:{sampleType:'float'}},{binding:1,visibility:GPUShaderStage.COMPUTE,buffer:{type:'storage'}},
+      {binding:2,visibility:GPUShaderStage.COMPUTE,buffer:{type:'uniform'}},{binding:3,visibility:GPUShaderStage.COMPUTE,buffer:{type:'storage'}},
+    ]});
+    const exposureModule=device.createShaderModule({code:EXPOSURE_SHADER,label:'auto-exposure'});
+    const exposurePL=device.createPipelineLayout({bindGroupLayouts:[this.exposureLayout]});
+    this.exposureHistogramPipeline=device.createComputePipeline({layout:exposurePL,compute:{module:exposureModule,entryPoint:'cs_histogram'}});
+    this.exposureReducePipeline=device.createComputePipeline({layout:exposurePL,compute:{module:exposureModule,entryPoint:'cs_reduce'}});
 
     const dummy = device.createTexture({
       size: [1, 1], format: HDR_FORMAT,
@@ -710,6 +731,15 @@ export class PostProcessing {
     const pass=encoder.beginRenderPass({colorAttachments:[{view:this.dofView,loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:1}}]}); pass.setPipeline(this.dofPipelineCache); pass.setBindGroup(0,bg); pass.draw(3); pass.end(); return this.dofView;
   }
 
+  prepareAutoExposure(encoder:GPUCommandEncoder,input:GPUTextureView,enabled:boolean,dt:number,deterministic:boolean,minEV:number,maxEV:number,speed:number):void {
+    if(!enabled){this.device.queue.writeBuffer(this.exposureBuffer,0,new Float32Array([1,0,0,0]));return;}
+    encoder.clearBuffer(this.exposureHistogram);
+    this.device.queue.writeBuffer(this.exposureParams,0,new Float32Array([this.width,this.height,dt,deterministic?1:0,minEV,maxEV,speed,0]));
+    const bg=this.device.createBindGroup({layout:this.exposureLayout,entries:[{binding:0,resource:input},{binding:1,resource:{buffer:this.exposureHistogram}},{binding:2,resource:{buffer:this.exposureParams}},{binding:3,resource:{buffer:this.exposureBuffer}}]});
+    let pass=encoder.beginComputePass({label:'exposure-histogram'}); pass.setPipeline(this.exposureHistogramPipeline); pass.setBindGroup(0,bg); pass.dispatchWorkgroups(Math.ceil(this.width/8),Math.ceil(this.height/8)); pass.end();
+    pass=encoder.beginComputePass({label:'exposure-reduce'}); pass.setPipeline(this.exposureReducePipeline); pass.setBindGroup(0,bg); pass.dispatchWorkgroups(1); pass.end();
+  }
+
   /** Ray-march the current HDR frame against its hi-Z depth and composite SSR hits. */
   runSSR(
     encoder: GPUCommandEncoder,
@@ -947,7 +977,7 @@ export class PostProcessing {
     input: GPUTextureView = this.hdrView,
   ): void {
     // data = (1/width, 1/height, bloomThreshold, bloomIntensity); ssao.x = strength.
-    const params = new Float32Array(24);
+    const params = new Float32Array(28);
     params.set([
       1 / this.width, 1 / this.height, opts.bloomThreshold, opts.bloomIntensity,
       opts.ssao ? opts.ssaoStrength : 0, 0, 0, 0,
@@ -955,6 +985,7 @@ export class PostProcessing {
     params.set(opts.lift, 8); params.set(opts.gamma, 12); params.set(opts.gain, 16);
     params[20] = opts.saturation;
     params[21] = (opts.lift.some(v => v !== 0) || opts.gamma.some(v => v !== 1) || opts.gain.some(v => v !== 1) || opts.saturation !== 1) ? 1 : 0;
+    params.set([opts.vignette,opts.chromaticAberration,opts.bloomStreak,opts.lensFlare],24);
     this.device.queue.writeBuffer(this.paramsBuffer, 0, params);
 
     let bloomView = this.dummyView;
@@ -1077,6 +1108,7 @@ export class PostProcessing {
         { binding: 2, resource: { buffer: this.paramsBuffer } },
         { binding: 3, resource: bloomInput },
         { binding: 4, resource: ssaoInput },
+        { binding: 5, resource: { buffer: this.exposureBuffer } },
       ],
     });
     const pass = encoder.beginRenderPass({

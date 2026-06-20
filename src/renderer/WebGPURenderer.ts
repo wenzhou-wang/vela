@@ -401,6 +401,14 @@ export class WebGPURenderer {
   colorGamma = new Color(1, 1, 1);
   colorGain = new Color(1, 1, 1);
   saturation = 1;
+  autoExposure = false;
+  autoExposureMinEV = -8;
+  autoExposureMaxEV = 4;
+  autoExposureSpeed = 1.5;
+  vignette = 0;
+  chromaticAberration = 0;
+  bloomStreak = 0;
+  lensFlare = 0;
   /**
    * Custom fullscreen post effects, run in order in HDR linear space before
    * tonemap (requires `postProcessing`). Push `ShaderPass` instances to add
@@ -1321,6 +1329,8 @@ export class WebGPURenderer {
           },
         );
       }
+      this.post.prepareAutoExposure(encoder, postInput, this.autoExposure, dt, this.deterministic,
+        this.autoExposureMinEV, this.autoExposureMaxEV, this.autoExposureSpeed);
       this.post.run(encoder, swapView!, {
         fxaa: this.fxaa,
         bloom: this.bloom,
@@ -1334,6 +1344,10 @@ export class WebGPURenderer {
         gamma: [this.colorGamma.r, this.colorGamma.g, this.colorGamma.b],
         gain: [this.colorGain.r, this.colorGain.g, this.colorGain.b],
         saturation: this.saturation,
+        vignette: this.vignette,
+        chromaticAberration: this.chromaticAberration,
+        bloomStreak: this.bloomStreak,
+        lensFlare: this.lensFlare,
       }, postInput);
     }
     // Save this frame's unjittered view-projection for next frame's TAA
@@ -1499,10 +1513,10 @@ export class WebGPURenderer {
     }
 
     // Post effects requested but post pipeline off (silently inactive).
-    if (!this.postProcessing && (this.bloom || this.ssao || this.ssr || this.taa || this.oit || this.colorLUT || this.passes.length > 0)) {
+    if (!this.postProcessing && (this.bloom || this.ssao || this.ssr || this.taa || this.oit || this.colorLUT || this.autoExposure || this.vignette > 0 || this.chromaticAberration > 0 || this.bloomStreak > 0 || this.lensFlare > 0 || this.passes.length > 0)) {
       out.push({
         code: 'post-effect-inactive',
-        message: 'A post effect (bloom/ssao/ssr/taa/oit/colorLUT/ShaderPass) is enabled but renderer.postProcessing is off — it does nothing.',
+        message: 'A post/lens effect is enabled but renderer.postProcessing is off — it does nothing.',
         fix: 'Set renderer.postProcessing = true, or disable the effect to avoid confusion.',
       });
     }
