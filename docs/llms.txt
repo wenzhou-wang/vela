@@ -339,6 +339,9 @@ Physically based metallic-roughness material (glTF 2.0 compatible). Cook-Torranc
 - thickness: number — Volume thickness (KHR_materials_volume); 0 = thin-walled.
 - attenuationDistance: number — Distance light travels before attenuating to `attenuationColor`; 0 = none.
 - attenuationColor: Color
+- parallaxScale: number
+- parallaxMinLayers: number
+- parallaxMaxLayers: number
 - map: Texture | null
 - normalMap: Texture | null
 - metalnessRoughnessMap: Texture | null — glTF packs metalness in B, roughness in G.
@@ -346,6 +349,7 @@ Physically based metallic-roughness material (glTF 2.0 compatible). Cook-Torranc
 - occlusionMap: Texture | null
 - clearcoatMap: Texture | null — Per-texel clearcoat factor (R channel).
 - clearcoatRoughnessMap: Texture | null — Per-texel clearcoat roughness (G channel).
+- heightMap: Texture | null
 - getFeatureKey(): number — Bitmask describing which texture maps are present (drives shader variants).
 
 ### class LineBasicMaterial extends Material
@@ -1159,6 +1163,10 @@ export interface StandardMaterialParams {
   thickness?: number;
   attenuationDistance?: number;
   attenuationColor?: ColorInput;
+  heightMap?: Texture | null;
+  parallaxScale?: number;
+  parallaxMinLayers?: number;
+  parallaxMaxLayers?: number;
 }
 ```
 

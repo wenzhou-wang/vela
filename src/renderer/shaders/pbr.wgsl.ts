@@ -127,6 +127,7 @@ struct MaterialU {
   sheen : vec4<f32>,     // rgb = sheen color factor, w = sheen roughness
   transmission : vec4<f32>, // x = factor, y = thickness, z = attenuation distance
   attenuation : vec4<f32>,  // rgb = attenuation color
+  parallax : vec4<f32>, // scale, min layers, max layers
 };
 
 @group(2) @binding(0) var<uniform> material : MaterialU;
@@ -144,6 +145,8 @@ struct MaterialU {
 @group(2) @binding(12) var clearcoatSmp : sampler;
 @group(2) @binding(13) var clearcoatRoughnessTex : texture_2d<f32>;
 @group(2) @binding(14) var clearcoatRoughnessSmp : sampler;
+@group(2) @binding(15) var heightTex : texture_2d<f32>;
+@group(2) @binding(16) var heightSmp : sampler;
 `;
 
 // Static vertex stage: transform by the per-object model matrix.
@@ -688,12 +691,26 @@ struct ShadedSurface {
   normal : vec3<f32>,
 };
 
+fn parallaxUV(in:VSOut, frontFacing:bool)->vec2<f32>{
+  if(material.parallax.x==0.0){return in.uv;}
+  var N=normalize(in.worldNormal);if(!frontFacing){N=-N;}
+  let T=normalize(in.worldTangent-N*dot(in.worldTangent,N));let B=cross(N,T)*in.tangentSign;
+  let V=normalize(frame.cameraPos.xyz-in.worldPos);let v=vec3<f32>(dot(V,T),dot(V,B),dot(V,N));
+  let layers=clamp(mix(material.parallax.z,material.parallax.y,abs(v.z)),1.0,64.0);
+  let stepDepth=1.0/layers;let delta=v.xy/max(abs(v.z),0.05)*material.parallax.x/layers;
+  var uv=in.uv;var depth=0.0;var height=textureSample(heightTex,heightSmp,uv).r;
+  for(var i=0;i<64;i=i+1){if(f32(i)>=layers||depth>=height){break;}uv-=delta;depth+=stepDepth;height=textureSample(heightTex,heightSmp,uv).r;}
+  let previousUV=uv+delta;let after=height-depth;let before=textureSample(heightTex,heightSmp,previousUV).r-(depth-stepDepth);
+  let denom=after-before;var weight=0.5;if(abs(denom)>1e-5){weight=after/denom;}return mix(uv,previousUV,clamp(weight,0.0,1.0));
+}
+
 // Shared shading: returns linear HDR color (before exposure/tonemap), alpha, and shading normal.
 fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
+  let uv=parallaxUV(in,frontFacing);
   let flags = u32(material.misc.y);
   let hasNormalMap = (flags & 2u) != 0u;
 
-  let baseSample = textureSample(baseColorTex, baseColorSmp, in.uv);
+  let baseSample = textureSample(baseColorTex, baseColorSmp, uv);
   let baseColor = material.baseColor.rgb * baseSample.rgb * in.color.rgb;
   let alpha = material.baseColor.a * baseSample.a * in.color.a;
 
@@ -702,14 +719,14 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
     discard;
   }
 
-  let mrSample = textureSample(mrTex, mrSmp, in.uv);
+  let mrSample = textureSample(mrTex, mrSmp, uv);
   let metalness = clamp(material.params.x * mrSample.b, 0.0, 1.0);
   var roughness = clamp(material.params.y * mrSample.g, 0.04, 1.0);
 
   // Clear-coat: a thin dielectric specular layer over the base (KHR_materials_clearcoat).
   // White default textures → factor * 1.0 = factor (backward-compatible).
-  let clearcoat = clamp(material.misc.z * textureSample(clearcoatTex, clearcoatSmp, in.uv).r, 0.0, 1.0);
-  let clearcoatRoughness = clamp(material.misc.w * textureSample(clearcoatRoughnessTex, clearcoatRoughnessSmp, in.uv).g, 0.04, 1.0);
+  let clearcoat = clamp(material.misc.z * textureSample(clearcoatTex, clearcoatSmp, uv).r, 0.0, 1.0);
+  let clearcoatRoughness = clamp(material.misc.w * textureSample(clearcoatRoughnessTex, clearcoatRoughnessSmp, uv).g, 0.04, 1.0);
 
   // Sheen: a soft retroreflective lobe for cloth (KHR_materials_sheen).
   let sheenColor = material.sheen.rgb;
@@ -723,7 +740,7 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
   if (hasNormalMap) {
     var T = normalize(in.worldTangent - N * dot(in.worldTangent, N));
     let B = cross(N, T) * in.tangentSign;
-    var tn = textureSample(normalTex, normalSmp, in.uv).xyz * 2.0 - 1.0;
+    var tn = textureSample(normalTex, normalSmp, uv).xyz * 2.0 - 1.0;
     tn = vec3<f32>(tn.xy * material.params.z, tn.z);
     N = normalize(mat3x3<f32>(T, B, N) * tn);
   }
@@ -781,12 +798,12 @@ fn shadeSurface(in : VSOut, frontFacing : bool) -> ShadedSurface {
     color = color + lit * lc.radiance * NoL;
   }
 
-  let aoSample = textureSample(occlusionTex, occlusionSmp, in.uv).r;
+  let aoSample = textureSample(occlusionTex, occlusionSmp, uv).r;
   let ao = mix(1.0, aoSample, material.params.w);
 
   color = color + indirectLight(in.worldPos, N, V, NoV, roughness, f0, diffuseColor, ao);
 
-  let emissiveSample = textureSample(emissiveTex, emissiveSmp, in.uv).rgb;
+  let emissiveSample = textureSample(emissiveTex, emissiveSmp, uv).rgb;
   color = color + material.emissive.rgb * material.emissive.a * emissiveSample;
 
   // Transmission: refract through the surface, attenuate by Beer-Lambert volume.

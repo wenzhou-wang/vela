@@ -45,6 +45,11 @@ export interface StandardMaterialParams {
   attenuationDistance?: number;
   /** Attenuation color (KHR_materials_volume). */
   attenuationColor?: ColorInput;
+  /** Linear height field sampled from R for parallax occlusion mapping. */
+  heightMap?: Texture | null;
+  parallaxScale?: number;
+  parallaxMinLayers?: number;
+  parallaxMaxLayers?: number;
 }
 
 /**
@@ -80,6 +85,9 @@ export class StandardMaterial extends Material {
   /** Distance light travels before attenuating to `attenuationColor`; 0 = none. */
   attenuationDistance = 0.0;
   attenuationColor = new Color(1, 1, 1);
+  parallaxScale = 0.0;
+  parallaxMinLayers = 8;
+  parallaxMaxLayers = 24;
 
   map: Texture | null = null;
   normalMap: Texture | null = null;
@@ -91,6 +99,7 @@ export class StandardMaterial extends Material {
   clearcoatMap: Texture | null = null;
   /** Per-texel clearcoat roughness (G channel). */
   clearcoatRoughnessMap: Texture | null = null;
+  heightMap: Texture | null = null;
 
   constructor(params: StandardMaterialParams = {}) {
     super();
@@ -123,6 +132,10 @@ export class StandardMaterial extends Material {
     if (params.thickness !== undefined) this.thickness = params.thickness;
     if (params.attenuationDistance !== undefined) this.attenuationDistance = params.attenuationDistance;
     if (params.attenuationColor !== undefined) this.setColor(this.attenuationColor, params.attenuationColor);
+    if (params.heightMap !== undefined) this.heightMap = params.heightMap;
+    if (params.parallaxScale !== undefined) this.parallaxScale = params.parallaxScale;
+    if (params.parallaxMinLayers !== undefined) this.parallaxMinLayers = params.parallaxMinLayers;
+    if (params.parallaxMaxLayers !== undefined) this.parallaxMaxLayers = params.parallaxMaxLayers;
   }
 
   private setColor(target: Color, value: ColorInput): void {

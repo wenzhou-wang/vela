@@ -63,7 +63,7 @@ const UNIT_Y = new Vector3(0, 1, 0);
 const UNIT_Z = new Vector3(0, 0, 1);
 const FRAME_SIZE = 384; // prior frame layout + previous view-projection mat4
 const MODEL_SIZE = 208; // model + normalMat + params + previous model
-const MATERIAL_SIZE = 144;
+const MATERIAL_SIZE = 160;
 const LIGHT_STRIDE = 64; // bytes per light (positionKind + directionRange + colorDecay + spotParams)
 
 // GPU-driven culling: indirect draw + compute-shader sphere cull.
@@ -3635,6 +3635,8 @@ export class WebGPURenderer {
           { binding: 12, resource: s(material.clearcoatMap) },
           { binding: 13, resource: t(material.clearcoatRoughnessMap, white) },
           { binding: 14, resource: s(material.clearcoatRoughnessMap) },
+          { binding: 15, resource: t(material.heightMap, white) },
+          { binding: 16, resource: s(material.heightMap) },
         ],
       });
       res = { uniformBuffer, bindGroup, textureSignature: signature };
@@ -3676,6 +3678,9 @@ export class WebGPURenderer {
     data[32] = material.attenuationColor.r; // attenuation.rgb
     data[33] = material.attenuationColor.g;
     data[34] = material.attenuationColor.b;
+    data[36] = material.parallaxScale;
+    data[37] = material.parallaxMinLayers;
+    data[38] = material.parallaxMaxLayers;
     this.device.queue.writeBuffer(res.uniformBuffer, 0, data);
     return res;
   }
@@ -3683,7 +3688,7 @@ export class WebGPURenderer {
   private textureSignature(m: StandardMaterial): string {
     const id = (t: StandardMaterial['map']) => (t ? `${t.id}:${t.version}` : '_');
     return [m.map, m.normalMap, m.metalnessRoughnessMap, m.emissiveMap, m.occlusionMap,
-            m.clearcoatMap, m.clearcoatRoughnessMap]
+            m.clearcoatMap, m.clearcoatRoughnessMap, m.heightMap]
       .map(id)
       .join('|');
   }

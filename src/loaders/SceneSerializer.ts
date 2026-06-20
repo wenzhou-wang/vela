@@ -156,6 +156,9 @@ function materialToJSON(material: Material): Json {
     out.specularColor = rgb(material.specularColor);
     out.sheenColor = rgb(material.sheenColor);
     out.sheenRoughness = material.sheenRoughness;
+    out.parallaxScale = material.parallaxScale;
+    out.parallaxMinLayers = material.parallaxMinLayers;
+    out.parallaxMaxLayers = material.parallaxMaxLayers;
   } else if (material instanceof LineBasicMaterial) {
     out.color = rgb(material.color);
     out.vertexColors = material.vertexColors;
@@ -183,6 +186,9 @@ function materialFromJSON(data: Json): Material {
     set('emissiveIntensity', data.emissiveIntensity);
     set('normalScale', data.normalScale);
     set('occlusionStrength', data.occlusionStrength);
+    set('parallaxScale', data.parallaxScale);
+    set('parallaxMinLayers', data.parallaxMinLayers);
+    set('parallaxMaxLayers', data.parallaxMaxLayers);
     set('clearcoat', data.clearcoat);
     set('clearcoatRoughness', data.clearcoatRoughness);
     set('ior', data.ior);

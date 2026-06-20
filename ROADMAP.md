@@ -658,9 +658,14 @@ Surface and world-building detail the renderer currently can't express.
       `postProcessing` + sampleCount 1; `diagnose()` reports inactive decals and
       `describeScene()` reports their count. Offline-verified: 160-byte projector block,
       WGSL parse, strict typecheck, and production build.
-- ⬜ **Parallax occlusion mapping** — a height-map ray-march in the fragment stage as an
-      opt-in material flag (one more material-uniform bit), for deep brick/stone without
-      the triangle count.
+- ✅ **Parallax occlusion mapping** — `StandardMaterial.heightMap` (linear R channel) plus
+      `parallaxScale`/`parallaxMinLayers`/`parallaxMaxLayers` performs a tangent-space
+      view-ray march with angle-adaptive layers and linear intersection refinement before
+      all material texture samples. Scale 0 takes an early byte-compatible bypass; the
+      eighth default-bound material texture avoids a pipeline variant and reaches exactly
+      the WebGPU baseline 16 sampled textures with the frame group. Parameters round-trip
+      through `SceneSerializer`. Offline-verified: all four PBR variants parse with the
+      160-byte material block, strict typecheck, and production build.
 - ⬜ **Terrain / heightfield** — a `Terrain` node: GPU-clipmap or quadtree LOD heightfield
       with splat-mapped material layers, built on the existing LOD + instancing primitives.
 - ✅ **Trails & ribbons** — `TrailRenderer` (a `Mesh`) samples `target`'s world position

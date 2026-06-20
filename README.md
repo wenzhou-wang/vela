@@ -157,6 +157,8 @@ Because the GPU paths can't run headless, the bug-prone foundations were verifie
   the extended post parameter block reflects to 112 bytes.
 - **Decals** — depth reconstruction/projector clipping WGSL reflects a 160-byte block;
   decal counts and inactive post/MSAA prerequisites are available to blind diagnostics.
+- **Parallax mapping** — all PBR variants parse with bounded tangent-space height marching,
+  eight material texture pairs, and the reflected 160-byte material block.
 - **IBL** — the frame uniform is 256 bytes with env bindings present; equirect UV mapping
   and the analytic env-BRDF fit check out at reference directions. `RGBELoader` decodes a
   hand-built `.hdr` to the right floats, and float32→float16 conversion matches known bit
