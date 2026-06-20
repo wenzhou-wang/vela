@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vela · neon forge</title>
+    <style>
+      :root { color-scheme: dark; --cyan: #4ef7ff; --pink: #ff3fcf; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #02030a; }
+      body { color: #effcff; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      .panel { position: fixed; z-index: 2; border: 1px solid #75f5ff2b; border-radius: 14px;
+        background: #07101bd9; box-shadow: 0 0 36px #14d9ff12; backdrop-filter: blur(14px); }
+      #info { top: 18px; left: 18px; max-width: 350px; padding: 15px 17px; }
+      #controls { right: 18px; bottom: 18px; width: 250px; padding: 13px 15px; display: grid; gap: 9px; }
+      h1 { margin: 0 0 4px; font-size: 18px; text-shadow: 0 0 18px var(--cyan); }
+      p { margin: 0; color: #9bb7c3; }
+      .features { margin-top: 10px; color: var(--cyan); font: 11px/1.6 ui-monospace, monospace; }
+      label { display: grid; grid-template-columns: 1fr 125px; gap: 10px; align-items: center; }
+      label span { color: #9bb7c3; }
+      input { width: 100%; accent-color: var(--pink); }
+      #unsupported { display: none; position: fixed; inset: 0; place-items: center; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <section id="info" class="panel">
+      <h1>Neon Forge</h1>
+      <p>Three energy cores orbit a reactive shader sculpture, painting persistent ribbons and thousands of compute-simulated sparks.</p>
+      <div class="features">GPU PARTICLES · RIBBON TRAILS · INSTANCING<br>CUSTOM MATERIAL · SHADER PASS · BLOOM</div>
+    </section>
+    <section id="controls" class="panel">
+      <label><span>Energy</span><input id="energy" type="range" min="0.25" max="2" step="0.05" value="1" /></label>
+      <label><span>Bloom</span><input id="bloom" type="range" min="0" max="1.8" step="0.05" value="1.1" /></label>
+      <label><span>Signal warp</span><input id="warp" type="checkbox" checked /></label>
+    </section>
+    <div id="unsupported"><div><h2>WebGPU is required</h2><p>Open this demo in a WebGPU-capable browser.</p></div></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
