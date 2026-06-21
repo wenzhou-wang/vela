@@ -9,14 +9,16 @@ export default defineConfig({
     },
   },
   server: {
-    open: '/examples/gltf-viewer/index.html',
+    open: '/examples/index.html',
   },
   build: {
     target: 'esnext',
     sourcemap: true,
     rollupOptions: {
       input: {
+        examples: resolve(__dirname, 'examples/index.html'),
         viewer: resolve(__dirname, 'examples/gltf-viewer/index.html'),
+        waveField: resolve(__dirname, 'examples/wave-field/index.html'),
         sunsetRidge: resolve(__dirname, 'examples/sunset-ridge/index.html'),
         neonForge: resolve(__dirname, 'examples/neon-forge/index.html'),
         agentLab: resolve(__dirname, 'examples/agent-lab/index.html'),

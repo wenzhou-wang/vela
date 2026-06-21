@@ -5,7 +5,7 @@ explore what a modern engine looks like without the weight of legacy WebGL paths
 old-browser support. PBR shading, a glTF loader, and an interactive viewer in ~3k lines.
 
 ```
-┌─ examples/gltf-viewer  ← drag-drop glТF viewer (the demo app)
+├─ examples/             ← terrain, particles, instancing, agent tooling, glTF demos
 └─ src/
    ├─ math/        Vector2/3/4, Quaternion, Matrix3/4, Euler, Color, Box3, Spherical
    ├─ core/        Object3D scene graph, Scene, Camera, PerspectiveCamera, Mesh, BufferGeometry
@@ -30,15 +30,23 @@ targets **WebGPU exclusively**, which means:
 - A tiny footprint — the whole engine + viewer bundles to **~90 KB (28 KB gzip)**,
   versus ~600 KB for three.js.
 
-## Running the viewer
+## Running the examples
 
 ```bash
 npm install
-npm run dev        # opens the glTF viewer
+npm run dev        # opens the examples gallery
 ```
 
 Requires a WebGPU-capable browser (Chrome/Edge 113+, Safari 18, or Firefox with WebGPU
-enabled). Then:
+enabled). The gallery includes:
+
+- **Sunset Ridge** — procedural tiled terrain LOD, custom PBR, cascaded shadows, volumetric fog, TAA, and bloom.
+- **Neon Forge** — GPU particles, ribbon trails, instancing, custom materials, and a fullscreen shader pass.
+- **Agent Lab** — live scene descriptions, render reports, diagnostics, GPU scene submission, and typed graph edits.
+- **Wave Field** — 4,096 animated pillars in one instanced draw call.
+- **glTF Viewer** — drag-drop loading, animation, PBR inspection, export, and programmable comic rendering.
+
+In the glTF viewer:
 
 - **Drag & drop** a `.glb` (or a `.gltf` plus its `.bin`/textures) onto the page.
 - **Open file…** picks files from disk; the sample buttons load Khronos models over the network.
