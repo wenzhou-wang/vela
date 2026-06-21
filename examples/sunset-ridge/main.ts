@@ -21,19 +21,17 @@ if (!WebGPURenderer.isSupported()) {
   throw new Error('WebGPU not supported');
 }
 
-const renderer = new WebGPURenderer({ canvas, sampleCount: 1 });
+const renderer = new WebGPURenderer({ canvas, sampleCount: 1, pixelRatio: 1 });
 await renderer.init();
 renderer.postProcessing = true;
 renderer.toneMapping = 'agx';
 renderer.bloom = true;
 renderer.bloomThreshold = 1.05;
 renderer.bloomIntensity = 0.35;
-renderer.taa = true;
-renderer.taaBlend = 0.12;
 renderer.shadows = true;
-renderer.shadowCascades = 4;
-renderer.shadowMapSize = 2048;
-renderer.volumetricFog = true;
+renderer.shadowCascades = 2;
+renderer.shadowMapSize = 1024;
+renderer.volumetricFog = false;
 renderer.vignette = 0.18;
 
 const scene = new Scene();
@@ -57,7 +55,7 @@ sun.castShadow = true;
 scene.add(sun, sun.target);
 scene.add(new AmbientLight(new Color().setHex(0x56647f), 0.38));
 
-const SEGMENTS = 128;
+const SEGMENTS = 96;
 const heights = new Float32Array((SEGMENTS + 1) * (SEGMENTS + 1));
 for (let z = 0; z <= SEGMENTS; z++) {
   for (let x = 0; x <= SEGMENTS; x++) {
@@ -96,8 +94,8 @@ const terrain = new Terrain({
   segmentsZ: SEGMENTS,
   width: 180,
   depth: 180,
-  tiles: [8, 8],
-  levels: 4,
+  tiles: [4, 4],
+  levels: 3,
   material: terrainMaterial,
 });
 terrain.name = 'ridge-terrain';
@@ -122,9 +120,11 @@ if (stats.dom) {
 
 const sunInput = document.querySelector<HTMLInputElement>('#sun')!;
 const fogInput = document.querySelector<HTMLInputElement>('#fog')!;
+const volumetricInput = document.querySelector<HTMLInputElement>('#volumetric')!;
 const orbitInput = document.querySelector<HTMLInputElement>('#orbit')!;
 sunInput.addEventListener('input', updateAtmosphere);
 fogInput.addEventListener('input', updateAtmosphere);
+volumetricInput.addEventListener('input', () => { renderer.volumetricFog = volumetricInput.checked; });
 orbitInput.addEventListener('input', () => { controls.autoRotate = orbitInput.checked; });
 
 function updateAtmosphere(): void {

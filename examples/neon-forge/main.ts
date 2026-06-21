@@ -28,16 +28,14 @@ if (!WebGPURenderer.isSupported()) {
   throw new Error('WebGPU not supported');
 }
 
-const renderer = new WebGPURenderer({ canvas, sampleCount: 1 });
+const renderer = new WebGPURenderer({ canvas, sampleCount: 1, pixelRatio: 1 });
 await renderer.init();
 renderer.postProcessing = true;
 renderer.toneMapping = 'agx';
 renderer.bloom = true;
 renderer.bloomThreshold = 0.65;
 renderer.bloomIntensity = 1.1;
-renderer.autoExposure = true;
-renderer.autoExposureMinEV = -3;
-renderer.autoExposureMaxEV = 1;
+renderer.exposure = 0.85;
 renderer.chromaticAberration = 0.0015;
 renderer.vignette = 0.28;
 
@@ -46,7 +44,7 @@ const signalWarp = new ShaderPass({
   uniforms: { amount: 0.0025 },
   effect: /* wgsl */ `
     fn effect(uv : vec2<f32>) -> vec4<f32> {
-      let scan = sin(uv.y * pp.resolution.y * 1.4 + pp.time * 8.0);
+      let scan = sin(uv.y * pp.resolution.y * 1.4 + pp.time.x * 8.0);
       let offset = vec2<f32>(scan * u.amount, 0.0);
       let base = sceneColor(uv + offset);
       let glow = sceneColor(uv - offset * 2.0);
@@ -57,6 +55,7 @@ const signalWarp = new ShaderPass({
 renderer.passes.push(signalWarp);
 
 const scene = new Scene();
+scene.background = new Color().setHex(0x02030a);
 scene.fog = { color: new Color().setHex(0x030511), density: 0.016 };
 scene.sky = { sunDirection: new Vector3(-0.3, 0.65, -0.4), turbidity: 9 };
 scene.environmentIntensity = 0.18;
@@ -127,8 +126,8 @@ for (let i = 0; i < colors.length; i++) {
   }));
   core.name = `orbiting-core-${i + 1}`;
   const emitter = new ParticleSystem({
-    capacity: 1600,
-    rate: 430,
+    capacity: 800,
+    rate: 240,
     lifetime: [0.45, 1.35],
     velocity: new Vector3(0, 0.75, 0),
     spread: 1.2,
@@ -187,7 +186,7 @@ function animate(now: number): void {
     const z = Math.sin(phase) * radius;
     cores[i].position.set(x, y, z);
     emitters[i].position.set(x, y, z);
-    emitters[i].options.rate = 430 * energy;
+    emitters[i].options.rate = 240 * energy;
     trails[i].update(camera.position);
   }
   controls.update();

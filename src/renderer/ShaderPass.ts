@@ -11,7 +11,7 @@ export interface ShaderPassOptions {
    * - `sceneDepth(uv)` — non-linear depth in [0,1] (1 = background).
    * - `sceneWorldNormal(uv)` / `sceneViewNormal(uv)` — when `inputs` requests `normal`.
    * - `sceneLinearDepth(uv)` — view-space distance when `inputs` requests `linearDepth`.
-   * - `pp.resolution` (xy = pixels, zw = 1/pixels), `pp.time` (seconds).
+   * - `pp.resolution` (xy = pixels, zw = 1/pixels), `pp.time.x` (seconds).
    * - `u.<name>` scalars and `t_<name>`/`s_<name>` textures from `uniforms`.
    */
   effect: string;
@@ -36,7 +36,7 @@ export interface ShaderPassOptions {
  * renderer.passes.push(new ShaderPass({
  *   effect: `
  *     fn effect(uv : vec2<f32>) -> vec4<f32> {
- *       let off = vec2(sin(uv.y * 80.0 + pp.time * 4.0) * u.amount, 0.0);
+ *       let off = vec2(sin(uv.y * 80.0 + pp.time.x * 4.0) * u.amount, 0.0);
  *       return sceneColor(uv + off);
  *     }
  *   `,

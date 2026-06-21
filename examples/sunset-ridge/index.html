@@ -29,11 +29,12 @@
     <section id="info" class="panel">
       <h1>Sunset Ridge</h1>
       <p>A procedural landscape with no downloaded assets. Fly from the lake to the peaks and watch each terrain tile choose its own detail level.</p>
-      <div class="features">TERRAIN LOD · CUSTOM PBR · CASCADED SHADOWS<br>VOLUMETRIC FOG · TAA · BLOOM</div>
+      <div class="features">TERRAIN LOD · CUSTOM PBR · CASCADED SHADOWS<br>OPTIONAL VOLUMETRIC FOG · BLOOM</div>
     </section>
     <section id="controls" class="panel">
       <label><span>Sun height</span><input id="sun" type="range" min="0.08" max="0.8" step="0.01" value="0.24" /></label>
       <label><span>Fog density</span><input id="fog" type="range" min="0" max="0.025" step="0.001" value="0.009" /></label>
+      <label><span>Volumetric fog</span><input id="volumetric" type="checkbox" /></label>
       <label><span>Auto orbit</span><input id="orbit" type="checkbox" checked /></label>
     </section>
     <div id="unsupported"><div><h2>WebGPU is required</h2><p>Open this demo in a WebGPU-capable browser.</p></div></div>

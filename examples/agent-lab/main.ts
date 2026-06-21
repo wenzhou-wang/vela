@@ -24,7 +24,7 @@ if (!WebGPURenderer.isSupported()) {
   throw new Error('WebGPU not supported');
 }
 
-const renderer = new WebGPURenderer({ canvas, sampleCount: 1 });
+const renderer = new WebGPURenderer({ canvas, sampleCount: 1, pixelRatio: 1 });
 await renderer.init();
 renderer.postProcessing = true;
 renderer.toneMapping = 'agx';
@@ -45,9 +45,10 @@ const contour = new ShaderPass({
       let source = sceneColor(uv);
       let depth = sceneLinearDepth(uv);
       let normal = sceneWorldNormal(uv);
+      let geometry = select(1.0, 0.0, sceneDepth(uv) >= 0.9999);
       let line = pow(1.0 - abs(sin(depth * 3.14159265 / u.spacing)), 18.0);
       let facing = 0.35 + 0.65 * abs(normal.y);
-      let ink = vec3<f32>(0.08, 1.0, 0.62) * line * facing * u.strength;
+      let ink = vec3<f32>(0.08, 1.0, 0.62) * line * facing * u.strength * geometry;
       return vec4<f32>(source.rgb + ink, source.a);
     }
   `,
@@ -61,7 +62,8 @@ const pulse = new ShaderPass({
     fn effect(uv : vec2<f32>) -> vec4<f32> {
       let source = sceneColor(uv);
       let depth = sceneLinearDepth(uv);
-      let wave = pow(max(0.0, sin(depth * 0.8 - pp.time * 2.5)), 20.0);
+      let geometry = select(1.0, 0.0, sceneDepth(uv) >= 0.9999);
+      let wave = pow(max(0.0, sin(depth * 0.8 - pp.time.x * 2.5)), 20.0) * geometry;
       return vec4<f32>(source.rgb + vec3<f32>(0.15, 0.35, 1.0) * wave * u.strength, source.a);
     }
   `,
@@ -70,6 +72,7 @@ renderer.passes.push(contour, pulse);
 const graph = new AgentGraphEditor(renderer);
 
 const scene = new Scene();
+scene.background = new Color().setHex(0x04100d);
 scene.fog = { color: new Color().setHex(0x04100d), density: 0.014 };
 scene.sky = { sunDirection: new Vector3(0.4, 0.6, -0.5), turbidity: 7 };
 scene.environmentIntensity = 0.3;
@@ -91,7 +94,7 @@ const material = new StandardMaterial({
   metalness: 0.7,
   roughness: 0.3,
 });
-for (let i = 0; i < 72; i++) {
+for (let i = 0; i < 48; i++) {
   const angle = i * 0.52;
   const radius = 2.5 + i * 0.115;
   const tower = new Mesh(geometry, material);
@@ -102,13 +105,13 @@ for (let i = 0; i < 72; i++) {
   scene.add(tower);
 }
 
-for (let i = 0; i < 12; i++) {
+for (let i = 0; i < 8; i++) {
   const light = new PointLight(
     new Color().setHex(i % 2 ? 0x3c7dff : 0x42ffae),
     22,
     8,
   );
-  const angle = i / 12 * Math.PI * 2;
+  const angle = i / 8 * Math.PI * 2;
   light.position.set(Math.cos(angle) * 8, 2.2 + (i % 3) * 2, Math.sin(angle) * 8);
   light.name = `cluster-light-${i + 1}`;
   scene.add(light);
