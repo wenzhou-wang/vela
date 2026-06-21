@@ -698,9 +698,9 @@ fn parallaxUV(in:VSOut, frontFacing:bool)->vec2<f32>{
   let V=normalize(frame.cameraPos.xyz-in.worldPos);let v=vec3<f32>(dot(V,T),dot(V,B),dot(V,N));
   let layers=clamp(mix(material.parallax.z,material.parallax.y,abs(v.z)),1.0,64.0);
   let stepDepth=1.0/layers;let delta=v.xy/max(abs(v.z),0.05)*material.parallax.x/layers;
-  var uv=in.uv;var depth=0.0;var height=textureSample(heightTex,heightSmp,uv).r;
-  for(var i=0;i<64;i=i+1){if(f32(i)>=layers||depth>=height){break;}uv-=delta;depth+=stepDepth;height=textureSample(heightTex,heightSmp,uv).r;}
-  let previousUV=uv+delta;let after=height-depth;let before=textureSample(heightTex,heightSmp,previousUV).r-(depth-stepDepth);
+  var uv=in.uv;var depth=0.0;var height=textureSampleLevel(heightTex,heightSmp,uv,0.0).r;
+  for(var i=0;i<64;i=i+1){if(f32(i)>=layers||depth>=height){break;}uv-=delta;depth+=stepDepth;height=textureSampleLevel(heightTex,heightSmp,uv,0.0).r;}
+  let previousUV=uv+delta;let after=height-depth;let before=textureSampleLevel(heightTex,heightSmp,previousUV,0.0).r-(depth-stepDepth);
   let denom=after-before;var weight=0.5;if(abs(denom)>1e-5){weight=after/denom;}return mix(uv,previousUV,clamp(weight,0.0,1.0));
 }
 

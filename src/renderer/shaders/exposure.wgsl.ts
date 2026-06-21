@@ -21,7 +21,7 @@ fn cs_reduce() {
   for(var i=0u;i<64u;i=i+1u){let n=atomicLoad(&histogram[i]); weighted+=f32(n)*(f32(i)+0.5); count+=n;}
   if(count==0u){exposure[0]=1.0;return;}
   let bin=weighted/f32(count); let ev=mix(p.evSpeed.x,p.evSpeed.y,bin/64.0);
-  let target=clamp(0.18/exp2(ev),exp2(-p.evSpeed.y),exp2(-p.evSpeed.x));
+  let targetExposure=clamp(0.18/exp2(ev),exp2(-p.evSpeed.y),exp2(-p.evSpeed.x));
   let alpha=select(1.0,1.0-exp(-p.sizeDtDet.z*p.evSpeed.z),p.sizeDtDet.w<0.5);
-  exposure[0]=mix(exposure[0],target,alpha);
+  exposure[0]=mix(exposure[0],targetExposure,alpha);
 }`;
